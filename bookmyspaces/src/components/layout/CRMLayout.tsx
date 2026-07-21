@@ -19,6 +19,7 @@ const links = [
   { href: '/whatsapp', label: 'WhatsApp' },
   { href: '/proposals', label: 'Proposals' },
   { href: '/campaigns', label: 'Campaigns' },
+  { href: '/social', label: 'Social' },
   { href: '/kanban', label: 'Kanban' },
   { href: '/catalog', label: 'Catalog' },
   { href: '/knowledge-base', label: 'AI Knowledge' },
