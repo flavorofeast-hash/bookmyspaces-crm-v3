@@ -25,6 +25,7 @@ import {
   getOrCreateConversation,
   recordMessage,
 } from '@/lib/conversations/unified-conversation-service'
+import { evaluateHandoff, applyHandoff } from '@/lib/ai/orchestrator'
 
 export async function mirrorWhatsAppInbound(input: {
   phone: string
@@ -33,7 +34,7 @@ export async function mirrorWhatsAppInbound(input: {
   wamid: string
   rawPayload?: Record<string, unknown>
 }): Promise<void> {
-  await ingestInboundMessage({
+  const result = await ingestInboundMessage({
     channelType: 'whatsapp',
     channelIdentity: input.phone,
     content: input.text ?? '',
@@ -41,6 +42,27 @@ export async function mirrorWhatsAppInbound(input: {
     rawPayload: input.rawPayload ?? null,
     customerId: input.leadId,
   })
+
+  // V3 Phase 4 — text-trigger handoff only (human request / complaint /
+  // refund / payment issue). aiConfidence=1 deliberately disables the
+  // low-confidence trigger here: the WhatsApp auto-responder's replies are
+  // template-driven state-machine sends, not open generation, so reply-
+  // quality confidence doesn't apply. Escalations surface in the Unified
+  // Inbox (Escalated filter) without changing auto-responder behavior.
+  if (input.text) {
+    const decision = evaluateHandoff({
+      customerText: input.text,
+      aiConfidence: 1,
+      settings: { confidenceThreshold: 0, autoHandoff: false },
+    })
+    if (decision.escalate && decision.reason) {
+      await applyHandoff({
+        conversationId: result.conversationId,
+        leadId: input.leadId,
+        reason: decision.reason,
+      })
+    }
+  }
 }
 
 export async function mirrorWhatsAppOutbound(input: {

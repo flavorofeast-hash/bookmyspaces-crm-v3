@@ -76,8 +76,8 @@ const defaultSettings: AppSettings = {
     currency: 'INR',
   },
   ai: {
-    model: 'claude-3-haiku-20240307',
-    maxTokens: 300,
+    model: 'claude-haiku-4-5-20251001',
+    maxTokens: 800,
     temperature: 0.7,
     systemLanguage: 'auto',
     autoReply: true,
@@ -479,7 +479,8 @@ export default function SettingsPage() {
                   onChange={(e) => updateAI('model', e.target.value)}
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
-                  <option value="claude-3-haiku-20240307">Claude 3 Haiku (Fast)</option>
+                  <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast — default)</option>
+                  <option value="claude-3-haiku-20240307">Claude 3 Haiku (Legacy)</option>
                   <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku</option>
                   <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
                   <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>

@@ -22,6 +22,7 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { syncLeadToSheets, initializeSheet } from '@/lib/sheets'
 import { logger } from '@/lib/logger'
 import { handleInboundMessage, recordMessage } from '@/lib/conversations/unified-conversation-service'
+import { checkAndApplyHandoff, estimateConfidence } from '@/lib/ai/orchestrator'
 import { normalizePhone as normalizePhoneCanonical } from '@/lib/whatsapp/normalize-phone'
 
 export async function POST(req: NextRequest) {
@@ -227,6 +228,19 @@ async function syncToUnifiedConversationPlatform(
     direction:      'outbound',
     senderType:     'ai',
     content:        outbound,
+    aiConfidence:   estimateConfidence(outbound),
+  })
+
+  // V3 Phase 4 — AI Orchestrator handoff policy. Marks the unified
+  // conversation escalated + AI-paused when the customer asks for a human,
+  // raises a complaint/refund/payment issue, or the reply looks
+  // low-confidence (threshold configurable in Settings → AI Engine).
+  // Runs inside this already-fire-and-forget sync; never affects the reply.
+  await checkAndApplyHandoff({
+    conversationId: result.conversationId,
+    leadId:         result.identity?.leadId ?? null,
+    customerText:   inbound,
+    aiReply:        outbound,
   })
 }
 

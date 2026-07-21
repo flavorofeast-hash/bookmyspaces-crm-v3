@@ -2,6 +2,8 @@ import Anthropic from '@anthropic-ai/sdk'
 import OpenAI from 'openai'
 import { getSupabaseAdmin } from './supabase'
 import { logger } from './logger'
+import { getActivePrompt } from '@/lib/ai/prompt-service'
+import { getSettingsSection } from '@/lib/settings/settings-service'
 
 // Lazy initialization — prevents build-time crashes
 let _anthropic: Anthropic | null = null
@@ -201,6 +203,30 @@ export async function generateEmbedding(text: string): Promise<number[]> {
   return response.data[0].embedding
 }
 
+// V3 Phase 4 — also search the CRM-editable `knowledge_sources` table
+// (migration 012, edited on the AI Knowledge page). Additive alongside the
+// existing knowledge_chunks search; returns '' on any failure, including
+// the table not existing yet.
+async function retrieveFromKnowledgeSources(keywords: string[], limit: number): Promise<string> {
+  try {
+    const supabaseAdmin = getSupabaseAdmin()
+    const { data, error } = await supabaseAdmin
+      .from('knowledge_sources')
+      .select('title, content, category')
+      .eq('is_active', true)
+      .or(keywords.map(k => `content.ilike.%${k}%,title.ilike.%${k}%`).join(','))
+      .limit(limit)
+
+    if (error || !data?.length) return ''
+    return data
+      .map((r: { title: string; content: string; category: string }) =>
+        `[${(r.category || 'INFO').toUpperCase()} — ${r.title}]\n${r.content}`)
+      .join('\n\n---\n\n')
+  } catch {
+    return ''
+  }
+}
+
 export async function retrieveRelevantKnowledge(query: string, limit = 4): Promise<string> {
   try {
     const supabaseAdmin = getSupabaseAdmin()
@@ -224,18 +250,23 @@ export async function retrieveRelevantKnowledge(query: string, limit = 4): Promi
       )
       .limit(limit)
 
-    if (error || !data?.length) return ''
+    const chunksContext = (!error && data?.length)
+      ? data
+          .map(
+            (c: {
+              content: string
+              source_file: string
+              category: string
+            }) =>
+              `[${(c.category || 'INFO').toUpperCase()} — ${c.source_file}]\n${c.content}`
+          )
+          .join('\n\n---\n\n')
+      : ''
 
-    return data
-      .map(
-        (c: {
-          content: string
-          source_file: string
-          category: string
-        }) =>
-          `[${(c.category || 'INFO').toUpperCase()} — ${c.source_file}]\n${c.content}`
-      )
-      .join('\n\n---\n\n')
+    // Curated CRM-edited entries rank first — they are operator-maintained
+    // truth (pricing, policies), ahead of document-derived chunks.
+    const sourcesContext = await retrieveFromKnowledgeSources(keywords, limit)
+    return [sourcesContext, chunksContext].filter(Boolean).join('\n\n---\n\n')
   } catch {
     return ''
   }
@@ -250,16 +281,25 @@ const FALLBACK_MESSAGE =
 
 export async function chatWithAI(messages: Message[], userQuery: string): Promise<string> {
   const cappedMessages = messages.slice(-20)
-  const knowledgeContext = await retrieveRelevantKnowledge(userQuery)
+
+  // V3 Phase 4 — DB-driven prompt + model settings. Both degrade to the
+  // exact previous hardcoded behavior when migration 012 isn't applied:
+  // getActivePrompt falls back to SYSTEM_PROMPT, getSettingsSection falls
+  // back to defaults matching the previous literals (haiku-4.5, 800).
+  const [knowledgeContext, systemPrompt, aiSettings] = await Promise.all([
+    retrieveRelevantKnowledge(userQuery),
+    getActivePrompt('system.customer_chat', SYSTEM_PROMPT),
+    getSettingsSection('ai'),
+  ])
 
   const systemWithContext = knowledgeContext
-    ? `${SYSTEM_PROMPT}\n\n=== KNOWLEDGE BASE ===\n${knowledgeContext}\n=====================\nUse above context when relevant. Prioritize it over general knowledge.`
-    : SYSTEM_PROMPT
+    ? `${systemPrompt}\n\n=== KNOWLEDGE BASE ===\n${knowledgeContext}\n=====================\nUse above context when relevant. Prioritize it over general knowledge. Never invent pricing or availability — if the knowledge base does not cover it, say you will check and offer a callback.`
+    : systemPrompt
 
   try {
     const response = await getAnthropic().messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 800,
+      model: aiSettings.model,
+      max_tokens: aiSettings.maxTokens,
       system: systemWithContext,
       messages: cappedMessages.map(m => ({ role: m.role, content: m.content })),
     })
@@ -270,7 +310,7 @@ export async function chatWithAI(messages: Message[], userQuery: string): Promis
     try {
       const completion = await getOpenAI().chat.completions.create({
         model: 'gpt-4o-mini',
-        max_tokens: 800,
+        max_tokens: aiSettings.maxTokens,
         messages: [
           { role: 'system', content: systemWithContext },
           ...cappedMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),

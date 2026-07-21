@@ -77,8 +77,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     currency: 'INR',
   },
   ai: {
-    model: 'claude-3-haiku-20240307',
-    maxTokens: 300,
+    model: 'claude-haiku-4-5-20251001',
+    maxTokens: 800,
     temperature: 0.7,
     systemLanguage: 'auto',
     autoReply: true,
