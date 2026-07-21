@@ -24,10 +24,21 @@ import { logger } from '@/lib/logger'
 import { handleInboundMessage, recordMessage } from '@/lib/conversations/unified-conversation-service'
 import { checkAndApplyHandoff, estimateConfidence } from '@/lib/ai/orchestrator'
 import { normalizePhone as normalizePhoneCanonical } from '@/lib/whatsapp/normalize-phone'
+import { checkRateLimit, clientIpFrom } from '@/lib/rate-limit'
 
 export async function POST(req: NextRequest) {
   const supabaseAdmin = getSupabaseAdmin()
   const reqId = uuidv4().slice(0, 8)
+
+  // V3 — public-route rate limit (Tier 1 #5): 20 messages/min per IP is
+  // generous for a human chatting and hostile to loops/scrapers.
+  const rl = checkRateLimit(`chat:${clientIpFrom(req)}`, { limit: 20, windowMs: 60_000 })
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: 'Too many messages — please wait a moment.' },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfterSeconds) } }
+    )
+  }
 
   try {
     const body = await req.json()

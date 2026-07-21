@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
+import { auditLog } from '@/lib/audit-log'
 
 // ─── POST — record a payment ──────────────────────────────────────────────────
 
@@ -27,8 +28,13 @@ export async function POST(
       payment_type  = 'advance',
     } = body
 
+    // V3 refund workflow (migration 015): refunds are first-class rows with
+    // payment_type='refund' and a NEGATIVE amount — no more "type a negative
+    // number by convention". The API takes a positive refund amount from the
+    // operator and applies the sign itself.
+    const isRefund = payment_type === 'refund'
     if (!amount || Number(amount) <= 0) {
-      return NextResponse.json({ error: 'Valid amount is required' }, { status: 400 })
+      return NextResponse.json({ error: 'Valid amount is required (positive; refunds are negated automatically)' }, { status: 400 })
     }
 
     // Verify proposal exists
@@ -47,7 +53,7 @@ export async function POST(
       .from('payments')
       .insert({
         proposal_id    : params.id,
-        amount         : Number(amount),
+        amount         : isRefund ? -Math.abs(Number(amount)) : Number(amount),
         payment_date,
         payment_mode,
         transaction_ref: transaction_ref || null,
@@ -58,6 +64,16 @@ export async function POST(
       .single()
 
     if (payErr) throw payErr
+
+    if (isRefund) {
+      auditLog({
+        actor: auth.user.email ?? auth.user.id,
+        action: 'payment.refund',
+        entityType: 'payments',
+        entityId: String(payment?.id ?? ''),
+        detail: { proposal_id: params.id, amount: -Math.abs(Number(amount)) },
+      })
+    }
 
     // Mark proposal as accepted if it isn't already. Must set accepted_at here
     // too, not just status: the Revenue Dashboard's revenue totals and
@@ -78,7 +94,7 @@ export async function POST(
     await supabase.from('activity_logs').insert({
       lead_id     : null,
       action      : 'payment_recorded',
-      description : `Payment of ₹${Number(amount).toLocaleString('en-IN')} recorded for ${proposal.proposal_number} (${payment_mode})`,
+      description : `${isRefund ? 'Refund' : 'Payment'} of ₹${Number(amount).toLocaleString('en-IN')} recorded for ${proposal.proposal_number} (${payment_mode})`,
       performed_by: 'admin',
     }).throwOnError()
 

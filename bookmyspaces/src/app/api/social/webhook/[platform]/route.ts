@@ -19,6 +19,7 @@ import { NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSocialAdapter } from '@/lib/social/adapter-registry'
 import { ingestInteraction } from '@/lib/social/interaction-service'
+import { checkRateLimit, clientIpFrom } from '@/lib/rate-limit'
 
 export async function GET(req: Request, { params }: { params: { platform: string } }) {
   const url = new URL(req.url)
@@ -33,6 +34,11 @@ export async function GET(req: Request, { params }: { params: { platform: string
 }
 
 export async function POST(req: Request, { params }: { params: { platform: string } }) {
+  const rl = checkRateLimit(`social-webhook:${clientIpFrom(req)}`, { limit: 120, windowMs: 60_000 })
+  if (!rl.allowed) {
+    return NextResponse.json({ error: 'rate_limited' }, { status: 429, headers: { 'Retry-After': String(rl.retryAfterSeconds) } })
+  }
+
   const adapter = getSocialAdapter(params.platform)
   if (!adapter) {
     return NextResponse.json({ error: `No adapter for platform "${params.platform}"` }, { status: 404 })

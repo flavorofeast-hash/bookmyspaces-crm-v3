@@ -20,6 +20,7 @@ import { logger } from '@/lib/logger'
 import { requireRole } from '@/lib/auth-guard'
 import { parseBody, catalogCreateSchemas } from '@/lib/validation'
 import { isCatalogEntity, listCatalogRows, createCatalogRow } from '@/lib/admin/catalog-service'
+import { auditLog } from '@/lib/audit-log'
 
 export async function GET(req: Request, { params }: { params: { entity: string } }) {
   const auth = await requireRole(['admin', 'manager'])
@@ -55,5 +56,11 @@ export async function POST(req: Request, { params }: { params: { entity: string 
     logger.error('admin-catalog', `POST ${params.entity} failed`, result.error)
     return NextResponse.json({ error: result.error }, { status: 500 })
   }
+  auditLog({
+    actor: auth.user.email ?? auth.user.id,
+    action: 'catalog.create',
+    entityType: params.entity,
+    entityId: String(result.row.id ?? ''),
+  })
   return NextResponse.json({ row: result.row }, { status: 201 })
 }

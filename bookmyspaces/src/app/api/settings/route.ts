@@ -20,6 +20,7 @@ import { logger } from '@/lib/logger'
 import { requireAuth, requireRole } from '@/lib/auth-guard'
 import { parseBody, updateSettingsSchema } from '@/lib/validation'
 import { getAppSettings, saveAppSettings } from '@/lib/settings/settings-service'
+import { auditLog } from '@/lib/audit-log'
 
 export async function GET() {
   const auth = await requireAuth()
@@ -47,6 +48,12 @@ export async function PUT(req: Request) {
       logger.error('settings', 'PUT upsert failed', result.error)
       return NextResponse.json({ error: 'Failed to save settings' }, { status: 500 })
     }
+    auditLog({
+      actor: auth.user.email ?? auth.user.id,
+      action: 'settings.update',
+      entityType: 'settings',
+      detail: { sections: Object.keys(parsed.data) },
+    })
     const settings = await getAppSettings()
     return NextResponse.json({ settings })
   } catch (error) {
