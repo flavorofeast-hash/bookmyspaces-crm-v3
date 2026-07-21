@@ -251,9 +251,9 @@ export default function ReservationCalendarPage() {
           </div>
         ) : visibleItems.length === 0 ? (
           <div className="px-6 py-10 text-center text-sm text-gray-400">
-            No bookable rooms/halls found.
+            No rooms or halls have been configured yet.
             <div className="mt-1">
-              This usually means migration 012 (properties/inventory_items) hasn&apos;t been applied to the live database yet — see audit/MIGRATION_012_013_DEPLOYMENT_VALIDATION.md.
+              Add inventory_items for a property (via Supabase Table Editor or SQL) — the Reservation Calendar will show them here once configured.
             </div>
           </div>
         ) : (

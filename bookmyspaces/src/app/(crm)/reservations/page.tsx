@@ -459,7 +459,7 @@ function NewReservationModal({
             <div className="text-sm text-gray-400 flex items-center gap-2"><RefreshCw className="w-4 h-4 animate-spin" /> Loading properties…</div>
           ) : inventoryItems.length === 0 ? (
             <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
-              No bookable rooms/halls found. This usually means migration 012 (properties/inventory_items) hasn&apos;t been applied to the live database yet.
+              No rooms or halls have been configured yet. Add inventory_items for a property (via Supabase Table Editor or SQL) before creating a reservation.
             </div>
           ) : (
             <div>
