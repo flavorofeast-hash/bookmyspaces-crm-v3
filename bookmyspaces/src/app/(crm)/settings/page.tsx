@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Settings,
   Bell,
@@ -36,6 +36,8 @@ interface AISettings {
   systemLanguage: string
   autoReply: boolean
   replyDelay: number
+  confidenceThreshold: number
+  autoHandoff: boolean
 }
 
 interface NotificationSettings {
@@ -80,6 +82,8 @@ const defaultSettings: AppSettings = {
     systemLanguage: 'auto',
     autoReply: true,
     replyDelay: 0,
+    confidenceThreshold: 0.6,
+    autoHandoff: true,
   },
   notifications: {
     hotLeadAlert: true,
@@ -225,6 +229,28 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<'venue' | 'ai' | 'notifications' | 'whatsapp'>('venue')
   const [saving, setSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
+  const [loading, setLoading] = useState(true)
+
+  // Load persisted settings from the backend (V3 Phase 2a — replaces the old
+  // localStorage-only store). Defaults render immediately; saved values
+  // overwrite them when the fetch resolves.
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/settings')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((json) => {
+        if (!cancelled && json?.settings) setSettings(json.settings)
+      })
+      .catch(() => {
+        // Keep defaults; the page stays editable and Save will surface errors.
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   function updateVenue(key: keyof VenueSettings, value: string | number) {
     setSettings((prev) => ({
@@ -258,9 +284,14 @@ export default function SettingsPage() {
     setSaving(true)
     setSaveStatus('idle')
     try {
-      // Persist to localStorage as a simple client-side store
-      // Replace with API call when backend settings endpoint is ready
-      localStorage.setItem('crm_settings', JSON.stringify(settings))
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      })
+      if (!res.ok) throw new Error(`save failed: ${res.status}`)
+      const json = await res.json()
+      if (json?.settings) setSettings(json.settings)
       setSaveStatus('success')
       setTimeout(() => setSaveStatus('idle'), 3000)
     } catch {
@@ -483,11 +514,32 @@ export default function SettingsPage() {
                   max={30}
                 />
               </Field>
+              <Field
+                label="Human Handoff Confidence"
+                hint="Below this confidence the AI escalates the conversation to a human"
+              >
+                <select
+                  value={String(settings.ai.confidenceThreshold)}
+                  onChange={(e) => updateAI('confidenceThreshold', Number(e.target.value))}
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="0.4">Low (0.40) — escalate rarely</option>
+                  <option value="0.5">Balanced (0.50)</option>
+                  <option value="0.6">Standard (0.60) — recommended</option>
+                  <option value="0.7">Cautious (0.70)</option>
+                  <option value="0.8">Strict (0.80) — escalate often</option>
+                </select>
+              </Field>
               <div className="md:col-span-2 border-t border-gray-100 pt-4 space-y-1">
                 <Toggle
                   checked={settings.ai.autoReply}
                   onChange={(v) => updateAI('autoReply', v)}
                   label="Enable automatic AI replies"
+                />
+                <Toggle
+                  checked={settings.ai.autoHandoff}
+                  onChange={(v) => updateAI('autoHandoff', v)}
+                  label="Automatically hand off to a human when AI confidence is low"
                 />
               </div>
             </div>

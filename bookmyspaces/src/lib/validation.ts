@@ -153,3 +153,175 @@ export const operatorAssistActionSchema = z.object({
   ]),
   conversationId: uuid.nullish(),
 })
+
+// ─── Settings (V3 Phase 2a — Settings backend) ─────────────────────────────
+// Shape mirrors src/lib/settings/settings-service.ts's AppSettings. .strict()
+// on every section: unknown keys are rejected (400), not silently dropped —
+// same mass-assignment reasoning as updateLeadSchema above.
+
+const venueSettingsSchema = z.object({
+  venueName       : z.string().trim().min(1).max(200),
+  phone           : z.string().trim().max(20),
+  email           : z.string().trim().email().or(z.literal('')),
+  website         : z.string().trim().max(300),
+  address         : z.string().trim().max(500),
+  standardCapacity: z.number().int().nonnegative().max(100000),
+  hallCapacity    : z.number().int().nonnegative().max(100000),
+  currency        : z.string().trim().min(1).max(10),
+}).strict()
+
+const aiSettingsSchema = z.object({
+  model              : z.string().trim().min(1).max(100),
+  maxTokens          : z.number().int().positive().max(100000),
+  temperature        : z.number().min(0).max(2),
+  systemLanguage     : z.string().trim().max(20),
+  autoReply          : z.boolean(),
+  replyDelay         : z.number().int().nonnegative().max(3600),
+  confidenceThreshold: z.number().min(0).max(1),
+  autoHandoff        : z.boolean(),
+}).strict()
+
+const notificationSettingsSchema = z.object({
+  hotLeadAlert    : z.boolean(),
+  newInquiryAlert : z.boolean(),
+  followUpReminder: z.boolean(),
+  dailySummary    : z.boolean(),
+  adminEmail      : z.string().trim().email().or(z.literal('')),
+}).strict()
+
+const whatsappSettingsSchema = z.object({
+  verifyToken   : z.string().trim().max(200),
+  phoneNumberId : z.string().trim().max(100),
+  accessTokenSet: z.boolean(),
+  webhookUrl    : z.string().trim().max(500),
+}).strict()
+
+export const updateSettingsSchema = z.object({
+  venue        : venueSettingsSchema.optional(),
+  ai           : aiSettingsSchema.optional(),
+  notifications: notificationSettingsSchema.optional(),
+  whatsapp     : whatsappSettingsSchema.optional(),
+}).strict()
+
+// ─── Admin catalog (V3 Phase 2b — Admin CRUD) ──────────────────────────────
+// One create + one update schema per catalog entity. Field names are the DB
+// column names (this is an admin-facing API; no camelCase mapping layer).
+// .strict() everywhere — unknown columns are a 400, never silently dropped.
+
+const money = z.number().nonnegative().max(99999999)
+
+export const createPropertySchema = z.object({
+  name           : z.string().trim().min(1).max(200),
+  slug           : z.string().trim().min(1).max(100).regex(/^[a-z0-9-]+$/, 'lowercase letters, digits and hyphens only'),
+  address        : z.string().trim().max(500).nullish(),
+  city           : z.string().trim().max(100).nullish(),
+  gst_number     : z.string().trim().max(30).nullish(),
+  google_maps_url: z.string().trim().max(500).nullish(),
+  contact_phone  : z.string().trim().max(20).nullish(),
+  contact_email  : z.string().trim().email().nullish().or(z.literal('')),
+  amenities      : z.array(z.string().trim().max(100)).max(100).nullish(),
+  images         : z.array(z.string().trim().max(500)).max(100).nullish(),
+  policies       : z.string().trim().max(5000).nullish(),
+  business_hours : z.record(z.unknown()).nullish(),
+  is_active      : z.boolean().optional(),
+}).strict()
+
+export const updatePropertySchema = createPropertySchema.partial()
+
+const inventoryTypeEnum = z.enum([
+  'room', 'suite', 'apartment', 'banquet_hall', 'conference_hall',
+  'rooftop', 'restaurant_event_area', 'wedding_venue', 'birthday_venue', 'meeting_room',
+])
+
+export const createInventoryItemSchema = z.object({
+  property_id   : uuid,
+  inventory_type: inventoryTypeEnum,
+  name          : z.string().trim().min(1).max(200),
+  description   : z.string().trim().max(2000).nullish(),
+  max_occupancy : z.number().int().positive().max(10000).nullish(),
+  base_capacity : z.number().int().positive().max(10000).nullish(),
+  is_active     : z.boolean().optional(),
+}).strict()
+
+export const updateInventoryItemSchema = createInventoryItemSchema.partial()
+
+export const createMealPlanSchema = z.object({
+  property_id: uuid,
+  code       : z.enum(['room_only', 'breakfast', 'map', 'ap']),
+  name       : z.string().trim().min(1).max(200),
+  description: z.string().trim().max(2000).nullish(),
+  price      : money,
+  is_active  : z.boolean().optional(),
+}).strict()
+
+export const updateMealPlanSchema = createMealPlanSchema.partial()
+
+export const createRatePlanSchema = z.object({
+  inventory_item_id: uuid,
+  rate_type        : z.enum(['base', 'weekend', 'seasonal', 'festival', 'holiday', 'corporate', 'ota', 'promotional']),
+  start_date       : isoDate.nullish(),
+  end_date         : isoDate.nullish(),
+  price            : money,
+  priority         : z.number().int().min(0).max(1000).optional(),
+  is_active        : z.boolean().optional(),
+}).strict().refine(
+  (v) => !v.start_date || !v.end_date || v.end_date >= v.start_date,
+  { message: 'end_date must be on or after start_date', path: ['end_date'] }
+)
+
+export const updateRatePlanSchema = z.object({
+  inventory_item_id: uuid.optional(),
+  rate_type        : z.enum(['base', 'weekend', 'seasonal', 'festival', 'holiday', 'corporate', 'ota', 'promotional']).optional(),
+  start_date       : isoDate.nullish(),
+  end_date         : isoDate.nullish(),
+  price            : money.optional(),
+  priority         : z.number().int().min(0).max(1000).optional(),
+  is_active        : z.boolean().optional(),
+}).strict()
+
+export const createAddonServiceSchema = z.object({
+  property_id: uuid,
+  name       : z.string().trim().min(1).max(200),
+  category   : z.string().trim().max(100).nullish(),
+  price      : money,
+  is_active  : z.boolean().optional(),
+}).strict()
+
+export const updateAddonServiceSchema = createAddonServiceSchema.partial()
+
+// Entity → schema lookup used by the /api/admin/catalog/[entity] routes.
+export const catalogCreateSchemas = {
+  'properties'     : createPropertySchema,
+  'inventory-items': createInventoryItemSchema,
+  'meal-plans'     : createMealPlanSchema,
+  'rate-plans'     : createRatePlanSchema,
+  'addon-services' : createAddonServiceSchema,
+} as const
+
+export const catalogUpdateSchemas = {
+  'properties'     : updatePropertySchema,
+  'inventory-items': updateInventoryItemSchema,
+  'meal-plans'     : updateMealPlanSchema,
+  'rate-plans'     : updateRatePlanSchema,
+  'addon-services' : updateAddonServiceSchema,
+} as const
+
+// ─── Knowledge sources + AI prompts (V3 Phase 2c) ──────────────────────────
+
+export const createKnowledgeSourceSchema = z.object({
+  category: z.string().trim().min(1).max(100),
+  title   : z.string().trim().min(1).max(300),
+  content : z.string().trim().min(1).max(20000),
+}).strict()
+
+export const updateKnowledgeSourceSchema = z.object({
+  category : z.string().trim().min(1).max(100).optional(),
+  title    : z.string().trim().min(1).max(300).optional(),
+  content  : z.string().trim().min(1).max(20000).optional(),
+  is_active: z.boolean().optional(),
+}).strict()
+
+export const createPromptVersionSchema = z.object({
+  name           : z.string().trim().min(1).max(100).regex(/^[a-z0-9_.-]+$/, 'lowercase letters, digits, _ . - only'),
+  prompt_template: z.string().trim().min(1).max(50000),
+}).strict()
