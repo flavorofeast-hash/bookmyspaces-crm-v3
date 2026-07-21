@@ -17,6 +17,7 @@ import { getOrCreateConversation } from '@/lib/whatsapp/conversation-manager'
 import { processAutoResponse } from '@/lib/whatsapp/auto-responder'
 import { MessageDirection, MessageStatus, SourceChannel } from '@/constants/conversation-states'
 import type { WAInboundMessage, WAContact, ProcessInboundResult } from '@/types/whatsapp'
+import { mirrorWhatsAppInbound } from '@/lib/conversations/whatsapp-unified-sync'
 
 export async function processInboundMessage(
   message: WAInboundMessage,
@@ -112,6 +113,20 @@ export async function processInboundMessage(
     .from('leads')
     .update({ last_contacted_at: new Date().toISOString() })
     .eq('id', lead.id)
+
+  // ── 6.5 Mirror into the Unified Conversation Platform (V3 Phase 3) ───────
+  // Additive alongside the whatsapp_* writes above, which stay canonical
+  // for the live WhatsApp UI until cutover. Fire-and-forget: a mirror
+  // failure (e.g. migration 012 not applied) never breaks the webhook.
+  mirrorWhatsAppInbound({
+    phone,
+    leadId: lead.id,
+    text,
+    wamid,
+    rawPayload,
+  }).catch(err => {
+    console.error(`[WA Inbound] unified mirror failed (non-fatal) for ${wamid}:`, err)
+  })
 
   // ── 7. Trigger auto-response ──────────────────────────────────────────────
   let responsesSent = 0

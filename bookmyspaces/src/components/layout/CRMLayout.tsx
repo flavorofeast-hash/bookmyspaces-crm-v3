@@ -14,6 +14,7 @@ const links = [
   { href: '/dashboard/revenue', label: 'Revenue' },
   { href: '/dashboard/operations', label: 'Operations' },
   { href: '/customers', label: 'Customers' },
+  { href: '/inbox', label: 'Inbox' },
   { href: '/reservations', label: 'Reservations' },
   { href: '/whatsapp', label: 'WhatsApp' },
   { href: '/proposals', label: 'Proposals' },

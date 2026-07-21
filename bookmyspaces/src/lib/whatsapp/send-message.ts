@@ -2,6 +2,7 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { MessageDirection, MessageStatus, SourceChannel } from '@/constants/conversation-states'
 import { normalizePhone } from './normalize-phone'
 import { isMetaConfigured } from './meta-configured'
+import { mirrorWhatsAppOutbound } from '@/lib/conversations/whatsapp-unified-sync'
 import type {
   WASendTextRequest,
   WASendTemplateRequest,
@@ -52,6 +53,12 @@ export async function sendWhatsAppText(
     conversationId?: string | null
     conversationState?: string | null
     sourceChannel?: SourceChannel
+    /**
+     * V3 Phase 3 — Unified Conversation Platform mirror. 'ai' (default) or
+     * 'human' records this outbound send in unified_messages; null skips
+     * (used by the Unified Inbox dispatcher, which records first itself).
+     */
+    unifiedMirror?: 'ai' | 'human' | null
   } = {}
 ): Promise<SendMessageResult> {
   if (!isMetaConfigured()) {
@@ -104,6 +111,21 @@ export async function sendWhatsAppText(
             whatsapp_message_id: waMessageId,
           })
           .eq('id', logId)
+      }
+
+      // V3 Phase 3 — mirror into the Unified Conversation Platform.
+      // Fire-and-forget, never fatal (same contract as the website-chat
+      // mirror in api/chat/route.ts): a mirror failure must not fail a
+      // send that already succeeded.
+      if (opts.unifiedMirror !== null) {
+        mirrorWhatsAppOutbound({
+          phone: to,
+          text: body,
+          senderType: opts.unifiedMirror ?? 'ai',
+          externalMessageId: waMessageId,
+        }).catch(err2 => {
+          console.error('[WA Send] unified mirror failed (non-fatal):', err2)
+        })
       }
 
       return { success: true, waMessageId: waMessageId ?? undefined }
