@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { toast } from 'sonner'
 import Link from 'next/link'
 import {
   FileText, Send, Eye, Clock, CheckCircle2, XCircle,
@@ -408,6 +409,24 @@ function FinanceModal({proposal, onClose}:{proposal:ProposalWithLead; onClose:()
   const [payments,     setPayments]     = useState<PaymentRecord[]>([])
   const [loading,      setLoading]      = useState(true)
   const [error,        setError]        = useState<string|null>(null)
+  // Task 1 (proposal email actions): which email action is in flight —
+  // 'invoice/email' | 'booking-confirmation' | 'payment-reminder' | null.
+  // One at a time; all three buttons disable while any send runs.
+  const [emailAction,  setEmailAction]  = useState<string|null>(null)
+
+  async function sendEmailAction(kind:'invoice/email'|'booking-confirmation'|'payment-reminder', label:string) {
+    setEmailAction(kind)
+    try {
+      const res  = await fetch(`/api/proposals/${proposal.id}/${kind}`, { method:'POST' })
+      const data = await res.json().catch(()=>({}))
+      if (!res.ok) throw new Error(data?.error || `Failed (${res.status})`)
+      toast.success(`${label} sent${data?.sent_to ? ` to ${data.sent_to}` : ''}.`)
+    } catch (err) {
+      toast.error(`Could not send ${label.toLowerCase()}: ${err instanceof Error ? err.message : 'unknown error'}`)
+    } finally {
+      setEmailAction(null)
+    }
+  }
 
   useEffect(()=>{
     setLoading(true)
@@ -583,6 +602,69 @@ function FinanceModal({proposal, onClose}:{proposal:ProposalWithLead; onClose:()
               </div>
             </div>
           )}
+        </div>
+
+        {/* Email actions — Task 1: wire the three existing email APIs
+            (invoice/email, booking-confirmation, payment-reminder) */}
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest">Email Documents</p>
+
+          <button
+            onClick={()=>sendEmailAction('invoice/email','Invoice')}
+            disabled={emailAction!==null}
+            className="w-full flex items-center justify-between px-4 py-3 bg-violet-50 border border-violet-200 rounded-xl hover:bg-violet-100 transition-colors group disabled:opacity-60 disabled:cursor-not-allowed">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-violet-100 rounded-lg group-hover:bg-violet-200 transition-colors">
+                {emailAction==='invoice/email'
+                  ? <Loader2 className="w-4 h-4 text-violet-700 animate-spin"/>
+                  : <Receipt className="w-4 h-4 text-violet-700"/>}
+              </div>
+              <div className="text-left">
+                <p className="text-sm font-bold text-violet-900">{emailAction==='invoice/email' ? 'Sending Invoice…' : 'Send Invoice'}</p>
+                <p className="text-xs text-violet-600 mt-0.5">Emails the latest invoice to the customer</p>
+              </div>
+            </div>
+            <Mail className="w-4 h-4 text-violet-500"/>
+          </button>
+
+          <button
+            onClick={()=>sendEmailAction('booking-confirmation','Booking confirmation')}
+            disabled={emailAction!==null}
+            className="w-full flex items-center justify-between px-4 py-3 bg-emerald-50 border border-emerald-200 rounded-xl hover:bg-emerald-100 transition-colors group disabled:opacity-60 disabled:cursor-not-allowed">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-emerald-100 rounded-lg group-hover:bg-emerald-200 transition-colors">
+                {emailAction==='booking-confirmation'
+                  ? <Loader2 className="w-4 h-4 text-emerald-700 animate-spin"/>
+                  : <CheckCircle2 className="w-4 h-4 text-emerald-700"/>}
+              </div>
+              <div className="text-left">
+                <p className="text-sm font-bold text-emerald-900">{emailAction==='booking-confirmation' ? 'Sending Confirmation…' : 'Send Booking Confirmation'}</p>
+                <p className="text-xs text-emerald-600 mt-0.5">Emails the booking confirmation to the customer</p>
+              </div>
+            </div>
+            <Mail className="w-4 h-4 text-emerald-500"/>
+          </button>
+
+          <button
+            onClick={()=>sendEmailAction('payment-reminder','Payment reminder')}
+            disabled={emailAction!==null || isFullyPaid}
+            title={isFullyPaid ? 'No outstanding balance — reminder not applicable' : undefined}
+            className="w-full flex items-center justify-between px-4 py-3 bg-orange-50 border border-orange-200 rounded-xl hover:bg-orange-100 transition-colors group disabled:opacity-60 disabled:cursor-not-allowed">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-orange-100 rounded-lg group-hover:bg-orange-200 transition-colors">
+                {emailAction==='payment-reminder'
+                  ? <Loader2 className="w-4 h-4 text-orange-700 animate-spin"/>
+                  : <Wallet className="w-4 h-4 text-orange-700"/>}
+              </div>
+              <div className="text-left">
+                <p className="text-sm font-bold text-orange-900">{emailAction==='payment-reminder' ? 'Sending Reminder…' : 'Send Payment Reminder'}</p>
+                <p className="text-xs text-orange-600 mt-0.5">
+                  {isFullyPaid ? 'Fully settled — nothing due' : <>Reminds the customer of the <strong>{fmtINRFull(balanceDue)}</strong> balance due</>}
+                </p>
+              </div>
+            </div>
+            <Mail className="w-4 h-4 text-orange-500"/>
+          </button>
         </div>
 
       </div>
