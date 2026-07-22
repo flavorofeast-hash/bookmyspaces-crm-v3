@@ -325,3 +325,31 @@ export const createPromptVersionSchema = z.object({
   name           : z.string().trim().min(1).max(100).regex(/^[a-z0-9_.-]+$/, 'lowercase letters, digits, _ . - only'),
   prompt_template: z.string().trim().min(1).max(50000),
 }).strict()
+
+// ─── Social posts (Step 2.2 — social_posts API, list/create only) ──────────
+
+const socialPlatformEnum = z.enum([
+  'facebook', 'instagram', 'linkedin', 'google_business', 'x', 'youtube', 'threads',
+])
+
+export const createSocialPostSchema = z.object({
+  platform    : socialPlatformEnum,
+  post_type   : z.enum(['text', 'image', 'carousel', 'video', 'reel', 'story']),
+  content     : z.string().trim().max(10000).nullish(),
+  media       : z.array(z.object({
+    url : z.string().trim().min(1).max(1000),
+    type: z.string().trim().min(1).max(50),
+    alt : z.string().trim().max(500).optional(),
+  }).strict()).max(20).optional(),
+  hashtags    : z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+  account_id  : uuid.nullish(),
+  scheduled_at: z.string().datetime({ offset: true, message: 'must be an ISO 8601 datetime' }).nullish(),
+}).strict()
+  .refine(
+    (v) => (v.content && v.content.length > 0) || (v.media && v.media.length > 0),
+    { message: 'Post needs content text and/or at least one media item', path: ['content'] }
+  )
+  .refine(
+    (v) => !v.scheduled_at || new Date(v.scheduled_at).getTime() > Date.now(),
+    { message: 'scheduled_at must be in the future', path: ['scheduled_at'] }
+  )
