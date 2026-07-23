@@ -8,6 +8,14 @@ vi.mock('@/lib/reservations/reservation-workflow', () => ({
   calculatePrice: mocks.calculatePrice,
 }))
 
+const mockResolved = {
+  value: null as { leadId: string; name: string | null; phone: string | null; email: string | null; matchedOn: 'phone' | 'email'; hasConflictingIdentifier: boolean } | null,
+}
+
+vi.mock('@/lib/identity/resolve-identity', () => ({
+  resolveIdentity: vi.fn(() => Promise.resolve(mockResolved.value)),
+}))
+
 const state = {
   updateResult: null as Record<string, unknown> | null,
   updateError: null as { message: string } | null,
@@ -38,7 +46,8 @@ vi.mock('@/lib/supabase', () => ({
   }),
 }))
 
-import { linkProposalToReservation, createProposalFromReservation } from './proposal-service'
+import { linkProposalToReservation, createProposalFromReservation, ensureLeadForProposal } from './proposal-service'
+import { resolveIdentity } from '@/lib/identity/resolve-identity'
 
 function resetState() {
   state.updateResult = null
@@ -126,5 +135,100 @@ describe('createProposalFromReservation', () => {
     const result = await createProposalFromReservation(baseInput)
 
     expect(result).toEqual({ ok: false, error: 'db_error', message: 'insert failed' })
+  })
+})
+
+
+// ─── ensureLeadForProposal (fix/customer-proposal-sync) ────────────────────
+// Uses the same @/lib/supabase mock as the describe blocks above (its
+// insert() stub isn't table-scoped, so it fits ensureLeadForProposal's
+// insert('leads') call unmodified) plus a dedicated resolveIdentity mock.
+// resolveIdentity's own internals are unit-tested separately in
+// resolve-identity.test.ts — mocked here at the call boundary, matching
+// this project's existing one-layer-down mocking convention.
+
+describe('ensureLeadForProposal', () => {
+  beforeEach(() => {
+    resetState()
+    mockResolved.value = null
+    vi.mocked(resolveIdentity).mockClear()
+  })
+
+  it('matches an existing lead by phone and does not create a new one', async () => {
+    mockResolved.value = {
+      leadId: 'existing-1', name: 'Rajib', phone: '919830509991', email: null,
+      matchedOn: 'phone', hasConflictingIdentifier: false,
+    }
+
+    const result = await ensureLeadForProposal({ name: 'Rajib Chakraborty', phone: '9830509991' })
+
+    expect(result).toEqual({ leadId: 'existing-1', created: false, matchedOn: 'phone' })
+    expect(state.lastInsertPayload).toBeNull() // no insert attempted
+  })
+
+  it('matches an existing lead by email and does not create a new one', async () => {
+    mockResolved.value = {
+      leadId: 'existing-2', name: 'Amit', phone: null, email: 'amit@example.com',
+      matchedOn: 'email', hasConflictingIdentifier: false,
+    }
+
+    const result = await ensureLeadForProposal({ name: 'Amit', email: 'amit@example.com' })
+
+    expect(result).toEqual({ leadId: 'existing-2', created: false, matchedOn: 'email' })
+    expect(state.lastInsertPayload).toBeNull()
+  })
+
+  it('creates a minimal lead when no phone/email match is found', async () => {
+    mockResolved.value = null // no match
+    state.insertResult = { id: 'new-lead-1' }
+
+    const result = await ensureLeadForProposal({ name: 'Sneha', phone: '9051459463' })
+
+    expect(result).toEqual({ leadId: 'new-lead-1', created: true, matchedOn: null })
+    expect(state.lastInsertPayload).toMatchObject({
+      name: 'Sneha',
+      phone: '919051459463', // canonicalized by normalizePhone
+      email: null,
+      source: 'proposal',
+      status: 'new_inquiry',
+    })
+  })
+
+  it('creates a minimal lead from email alone when no phone is given', async () => {
+    mockResolved.value = null
+    state.insertResult = { id: 'new-lead-2' }
+
+    const result = await ensureLeadForProposal({ name: 'Sneha', email: 'Sneha@Example.com' })
+
+    expect(result?.created).toBe(true)
+    expect(state.lastInsertPayload).toMatchObject({ email: 'sneha@example.com', phone: null })
+  })
+
+  it('skips identity resolution entirely when neither phone nor email is given, and still creates a name-only lead', async () => {
+    state.insertResult = { id: 'new-lead-3' }
+
+    const result = await ensureLeadForProposal({ name: 'Walk-in Customer' })
+
+    expect(resolveIdentity).not.toHaveBeenCalled()
+    expect(result?.created).toBe(true)
+    expect(state.lastInsertPayload).toMatchObject({ name: 'Walk-in Customer', phone: null, email: null })
+  })
+
+  it('fails open (returns null, never throws) when the insert errors', async () => {
+    mockResolved.value = null
+    state.insertResult = null
+    state.insertError = { message: 'insert denied' }
+
+    const result = await ensureLeadForProposal({ name: 'Sneha', phone: '9051459463' })
+
+    expect(result).toBeNull()
+  })
+
+  it('fails open when resolveIdentity itself throws', async () => {
+    vi.mocked(resolveIdentity).mockRejectedValueOnce(new Error('db down'))
+
+    const result = await ensureLeadForProposal({ name: 'Sneha', phone: '9051459463' })
+
+    expect(result).toBeNull()
   })
 })
