@@ -92,7 +92,10 @@ export default function LeadImportPage() {
   };
 
   const downloadTemplate = () => {
-    const csv = `Name,Phone,Email,Company,Source,Notes\nJohn Doe,9876543210,john@example.com,Acme Corp,referral,Interested in conference room\nJane Smith,+919123456789,,,,Follow up next week`;
+    // Column order matches excel-parser.ts's valid.push() field order:
+    // name, phone, email, company, source, notes, city, state, country,
+    // address, date_of_visit, birthday, anniversary, preferred_channel.
+    const csv = `Name,Phone,Email,Company,Source,Notes,City,State,Country,Address,Date of Visit,Birthday,Anniversary,Preferred Channel\nJohn Doe,9876543210,john@example.com,Acme Corp,referral,Interested in conference room,Mumbai,Maharashtra,India,123 MG Road,2026-08-15,1990-05-20,2015-11-10,whatsapp\nJane Smith,+919123456789,,,,Follow up next week,,,,,,,,`;
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -193,6 +196,14 @@ export default function LeadImportPage() {
               { col: 'Company', req: false, note: 'Optional' },
               { col: 'Source', req: false, note: 'Defaults to excel_import' },
               { col: 'Notes', req: false, note: 'Optional remarks' },
+              { col: 'City', req: false, note: 'Optional' },
+              { col: 'State', req: false, note: 'Optional' },
+              { col: 'Country', req: false, note: 'Optional' },
+              { col: 'Address', req: false, note: 'Optional' },
+              { col: 'Date of Visit', req: false, note: 'Optional, e.g. 2026-08-15' },
+              { col: 'Birthday', req: false, note: 'Optional, e.g. 1990-05-20' },
+              { col: 'Anniversary', req: false, note: 'Optional, e.g. 2015-11-10' },
+              { col: 'Preferred Channel', req: false, note: 'Optional' },
             ].map(({ col, req, note }) => (
               <div key={col} className="flex items-start gap-2 text-xs">
                 <span className={`mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${req ? 'bg-emerald-400' : 'bg-white/20'}`} />

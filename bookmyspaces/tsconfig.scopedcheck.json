@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "incremental": false },
+  "include": ["next-env.d.ts", "src/app/api/leads/import/route.ts", "src/lib/excel-parser.ts", "src/lib/supabase-server.ts", "src/app/(crm)/dashboard/leads/import/page.tsx"]
+}

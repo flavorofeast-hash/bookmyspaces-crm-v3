@@ -12,6 +12,18 @@ export interface RawLeadRow {
   company?: string;
   source?: string;
   notes?: string;
+  // Migration 018 fields — all optional, all plain strings at this layer.
+  // No format validation is applied here (matches the existing, already-
+  // permissive handling of date-ish/free-text fields elsewhere in this
+  // parser); Postgres itself validates DATE-typed values on insert.
+  city?: string;
+  state?: string;
+  country?: string;
+  address?: string;
+  date_of_visit?: string;
+  birthday?: string;
+  anniversary?: string;
+  preferred_channel?: string;
   [key: string]: string | undefined;
 }
 
@@ -22,6 +34,15 @@ export interface ParsedLead {
   company: string | null;
   source: string;
   notes: string | null;
+  // Migration 018 fields — optional, additive. See RawLeadRow above.
+  city: string | null;
+  state: string | null;
+  country: string | null;
+  address: string | null;
+  date_of_visit: string | null;
+  birthday: string | null;
+  anniversary: string | null;
+  preferred_channel: string | null;
 }
 
 export interface ParseResult {
@@ -62,6 +83,17 @@ function mapHeaders(rawRow: Record<string, unknown>): RawLeadRow {
     'company': 'company', 'organization': 'company', 'org': 'company', 'business': 'company',
     'source': 'source', 'lead source': 'source', 'channel': 'source',
     'notes': 'notes', 'note': 'notes', 'remarks': 'notes', 'comments': 'notes',
+    // Migration 018 fields. 'channel' above stays mapped to 'source' (existing
+    // behavior, unchanged) — preferred_channel uses its own, non-colliding
+    // header names only.
+    'city': 'city',
+    'state': 'state', 'province': 'state',
+    'country': 'country',
+    'address': 'address', 'street address': 'address',
+    'date of visit': 'date_of_visit', 'visit date': 'date_of_visit', 'date_of_visit': 'date_of_visit',
+    'birthday': 'birthday', 'date of birth': 'birthday', 'dob': 'birthday',
+    'anniversary': 'anniversary',
+    'preferred channel': 'preferred_channel', 'preferred_channel': 'preferred_channel',
   };
 
   for (const [key, value] of Object.entries(rawRow)) {
@@ -118,6 +150,14 @@ export function parseExcelBuffer(buffer: ArrayBuffer): ParseResult {
         company: row.company || null,
         source: row.source || 'excel_import',
         notes: row.notes || null,
+        city: row.city || null,
+        state: row.state || null,
+        country: row.country || null,
+        address: row.address || null,
+        date_of_visit: row.date_of_visit || null,
+        birthday: row.birthday || null,
+        anniversary: row.anniversary || null,
+        preferred_channel: row.preferred_channel || null,
       });
     }
   });
