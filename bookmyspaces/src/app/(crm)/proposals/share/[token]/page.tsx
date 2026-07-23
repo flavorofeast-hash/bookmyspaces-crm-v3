@@ -1,8 +1,6 @@
 import Link from "next/link"
 import { notFound } from "next/navigation"
-import { getSupabase } from "@/lib/supabase"
-
-const supabase = getSupabase()
+import { getSupabaseAdmin } from "@/lib/supabase"
 
 export const dynamic = "force-dynamic"
 
@@ -13,6 +11,19 @@ interface Props {
 }
 
 async function getProposal(token: string) {
+  // Created lazily, inside the request-time function — not at module scope.
+  // getSupabaseAdmin() reads SUPABASE_SERVICE_ROLE_KEY (server-only, never
+  // exposed to the browser), matching how every other Server Component/API
+  // route in this codebase reads `leads`/`proposals`. This page has no auth
+  // check by design — the unguessable share_token in the URL is the access
+  // control, not RLS — so the previous anon/browser client (getSupabase(),
+  // NEXT_PUBLIC_SUPABASE_ANON_KEY) was both the wrong client for a
+  // server-only read and, being constructed at module scope, ran during
+  // Next's build-time "Collecting page data" step rather than at an actual
+  // request — see the explanation delivered alongside this fix for why
+  // `export const dynamic = "force-dynamic"` alone did not prevent that.
+  const supabase = getSupabaseAdmin()
+
   const { data, error } = await supabase
     .from("proposals")
     .select("*")

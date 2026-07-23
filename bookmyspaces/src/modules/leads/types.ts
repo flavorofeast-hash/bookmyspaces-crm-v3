@@ -51,6 +51,20 @@ export interface Lead {
   phone               : string | null;
   email               : string | null;
 
+  // Migration 018 — Customer Bulk Import fields (verified deployed to
+  // production). Additive, all nullable. See
+  // audit/RELEASE_NOTES_CUSTOMER_BULK_IMPORT.md.
+  company             : string | null;
+  city                : string | null;
+  state               : string | null;
+  country             : string | null;
+  address             : string | null;
+  date_of_visit       : string | null;
+  birthday            : string | null;
+  anniversary         : string | null;
+  preferred_channel   : string | null;
+  imported_via_import_id: string | null;
+
   // Event
   event_type          : string | null;
   event_date          : string | null;
@@ -171,4 +185,43 @@ export interface DashboardSummary {
   confirmed_revenue   : number;
   conversion_rate     : number;
   pipeline            : PipelineStat[];
+}
+
+// ─── Stage display (shared) ────────────────────────────────────────────────
+// Extracted from kanban/page.tsx's existing STAGE_PIPELINE/STATUS_TO_STAGE —
+// values copied verbatim (not redesigned) so every screen that shows a stage
+// badge (Kanban, Customers, Lead Management) renders it identically. Kanban's
+// own local copy is left as-is (out of scope to touch here); new screens
+// should import from here rather than redeclaring these tables again.
+
+export const STAGE_PIPELINE: Array<{ stage: LeadStage; label: string; color: string; bg: string }> = [
+  { stage: 'NEW',             label: 'New Inquiry',    color: '#2563eb', bg: '#eff6ff' },
+  { stage: 'CONTACTED',       label: 'Contacted',      color: '#0891b2', bg: '#ecfeff' },
+  { stage: 'QUALIFIED',       label: 'Qualified',      color: '#4f46e5', bg: '#eef2ff' },
+  { stage: 'NEGOTIATING',     label: 'Negotiation',    color: '#ea580c', bg: '#fff7ed' },
+  { stage: 'PROPOSAL_SENT',   label: 'Proposal Sent',  color: '#7c3aed', bg: '#f5f3ff' },
+  { stage: 'VISIT_SCHEDULED', label: 'Visit Scheduled',color: '#d97706', bg: '#fffbeb' },
+  { stage: 'CONFIRMED',       label: 'Confirmed ✓',    color: '#16a34a', bg: '#f0fdf4' },
+  { stage: 'LOST',            label: 'Lost',           color: '#4b5563', bg: '#f9fafb' },
+]
+
+// Bootstrap mapping for leads not yet migrated to lead_stage — mirrors
+// kanban/page.tsx's STATUS_TO_STAGE exactly; used only to decide how to
+// *display* an unmigrated lead's stage, never written back implicitly.
+export const STATUS_TO_STAGE: Record<string, LeadStage> = {
+  new_inquiry     : 'NEW',
+  new             : 'NEW',
+  followup_pending: 'CONTACTED',
+  proposal_sent   : 'PROPOSAL_SENT',
+  negotiation     : 'NEGOTIATING',
+  confirmed       : 'CONFIRMED',
+  rejected        : 'LOST',
+  future_prospect : 'NEW',
+}
+
+export function effectiveStage(lead: { lead_stage?: string | null; status?: string | null }): LeadStage {
+  if (lead.lead_stage && (LEAD_STAGES as readonly string[]).includes(lead.lead_stage)) {
+    return lead.lead_stage as LeadStage
+  }
+  return STATUS_TO_STAGE[lead.status ?? ''] ?? 'NEW'
 }
