@@ -23,6 +23,9 @@
 
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { calculatePrice } from '@/lib/reservations/reservation-workflow'
+import { resolveIdentity } from '@/lib/identity/resolve-identity'
+import { normalizePhone } from '@/lib/whatsapp/normalize-phone'
+import { logger } from '@/lib/logger'
 
 export interface ProposalReservationLinks {
   propertyId?: string | null
@@ -133,4 +136,71 @@ export async function createProposalFromReservation(
   }
 
   return { ok: true, proposalId: data.id, proposalNumber: data.proposal_number, totalPrice }
+}
+
+
+// ─── ensureLeadForProposal (fix/customer-proposal-sync) ─────────────────────
+// ROOT CAUSE this addresses: POST /api/proposals accepted lead_id: null and
+// created "orphan" proposals carrying only free-text client_* columns. The
+// Customers module IS the leads table (Product Owner decision 2026-07-13,
+// migration 012 header) — so an orphan proposal's customer is invisible in
+// Customers, and email sends fail when client_email was also left blank.
+//
+// This function guarantees every proposal gets a lead: resolve an existing
+// lead by phone/email via the standard resolver (same canonical phone
+// normalization as every other channel), else create a minimal lead from
+// the proposal's client fields. Returns null ONLY on unexpected DB failure —
+// callers degrade to the old lead_id:null behavior rather than blocking
+// proposal creation (a proposal without a customer link beats no proposal).
+
+export interface EnsureLeadForProposalInput {
+  name: string
+  phone?: string | null
+  email?: string | null
+}
+
+export interface EnsureLeadForProposalResult {
+  leadId: string
+  created: boolean
+  matchedOn: 'phone' | 'email' | null
+}
+
+export async function ensureLeadForProposal(
+  input: EnsureLeadForProposalInput
+): Promise<EnsureLeadForProposalResult | null> {
+  try {
+    // 1. Try to match an existing lead on phone/email (canonicalized).
+    if (input.phone?.trim() || input.email?.trim()) {
+      const identity = await resolveIdentity({
+        phone: input.phone ?? undefined,
+        email: input.email ?? undefined,
+      })
+      if (identity) {
+        return { leadId: identity.leadId, created: false, matchedOn: identity.matchedOn }
+      }
+    }
+
+    // 2. No match — create a minimal lead so the customer exists in the CRM.
+    const supabase = getSupabaseAdmin()
+    const { data, error } = await supabase
+      .from('leads')
+      .insert({
+        name  : input.name.trim() || null,
+        phone : input.phone?.trim() ? normalizePhone(input.phone) : null,
+        email : input.email?.trim() ? input.email.trim().toLowerCase() : null,
+        source: 'proposal',
+        status: 'new_inquiry',
+      })
+      .select('id')
+      .single()
+
+    if (error || !data?.id) {
+      logger.error('proposal-service', 'ensureLeadForProposal insert failed', error)
+      return null
+    }
+    return { leadId: data.id, created: true, matchedOn: null }
+  } catch (err) {
+    logger.error('proposal-service', 'ensureLeadForProposal threw', err)
+    return null
+  }
 }
