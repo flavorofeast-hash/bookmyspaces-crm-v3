@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerAuthClient } from '@/lib/supabase-server';
 import { parseExcelBuffer, ParsedLead } from '@/lib/excel-parser';
 import { auditLog } from '@/lib/audit-log';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
@@ -89,6 +90,18 @@ const supabase = createServerAuthClient();
   }
 
   const { valid, invalid, totalRows } = parsed;
+
+  // ─── TEMP DEBUG — remove before final commit (see chat: Migration 018 ───
+  // fields reported NULL in production; instrumented to find exactly where
+  // the values disappear between parsing and insert). Uses logger.info(),
+  // not logger.debug() — logger.debug() is a no-op unless
+  // NODE_ENV === 'development' (see src/lib/logger.ts), which would make it
+  // silently produce nothing on Vercel. logger.info() also applies the
+  // existing partial redaction on name/phone/email before it's logged.
+  logger.info('leads-import-debug', 'parsedLeads[0] immediately after parsing', {
+    parsedLeadsFirst: valid[0] ?? null,
+  });
+  // ─── END TEMP DEBUG ──────────────────────────────────────────────────────
 
   const { data: importRecord, error: importError } = await supabase
     .from('lead_imports')
@@ -196,6 +209,17 @@ const supabase = createServerAuthClient();
     skippedCount += chunk.length - newLeads.length;
 
     if (newLeads.length > 0) {
+      // ─── TEMP DEBUG — remove before final commit (see chat) ─────────────
+      // Only logged for the first chunk, so a large file doesn't spam logs
+      // with one entry per 100-row chunk — we only need to see the shape of
+      // the object right before the very first insert call.
+      if (i === 0) {
+        logger.info('leads-import-debug', 'newLeads[0] immediately before insert', {
+          newLeadsFirst: newLeads[0] ?? null,
+        });
+      }
+      // ─── END TEMP DEBUG ──────────────────────────────────────────────────
+
       const { data: inserted, error: insertErr } = await supabase
         .from('leads')
         .insert(newLeads)
