@@ -125,7 +125,11 @@ export async function POST(req: NextRequest) {
       const { data: lead } = await supabaseAdmin.from('leads').select('*').eq('id', lead_id).single()
       if (!lead?.phone) return NextResponse.json({ error: 'Lead has no phone number' }, { status: 400 })
       const message = WHATSAPP_MESSAGES.followUp(lead.name || undefined)
-      const sent = await smartSend(lead.phone, message, { type: 'session' })
+      // Customer Journey Timeline fix (Priority 3): see cron/followups for
+      // the full audit finding — leadId now forwarded to smartSend() so
+      // this shows up on the customer's Timeline instead of being logged
+      // with lead_id=null.
+      const sent = await smartSend(lead.phone, message, { type: 'session', leadId: lead.id })
       if (sent) {
         await supabaseAdmin.from('leads').update({ last_contacted_at: new Date().toISOString(), status: lead.status === 'new_inquiry' ? 'followup_pending' : lead.status }).eq('id', lead_id)
         await supabaseAdmin.from('activity_logs').insert({ lead_id, action: 'followup_sent', description: 'WhatsApp follow-up sent', performed_by: 'system' })
@@ -142,7 +146,7 @@ export async function POST(req: NextRequest) {
       let sent = 0
       for (const lead of leads) {
         if (!lead.phone) continue
-        const ok = await smartSend(lead.phone, WHATSAPP_MESSAGES.followUp(lead.name || undefined), { type: 'session' })
+        const ok = await smartSend(lead.phone, WHATSAPP_MESSAGES.followUp(lead.name || undefined), { type: 'session', leadId: lead.id })
         if (ok) { sent++; await supabaseAdmin.from('leads').update({ last_contacted_at: new Date().toISOString() }).eq('id', lead.id); await new Promise(r => setTimeout(r, 1500)) }
       }
       return NextResponse.json({ success: true, sent, total: leads.length, message: `Sent ${sent} follow-up messages` })

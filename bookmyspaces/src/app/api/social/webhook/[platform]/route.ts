@@ -20,6 +20,9 @@ import { logger } from '@/lib/logger'
 import { getSocialAdapter } from '@/lib/social/adapter-registry'
 import { ingestInteraction } from '@/lib/social/interaction-service'
 import { checkRateLimit, clientIpFrom } from '@/lib/rate-limit'
+import { parseLeadgenEvents, parseMessagingEvents, fetchLeadgenDetails } from '@/lib/social/meta-lead-capture'
+import { captureLeadWithJourney } from '@/lib/leads/create-lead-with-journey'
+import { captureSocialDirectMessage } from '@/lib/social/dm-capture-service'
 
 export async function GET(req: Request, { params }: { params: { platform: string } }) {
   const url = new URL(req.url)
@@ -60,8 +63,40 @@ export async function POST(req: Request, { params }: { params: { platform: strin
       const result = await ingestInteraction(interaction)
       if (result.ok && !result.duplicate) ingested++
     }
+
+    // Direct Event Sales Engine, Section 1 — Lead Ads + Messenger/IG-DM
+    // capture. Meta-specific, only meaningful for facebook/instagram;
+    // parseLeadgenEvents/parseMessagingEvents return [] for anything else
+    // (defensive parsing, same convention as adapter.parseWebhook above).
+    let leadsFromForms = 0
+    let leadsFromMessages = 0
+    if (params.platform === 'facebook' || params.platform === 'instagram') {
+      const platform = params.platform
+
+      const leadgenEvents = parseLeadgenEvents(payload, platform)
+      for (const event of leadgenEvents) {
+        const details = await fetchLeadgenDetails(event.leadgenId)
+        if (!details) continue // unconfigured or Graph error — already logged, skip silently
+        const captured = await captureLeadWithJourney({
+          name: details.name,
+          phone: details.phone,
+          email: details.email,
+          source: platform === 'facebook' ? 'facebook_lead_ads' : 'instagram_lead_ads',
+          notes: `Lead Ads form ${event.formId ?? 'unknown'}${event.adId ? `, ad ${event.adId}` : ''}`,
+          qualifyText: null,
+        })
+        if (captured) leadsFromForms++
+      }
+
+      const messagingEvents = parseMessagingEvents(payload, platform)
+      for (const event of messagingEvents) {
+        const result = await captureSocialDirectMessage(event)
+        if (result?.isNewLead) leadsFromMessages++
+      }
+    }
+
     // Always 200 to the platform — retries are managed by idempotent ingest.
-    return NextResponse.json({ received: interactions.length, ingested })
+    return NextResponse.json({ received: interactions.length, ingested, leadsFromForms, leadsFromMessages })
   } catch (err) {
     logger.error('social-webhook', `${params.platform} webhook processing failed`, err)
     return NextResponse.json({ received: 0 }, { status: 200 })

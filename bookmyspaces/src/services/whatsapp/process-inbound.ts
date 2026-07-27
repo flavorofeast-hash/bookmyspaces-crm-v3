@@ -18,6 +18,9 @@ import { processAutoResponse } from '@/lib/whatsapp/auto-responder'
 import { MessageDirection, MessageStatus, SourceChannel } from '@/constants/conversation-states'
 import type { WAInboundMessage, WAContact, ProcessInboundResult } from '@/types/whatsapp'
 import { mirrorWhatsAppInbound } from '@/lib/conversations/whatsapp-unified-sync'
+import { qualifyLeadFromMessage } from '@/lib/whatsapp/auto-qualify'
+import { runAutoPackageRecommendation } from '@/lib/leads/auto-package-recommendation'
+import { logger } from '@/lib/logger'
 
 export async function processInboundMessage(
   message: WAInboundMessage,
@@ -41,7 +44,7 @@ export async function processInboundMessage(
     .maybeSingle()
 
   if (existing) {
-    console.log(`[WA Inbound] Duplicate wamid ${wamid} — skipping`)
+    logger.info('whatsapp-inbound', 'Duplicate wamid — skipping', { wamid })
     return {
       success: true,
       leadId: existing.lead_id,
@@ -59,7 +62,7 @@ export async function processInboundMessage(
   try {
     lead = await resolveLeadByPhone(phone, channel, contactName)
   } catch (err) {
-    console.error(`[WA Inbound] Lead resolution failed for ${phone}:`, err)
+    logger.error('whatsapp-inbound', 'Lead resolution failed', err, { phone })
     return { success: false, leadId: null, conversationId: null, messageId: null, responsesSent: 0, error: String(err) }
   }
 
@@ -68,7 +71,7 @@ export async function processInboundMessage(
   try {
     conversation = await getOrCreateConversation(phone, lead.id, channel)
   } catch (err) {
-    console.error(`[WA Inbound] Conversation error for ${phone}:`, err)
+    logger.error('whatsapp-inbound', 'Conversation error', err, { phone })
     return { success: false, leadId: lead.id, conversationId: null, messageId: null, responsesSent: 0, error: String(err) }
   }
 
@@ -93,7 +96,7 @@ export async function processInboundMessage(
 
   if (msgError) {
     // Non-fatal — continue with auto-response even if log fails
-    console.error(`[WA Inbound] Message log failed for ${wamid}:`, msgError.message)
+    logger.error('whatsapp-inbound', 'Message log failed', msgError, { wamid })
   }
 
   // ── 6. CRM activity log ───────────────────────────────────────────────────
@@ -114,6 +117,25 @@ export async function processInboundMessage(
     .update({ last_contacted_at: new Date().toISOString() })
     .eq('id', lead.id)
 
+  // ── 6.1 AI Sales Executive — auto-qualify (Priority 1 integration fix) ────
+  // Closes a real gap: scoreLead()/extractLeadDetails() were fully built and
+  // tested but never called from any live path, so ai_score/lead_temperature/
+  // urgency_level stayed permanently null/unset in production — silently
+  // breaking HotLeadDashboard, the WhatsApp "Hot" filter, followup-rules.ts's
+  // cadence selection, and escalation-engine.ts's rules, all of which read
+  // these fields. See src/lib/whatsapp/auto-qualify.ts for the full writeup.
+  // Never throws; a qualification failure must not block the reply pipeline.
+  await qualifyLeadFromMessage(lead.id, text)
+
+  // Phase 5, Revenue Automation (Direct Event Sales Engine): Lead Created ->
+  // AI Qualification -> Package Recommendation -> Proposal Suggestion. This
+  // is the highest-value call site — ongoing WhatsApp conversation is where
+  // event_type most often first becomes known. Self-gated (no-op without an
+  // event_type or once a proposal already exists), so it fires at most once
+  // per lead even though every inbound message reaches this line. Never
+  // throws; never blocks the reply pipeline.
+  await runAutoPackageRecommendation(lead.id).catch(() => null)
+
   // ── 6.5 Mirror into the Unified Conversation Platform (V3 Phase 3) ───────
   // Additive alongside the whatsapp_* writes above, which stay canonical
   // for the live WhatsApp UI until cutover. Fire-and-forget: a mirror
@@ -125,7 +147,7 @@ export async function processInboundMessage(
     wamid,
     rawPayload,
   }).catch(err => {
-    console.error(`[WA Inbound] unified mirror failed (non-fatal) for ${wamid}:`, err)
+    logger.error('whatsapp-inbound', 'Unified mirror failed (non-fatal)', err, { wamid })
   })
 
   // ── 7. Trigger auto-response ──────────────────────────────────────────────
@@ -139,7 +161,7 @@ export async function processInboundMessage(
       leadName: lead.name ?? contactName,
     })
   } catch (err) {
-    console.error(`[WA Inbound] Auto-response error for ${phone}:`, err)
+    logger.error('whatsapp-inbound', 'Auto-response error', err, { phone })
     // Non-fatal — message was still logged
   }
 

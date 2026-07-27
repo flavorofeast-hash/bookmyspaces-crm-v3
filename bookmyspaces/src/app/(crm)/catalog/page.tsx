@@ -12,11 +12,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Building2, BedDouble, IndianRupee, UtensilsCrossed, Sparkles,
+  Building2, BedDouble, IndianRupee, UtensilsCrossed, Sparkles, PartyPopper,
   Plus, Pencil, X, Save, EyeOff, RefreshCw, AlertCircle,
 } from 'lucide-react'
 
-type Entity = 'properties' | 'inventory-items' | 'rate-plans' | 'meal-plans' | 'addon-services'
+type Entity = 'properties' | 'inventory-items' | 'rate-plans' | 'meal-plans' | 'addon-services' | 'packages'
 
 type FieldType = 'text' | 'number' | 'textarea' | 'select' | 'checkbox' | 'date' | 'csv'
 
@@ -145,6 +145,48 @@ const ENTITY_CONFIG: Record<Entity, {
       { key: 'name', label: 'Name' },
       { key: 'category', label: 'Category' },
       { key: 'price', label: 'Price' },
+    ],
+  },
+  // Direct Event Sales Engine, Section 3 — Event Package Management. Covers
+  // the core package definition; the richer bundle fields this table also
+  // has (addons line-items, images, linked rooms, linked meal plan, linked
+  // addon_services, seasonal pricing rules — see migrations 023/024 /
+  // src/lib/packages/package-service.ts) are JSONB/array-of-object/array-of-
+  // UUID shapes the generic field types here don't model well, so they're
+  // set via the API directly for now rather than forcing a mismatched UI.
+  'packages': {
+    label: 'Event Packages',
+    icon: PartyPopper,
+    fields: [
+      { key: 'name', label: 'Name', type: 'text', required: true, hint: 'e.g. Silver, Gold, Platinum' },
+      { key: 'venue', label: 'Venue', type: 'text', required: true, hint: 'e.g. monurama_rooftop, skyline' },
+      { key: 'hall', label: 'Hall', type: 'text', hint: 'specific hall/sub-location within the venue, e.g. "Celebration Hall A"' },
+      { key: 'seating_style', label: 'Seating Style', type: 'text', hint: 'e.g. Theatre, Round Table, Floating, Classroom' },
+      { key: 'tier', label: 'Tier', type: 'number', hint: '1=Silver, 2=Gold, 3=Platinum' },
+      { key: 'base_price', label: 'Base Price', type: 'number', required: true },
+      { key: 'max_guests', label: 'Max Guests', type: 'number' },
+      { key: 'duration_hours', label: 'Duration (hours)', type: 'number' },
+      { key: 'inclusions', label: 'Inclusions', type: 'csv', hint: 'comma-separated, e.g. Decor, Buffet, Sound System' },
+      {
+        key: 'event_types', label: 'Event Types', type: 'csv',
+        hint: 'comma-separated canonical codes (blank = all): WEDDING, RECEPTION, BIRTHDAY, ANNIVERSARY, CORPORATE_MEETING, CONFERENCE, ENGAGEMENT, BABY_SHOWER, PRIVATE_PARTY, CUSTOM_EVENT',
+      },
+      { key: 'description', label: 'Description', type: 'textarea' },
+      { key: 'ai_description', label: 'AI Description', type: 'textarea', hint: 'injected into the AI knowledge base / recommendation prompts' },
+      { key: 'tax_rate_override_pct', label: 'Tax Rate Override %', type: 'number', hint: 'blank = use the global default tax rate' },
+      { key: 'standard_discount_pct', label: 'Standard Discount %', type: 'number', hint: 'catalog-level default the Smart Proposal Generator can pre-fill — the operator can always override it per-deal' },
+      // NOTE: 'checkbox' is declared in FieldType but this page's form
+      // renderer (below) doesn't special-case it — it would fall through
+      // to a plain text input and toPayload() wouldn't coerce it to a real
+      // boolean either. Rather than ship a field that looks interactive
+      // but silently mis-saves, is_popular is left settable via a direct
+      // PATCH /api/admin/catalog/packages/{id} call for now, not this form.
+    ],
+    listColumns: [
+      { key: 'name', label: 'Name' },
+      { key: 'venue', label: 'Venue' },
+      { key: 'base_price', label: 'Price' },
+      { key: 'max_guests', label: 'Max Guests' },
     ],
   },
 }

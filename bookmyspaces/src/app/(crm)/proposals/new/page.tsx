@@ -1,18 +1,35 @@
 'use client'
 
-import { useState, Suspense } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import {
   FileText, User, Phone, Mail, Calendar, Users, MapPin,
   Package, IndianRupee, MessageSquare, ArrowLeft, Plus,
   Trash2, Sparkles, ChevronRight, CheckCircle2, AlertCircle,
-  Loader2, BedDouble,
+  Loader2, BedDouble, Wand2,
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Addon    { name: string; price: number }
 interface RoomItem { room_type: string; quantity: number; nights: number; rate: number }
+
+// Direct Event Sales Engine, Section 4 — Smart Proposal Generator.
+// Shape returned by GET /api/packages (src/lib/packages/package-service.ts's
+// EventPackage, already camelCased for the client — reused as-is, not
+// redefined server-side).
+interface EventPackageOption {
+  id: string
+  name: string
+  venue: string
+  hall: string | null
+  basePrice: number
+  maxGuests: number | null
+  inclusions: string[]
+  addons: Addon[]
+  addonServiceIds: string[]
+  isActive: boolean
+}
 
 interface FormState {
   client_name         : string
@@ -23,6 +40,7 @@ interface FormState {
   event_time          : string
   guest_count         : string
   venue               : string
+  hall                : string
   package_name        : string
   base_price          : string
   addons              : Addon[]
@@ -31,6 +49,8 @@ interface FormState {
   discount_reason     : string
   special_requirements: string
   lead_id             : string
+  package_id          : string
+  addon_service_ids   : string[]
 }
 
 const EMPTY: FormState = {
@@ -42,6 +62,7 @@ const EMPTY: FormState = {
   event_time          : '',
   guest_count         : '',
   venue               : 'Rooftop Terrace',
+  hall                : '',
   package_name        : 'Silver',
   base_price          : '',
   addons              : [],
@@ -50,6 +71,8 @@ const EMPTY: FormState = {
   discount_reason     : '',
   special_requirements: '',
   lead_id             : '',
+  package_id          : '',
+  addon_service_ids   : [],
 }
 
 const EVENT_TYPES = [
@@ -161,6 +184,23 @@ function NewProposalInner() {
   const [error,   setError]   = useState<string|null>(null)
   const [success, setSuccess] = useState(false)
 
+  // Direct Event Sales Engine, Section 4 — Smart Proposal Generator.
+  // Event packages (built in Section 2/3) fetched once so an operator can
+  // pick one and have the form auto-populate, mirroring the server-side
+  // safe-fill in POST /api/proposals's `package_id` handling.
+  const [eventPackages, setEventPackages]   = useState<EventPackageOption[]>([])
+  const [packagesLoaded, setPackagesLoaded] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/packages?active=true')
+      .then(res => res.ok ? res.json() : { packages: [] })
+      .then(data => { if (!cancelled) setEventPackages(data.packages ?? []) })
+      .catch(() => { /* non-fatal — form still works without package picker data */ })
+      .finally(() => { if (!cancelled) setPackagesLoaded(true) })
+    return () => { cancelled = true }
+  }, [])
+
   const isRoomsOnly = form.package_name === 'Rooms Only'
   const total       = calcTotal(form)
   const advance     = Math.round(total * 0.5)
@@ -170,6 +210,23 @@ function NewProposalInner() {
   }
   function setStr(field: keyof FormState) {
     return (value: string) => setForm(prev => ({ ...prev, [field]: value }))
+  }
+
+  function applyEventPackage(id: string) {
+    if (!id) { setForm(p => ({ ...p, package_id: '' })); return }
+    const pkg = eventPackages.find(p => p.id === id)
+    if (!pkg) return
+    setForm(p => ({
+      ...p,
+      package_id       : pkg.id,
+      package_name     : pkg.name,
+      base_price       : String(pkg.basePrice),
+      venue            : pkg.venue || p.venue,
+      hall             : pkg.hall || p.hall,
+      guest_count      : p.guest_count || (pkg.maxGuests ? String(pkg.maxGuests) : p.guest_count),
+      addons           : pkg.addons.length > 0 ? pkg.addons.map(a => ({ name: a.name, price: a.price })) : p.addons,
+      addon_service_ids: pkg.addonServiceIds.length > 0 ? pkg.addonServiceIds : p.addon_service_ids,
+    }))
   }
 
   // Addons
@@ -216,6 +273,9 @@ function NewProposalInner() {
           event_time          : form.event_time  || null,
           guest_count         : form.guest_count ? parseInt(form.guest_count) : null,
           venue               : form.venue,
+          hall                : form.hall.trim() || null,
+          package_id          : form.package_id || null,
+          addon_service_ids   : form.addon_service_ids,
           package_name        : isRoomsOnly ? 'Rooms Only' : form.package_name,
           base_price          : isRoomsOnly ? 0 : (parseFloat(form.base_price) || 0),
           addons              : form.addons.filter(a=>a.name.trim()),
@@ -334,15 +394,41 @@ function NewProposalInner() {
 
         {/* ── 3. Venue & Package ── */}
         <Section title="Venue & Package" icon={MapPin}>
+          {packagesLoaded && eventPackages.length > 0 && (
+            <div className="mb-4">
+              <Label>Load from Event Package (optional)</Label>
+              <div className="relative">
+                <Wand2 className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-violet-500 pointer-events-none"/>
+                <select value={form.package_id} onChange={e=>applyEventPackage(e.target.value)}
+                  className="w-full border border-violet-200 bg-violet-50/50 rounded-lg py-2.5 pl-9 pr-8 text-sm text-gray-900
+                    focus:outline-none focus:ring-2 focus:ring-violet-500 appearance-none">
+                  <option value="">— Select a package to auto-fill —</option>
+                  {eventPackages.map(pkg => (
+                    <option key={pkg.id} value={pkg.id}>
+                      {pkg.name} · {pkg.venue} · {fmt(pkg.basePrice)}
+                    </option>
+                  ))}
+                </select>
+                <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 rotate-90 pointer-events-none"/>
+              </div>
+              {form.package_id && (
+                <p className="mt-1.5 text-xs text-violet-700">Venue, price, guests and add-ons filled from this package — edit freely below.</p>
+              )}
+            </div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <Label required>Venue</Label>
               <SelectField value={form.venue} onChange={setStr('venue')} options={VENUES} icon={MapPin}/>
             </div>
             <div>
+              <Label>Hall</Label>
+              <Input value={form.hall} onChange={setStr('hall')} placeholder="e.g. Celebration Hall A (optional)" icon={MapPin}/>
+            </div>
+            <div>
               <Label required>Package</Label>
               <SelectField value={form.package_name}
-                onChange={v => setForm(p=>({...p, package_name:v, base_price: v==='Rooms Only'?'':p.base_price}))}
+                onChange={v => setForm(p=>({...p, package_name:v, package_id:'', base_price: v==='Rooms Only'?'':p.base_price}))}
                 options={PACKAGES} icon={Package}/>
             </div>
           </div>

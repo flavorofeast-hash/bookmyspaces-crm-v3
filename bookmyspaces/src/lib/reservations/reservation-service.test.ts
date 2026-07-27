@@ -9,6 +9,8 @@ const state = {
   updateError: null as { message: string } | null,
   joinedRows: [] as Array<Record<string, unknown>>,
   joinedSingleRow: null as Record<string, unknown> | null,
+  // Add-on Services booking-flow integration (Reservation Platform activation, Phase 4).
+  insertedAddonRows: null as Record<string, unknown>[] | null,
 }
 
 /** A chainable query-builder stub: every filter method returns `this` so any
@@ -33,6 +35,17 @@ function makeJoinedListBuilder() {
 vi.mock('@/lib/supabase', () => ({
   getSupabaseAdmin: () => ({
     from: (table: string) => {
+      // Add-on Services booking-flow integration (Reservation Platform
+      // activation, Phase 4): createReservation() writes reservation_addons
+      // as a second, best-effort insert after the reservations row exists.
+      if (table === 'reservation_addons') {
+        return {
+          insert: (rows: Record<string, unknown>[]) => {
+            state.insertedAddonRows = rows
+            return Promise.resolve({ data: null, error: null })
+          },
+        }
+      }
       if (table !== 'reservations') throw new Error(`unexpected table: ${table}`)
       return {
         select: (cols: string) => {
@@ -91,6 +104,7 @@ describe('createReservation', () => {
     state.existingReservations = []
     state.insertedRow = null
     state.insertError = null
+    state.insertedAddonRows = null
   })
 
   it('refuses to create a reservation when the inventory item is unavailable', async () => {
@@ -133,6 +147,33 @@ describe('createReservation', () => {
 
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.reservation.proposalId).toBe('proposal-1')
+  })
+
+  // Add-on Services booking-flow integration (Reservation Platform activation, Phase 4).
+  it('writes one reservation_addons row per priced line, tagged with the new reservation id', async () => {
+    state.insertedRow = baseRow // id: 'res-1'
+
+    const result = await createReservation({
+      ...baseInput,
+      addonLines: [
+        { addonServiceId: 'addon-1', name: 'Extra Bed', quantity: 2, unitPrice: 500, totalPrice: 1000 },
+        { addonServiceId: 'addon-2', name: 'Airport Pickup', quantity: 1, unitPrice: 800, totalPrice: 800 },
+      ],
+    })
+
+    expect(result.ok).toBe(true)
+    expect(state.insertedAddonRows).toEqual([
+      { reservation_id: 'res-1', addon_service_id: 'addon-1', quantity: 2, unit_price: 500, total_price: 1000 },
+      { reservation_id: 'res-1', addon_service_id: 'addon-2', quantity: 1, unit_price: 800, total_price: 800 },
+    ])
+  })
+
+  it('does not touch reservation_addons at all when no add-ons were selected', async () => {
+    state.insertedRow = baseRow
+
+    await createReservation(baseInput)
+
+    expect(state.insertedAddonRows).toBeNull()
   })
 })
 

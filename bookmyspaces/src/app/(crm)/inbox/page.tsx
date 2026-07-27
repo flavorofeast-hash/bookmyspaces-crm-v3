@@ -10,9 +10,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import Link from 'next/link'
 import {
   MessageSquare, Globe, Mail, Phone, Bot, User, Send, RefreshCw,
   AlertCircle, PauseCircle, PlayCircle, CheckCircle2, Inbox as InboxIcon,
+  Sparkles, FileText, CalendarPlus,
 } from 'lucide-react'
 
 interface LeadInfo { id?: string; name: string | null; phone: string | null; email: string | null; status?: string | null }
@@ -68,6 +70,8 @@ export default function InboxPage() {
   const [reply, setReply] = useState('')
   const [sending, setSending] = useState(false)
   const [sendNote, setSendNote] = useState<string | null>(null)
+  const [suggesting, setSuggesting] = useState(false)
+  const [suggestError, setSuggestError] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   const loadList = useCallback(async () => {
@@ -107,7 +111,7 @@ export default function InboxPage() {
     const t = setInterval(loadList, 20000)
     return () => clearInterval(t)
   }, [loadList])
-  useEffect(() => { if (selectedId) loadThread(selectedId) }, [selectedId, loadThread])
+  useEffect(() => { if (selectedId) loadThread(selectedId); setSuggestError(null); setSendNote(null) }, [selectedId, loadThread])
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
   async function sendReply(e: React.FormEvent) {
@@ -133,6 +137,38 @@ export default function InboxPage() {
       setSendNote(err instanceof Error ? err.message : 'Failed to send')
     } finally {
       setSending(false)
+    }
+  }
+
+  // Priority 1 (WhatsApp Sales Platform) — AI-assisted replies. Reuses the
+  // existing AI Operator Assistant (src/lib/ai/operator-assistant.ts,
+  // suggested_whatsapp_reply action) that was already built but never wired
+  // into the Inbox — it only powered the Customer Detail page's AI panel.
+  // The suggestion fills the reply box for the agent to review/edit; it is
+  // never sent automatically, matching the platform's "human retains final
+  // control over customer-facing messages" rule.
+  async function suggestReply() {
+    if (!selectedId) return
+    const leadId = leadOf(selected ?? ({} as Conversation))?.id
+    if (!leadId) {
+      setSuggestError('This conversation isn’t linked to a lead yet — AI suggestions need a linked customer profile.')
+      return
+    }
+    setSuggesting(true)
+    setSuggestError(null)
+    try {
+      const res = await fetch(`/api/customers/${leadId}/ai`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'suggested_whatsapp_reply', conversationId: selectedId }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json?.error || 'Failed to generate a suggestion')
+      setReply(json.text ?? '')
+    } catch (err) {
+      setSuggestError(err instanceof Error ? err.message : 'Failed to generate a suggestion')
+    } finally {
+      setSuggesting(false)
     }
   }
 
@@ -246,6 +282,36 @@ export default function InboxPage() {
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                {(() => {
+                  const lead = leadOf(selected ?? ({} as Conversation))
+                  const params = new URLSearchParams()
+                  if (lead?.id) params.set('lead_id', lead.id)
+                  if (lead?.name) params.set('name', lead.name)
+                  if (lead?.phone) params.set('phone', lead.phone)
+                  const resParams = new URLSearchParams()
+                  if (lead?.id) resParams.set('fromLeadId', lead.id)
+                  if (lead?.name) resParams.set('name', lead.name)
+                  if (lead?.phone) resParams.set('phone', lead.phone)
+                  if (lead?.email) resParams.set('email', lead.email)
+                  return (
+                    <>
+                      <Link
+                        href={`/proposals/new?${params.toString()}`}
+                        title="Create a proposal for this lead"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                      >
+                        <FileText className="w-3.5 h-3.5" /> Proposal
+                      </Link>
+                      <Link
+                        href={`/reservations?${resParams.toString()}`}
+                        title="Create a reservation for this lead"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-sky-50 text-sky-700 hover:bg-sky-100"
+                      >
+                        <CalendarPlus className="w-3.5 h-3.5" /> Reservation
+                      </Link>
+                    </>
+                  )
+                })()}
                 {selected?.ai_active ? (
                   <button onClick={() => toggleAI(false)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-50 text-amber-700 hover:bg-amber-100">
                     <PauseCircle className="w-3.5 h-3.5" /> Pause AI
@@ -302,6 +368,9 @@ export default function InboxPage() {
               {sendNote && (
                 <p className="text-xs text-amber-600 mb-2 flex items-center gap-1"><AlertCircle className="w-3 h-3" /> {sendNote}</p>
               )}
+              {suggestError && (
+                <p className="text-xs text-amber-600 mb-2 flex items-center gap-1"><AlertCircle className="w-3 h-3" /> {suggestError}</p>
+              )}
               <div className="flex items-end gap-2">
                 <textarea
                   value={reply}
@@ -311,6 +380,15 @@ export default function InboxPage() {
                   placeholder="Reply as agent… (sending pauses the AI on this conversation)"
                   className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
+                <button
+                  type="button"
+                  onClick={() => void suggestReply()}
+                  disabled={suggesting}
+                  title="Suggest a reply with AI"
+                  className="p-2.5 bg-violet-50 text-violet-700 rounded-lg hover:bg-violet-100 disabled:opacity-50"
+                >
+                  <Sparkles className={`w-4 h-4 ${suggesting ? 'animate-pulse' : ''}`} />
+                </button>
                 <button
                   type="submit"
                   disabled={sending || !reply.trim()}

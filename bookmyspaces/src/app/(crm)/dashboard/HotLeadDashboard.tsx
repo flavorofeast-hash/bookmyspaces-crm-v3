@@ -652,7 +652,6 @@ export default function SalesOperationsDashboard() {
       if (leadsRes.ok) {
         const raw = await leadsRes.json()
         const arr: Lead[] = Array.isArray(raw) ? raw : Array.isArray(raw?.leads) ? raw.leads : []
-        console.log('[Dashboard] Loaded leads:', arr.length)
         setLeads(arr)
       } else {
         console.error('[Dashboard] Leads error:', leadsRes.status)

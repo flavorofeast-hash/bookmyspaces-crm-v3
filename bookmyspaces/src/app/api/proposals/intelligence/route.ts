@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
+import { logger } from '@/lib/logger'
 import {
   generateProposalIntelligence,
   computeProposalUrgency,
@@ -39,15 +40,14 @@ export async function GET(): Promise<NextResponse> {
       .limit(100)
 
     if (error) {
-      console.error('[API /proposals/intelligence GET]', error.message)
+      logger.error('proposals-intelligence', 'GET failed', error)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
     return NextResponse.json({ proposals: data ?? [] })
 
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[API /proposals/intelligence GET] unexpected:', msg)
+    logger.error('proposals-intelligence', 'GET unexpected error', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
@@ -84,8 +84,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json(intelligence)
 
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[API /proposals/intelligence POST]', msg)
+    logger.error('proposals-intelligence', 'POST failed', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
@@ -170,8 +169,7 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json(urgency)
 
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[API /proposals/intelligence PATCH]', msg)
+    logger.error('proposals-intelligence', 'PATCH failed', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -17,6 +17,21 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { isValidReservationTransition, type Reservation, type ReservationStatus, type InventoryType } from '@/types/reservation'
 import { checkAvailability } from './availability-service'
 
+/**
+ * Add-on Services booking-flow integration (Reservation Platform
+ * activation, Phase 4). Already-priced line item — pricing happens in
+ * reservation-workflow.ts's priceAddons() (server-side lookup, never a
+ * client-submitted price); this service layer only persists what it's
+ * given, same posture as every other field on CreateReservationInput.
+ */
+export interface PricedAddonLine {
+  addonServiceId: string
+  name: string
+  quantity: number
+  unitPrice: number
+  totalPrice: number
+}
+
 export interface CreateReservationInput {
   customerId?: string | null
   guestName: string
@@ -33,6 +48,14 @@ export interface CreateReservationInput {
   specialRequests?: string | null
   /** Set when this reservation originates from an accepted proposal (Sprint 3 — Convert Proposal -> Reservation). */
   proposalId?: string | null
+  /** Meal Plan booking-flow integration (Reservation Platform activation, Phase 3). Pricing fields are computed by reservation-workflow.ts's createReservationWithQuote() — createReservation() itself just persists whatever it's given, same as every other field here. */
+  mealPlanId?: string | null
+  mealPlanCharge?: number
+  baseRoomRate?: number
+  discountAmount?: number
+  finalRoomRate?: number
+  /** Add-on Services booking-flow integration (Reservation Platform activation, Phase 4). Already-priced by the caller — see PricedAddonLine. */
+  addonLines?: PricedAddonLine[]
 }
 
 export type CreateReservationResult =
@@ -73,6 +96,20 @@ export async function createReservation(input: CreateReservationInput): Promise<
       status: 'inquiry',
       special_requests: input.specialRequests ?? null,
       proposal_id: input.proposalId ?? null,
+      // Meal Plan booking-flow integration (Reservation Platform activation,
+      // Phase 3). Previously these five columns were never set on create and
+      // silently kept their DB defaults (0/null) regardless of what
+      // calculatePrice() quoted — the Reservation Dashboard's "Active
+      // Revenue" stat and the Reservation Details price breakdown both read
+      // final_room_rate/meal_plan_charge, so leaving them unset made both
+      // permanently show ₹0. Fixed here since a meaningful meal plan charge
+      // is meaningless without the base room rate it's added to also being
+      // persisted.
+      base_room_rate: input.baseRoomRate ?? 0,
+      discount_amount: input.discountAmount ?? 0,
+      final_room_rate: input.finalRoomRate ?? 0,
+      meal_plan_id: input.mealPlanId ?? null,
+      meal_plan_charge: input.mealPlanCharge ?? 0,
     })
     .select('*')
     .single()
@@ -81,7 +118,35 @@ export async function createReservation(input: CreateReservationInput): Promise<
     return { ok: false, error: 'db_error', message: error?.message ?? 'Unknown error creating reservation' }
   }
 
-  return { ok: true, reservation: mapRow(data) }
+  const reservation = mapRow(data)
+
+  // Add-on Services booking-flow integration (Reservation Platform
+  // activation, Phase 4). reservation_addons rows can only be written after
+  // the reservation exists (they FK to reservation_id), so this is a second
+  // insert, not part of the row above. Best-effort, same posture as
+  // reservation-workflow.ts's activity-log writes: the reservation itself
+  // is already created — and its total (final_room_rate) already has the
+  // add-ons charge baked in via the caller's quote — so a failure here
+  // degrades to "reservation exists, itemized add-on lines didn't save"
+  // rather than losing the whole booking. Never worse than before this
+  // integration existed, when reservation_addons was never written at all.
+  if (input.addonLines && input.addonLines.length > 0) {
+    try {
+      await supabase.from('reservation_addons').insert(
+        input.addonLines.map((line) => ({
+          reservation_id: reservation.id,
+          addon_service_id: line.addonServiceId,
+          quantity: line.quantity,
+          unit_price: line.unitPrice,
+          total_price: line.totalPrice,
+        }))
+      )
+    } catch {
+      // Not fatal — see comment above.
+    }
+  }
+
+  return { ok: true, reservation }
 }
 
 export type TransitionResult =

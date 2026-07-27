@@ -16,6 +16,10 @@ import {
   RefreshCw,
   Brain,
   Calendar,
+  Pause,
+  Play,
+  Ban,
+  Repeat,
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -24,7 +28,9 @@ interface Campaign {
   id: string
   name: string
   type: string
-  status: 'draft' | 'scheduled' | 'running' | 'completed' | 'failed'
+  // Priority 3 (Campaign Scheduler) — 'paused'/'cancelled' added via
+  // migration 021, alongside the recurrence fields below.
+  status: 'draft' | 'scheduled' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
   message_template: string
   recipient_count: number
   sent_count: number
@@ -34,6 +40,9 @@ interface Campaign {
   created_at: string
   scheduled_at?: string
   sent_at?: string
+  is_recurring?: boolean
+  recurrence_interval?: 'daily' | 'weekly' | 'monthly' | null
+  next_run_at?: string | null
 }
 
 type CampaignType =
@@ -42,6 +51,9 @@ type CampaignType =
   | 'reengagement'
   | 'offer'
   | 'review_request'
+  | 'birthday'
+  | 'anniversary'
+  | 'dormant'
   | 'custom'
 
 interface NewCampaign {
@@ -52,9 +64,56 @@ interface NewCampaign {
     status?: string
     min_score?: number
     source?: string
+    // Priority 2 (Marketing Automation) — Birthday / Anniversary / Dormant
+    // segment filters. Maps directly to SegmentFilter's matching fields in
+    // src/lib/campaigns.ts; the API passes `segment` straight through to
+    // buildSegment() unchanged.
+    upcoming_birthday_days?: number
+    upcoming_anniversary_days?: number
+    dormant_since_days?: number
+    // Priority 3 (Marketing Intelligence) — Advanced Segmentation. Maps
+    // directly to the matching SegmentFilter fields added to
+    // src/lib/campaigns.ts's buildSegment() this same pass.
+    is_vip?: boolean
+    min_clv?: number
+    repeat_customer?: boolean
+    first_time_customer?: boolean
+    proposal_abandoned_days?: number
+    has_cancelled_booking?: boolean
+    min_stay_nights?: number
+    high_value_wedding_min?: number
+    is_corporate?: boolean
   }
   scheduled_at: string
+  // Priority 3 (Campaign Scheduler) — recurring campaign support.
+  is_recurring?: boolean
+  recurrence_interval?: 'daily' | 'weekly' | 'monthly'
 }
+
+// Reasonable starting points for the "days" input on each recurring-segment
+// campaign type — the operator sees and can change this before counting
+// recipients or sending; nothing is sent using a hidden default.
+const SEGMENT_DAYS_DEFAULT: Partial<Record<CampaignType, number>> = {
+  birthday: 7,
+  anniversary: 7,
+  dormant: 30,
+}
+
+// Advanced Segmentation audience presets — each maps to one SegmentFilter
+// field (or two, for high-value weddings) so the operator picks a plain-
+// English audience instead of hand-building a filter object.
+const AUDIENCE_PRESETS: Array<{ value: string; label: string; apply: (seg: NewCampaign['segment']) => NewCampaign['segment'] }> = [
+  { value: 'none', label: 'All opted-in leads (default)', apply: (s) => s },
+  { value: 'vip', label: 'VIP customers', apply: (s) => ({ ...s, is_vip: true }) },
+  { value: 'corporate', label: 'Corporate customers', apply: (s) => ({ ...s, is_corporate: true }) },
+  { value: 'high_clv', label: 'High CLV (₹1L+)', apply: (s) => ({ ...s, min_clv: 100_000 }) },
+  { value: 'repeat', label: 'Repeat customers', apply: (s) => ({ ...s, repeat_customer: true }) },
+  { value: 'first_time', label: 'First-time customers', apply: (s) => ({ ...s, first_time_customer: true }) },
+  { value: 'abandoned', label: 'Proposal abandoned (7+ days)', apply: (s) => ({ ...s, proposal_abandoned_days: 7 }) },
+  { value: 'cancelled', label: 'Had a cancelled booking', apply: (s) => ({ ...s, has_cancelled_booking: true }) },
+  { value: 'long_stay', label: 'Long-stay guests (3+ nights)', apply: (s) => ({ ...s, min_stay_nights: 3 }) },
+  { value: 'high_value_wedding', label: 'High-value weddings (₹3L+ est.)', apply: (s) => ({ ...s, high_value_wedding_min: 300_000 }) },
+]
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -65,8 +124,10 @@ const STATUS_CONFIG: Record<
   draft: { label: 'Draft', color: 'text-gray-600 bg-gray-100', icon: Clock },
   scheduled: { label: 'Scheduled', color: 'text-blue-700 bg-blue-100', icon: Calendar },
   running: { label: 'Running', color: 'text-yellow-700 bg-yellow-100', icon: Loader2 },
+  paused: { label: 'Paused', color: 'text-orange-700 bg-orange-100', icon: Pause },
   completed: { label: 'Completed', color: 'text-green-700 bg-green-100', icon: CheckCircle },
   failed: { label: 'Failed', color: 'text-red-700 bg-red-100', icon: XCircle },
+  cancelled: { label: 'Cancelled', color: 'text-gray-500 bg-gray-100', icon: Ban },
 }
 
 const CAMPAIGN_TYPES: { value: CampaignType; label: string }[] = [
@@ -75,6 +136,9 @@ const CAMPAIGN_TYPES: { value: CampaignType; label: string }[] = [
   { value: 'reengagement', label: 'Re-engagement' },
   { value: 'offer', label: 'Special Offer' },
   { value: 'review_request', label: 'Review Request' },
+  { value: 'birthday', label: 'Birthday' },
+  { value: 'anniversary', label: 'Anniversary' },
+  { value: 'dormant', label: 'Dormant Customers' },
   { value: 'custom', label: 'Custom' },
 ]
 
@@ -107,9 +171,13 @@ function StatCard({
 function CampaignRow({
   campaign,
   onDelete,
+  onAction,
+  actionPending,
 }: {
   campaign: Campaign
   onDelete: (id: string) => void
+  onAction: (id: string, action: 'send' | 'pause' | 'resume' | 'cancel') => void
+  actionPending: boolean
 }) {
   const cfg = STATUS_CONFIG[campaign.status]
   const Icon = cfg.icon
@@ -122,7 +190,14 @@ function CampaignRow({
     <tr className="hover:bg-gray-50 transition-colors">
       <td className="px-4 py-3">
         <p className="text-sm font-medium text-gray-900">{campaign.name}</p>
-        <p className="text-xs text-gray-500 capitalize">{campaign.type.replace('_', ' ')}</p>
+        <p className="text-xs text-gray-500 capitalize flex items-center gap-1">
+          {campaign.type.replace('_', ' ')}
+          {campaign.is_recurring && (
+            <span className="inline-flex items-center gap-0.5 text-violet-600" title={`Recurring: ${campaign.recurrence_interval}`}>
+              <Repeat className="w-3 h-3" /> {campaign.recurrence_interval}
+            </span>
+          )}
+        </p>
       </td>
       <td className="px-4 py-3">
         <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${cfg.color}`}>
@@ -146,6 +221,46 @@ function CampaignRow({
       </td>
       <td className="px-4 py-3">
         <div className="flex items-center justify-end gap-1">
+          {campaign.status === 'draft' && (
+            <button
+              onClick={() => onAction(campaign.id, 'send')}
+              disabled={actionPending}
+              className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors disabled:opacity-50"
+              title="Send campaign (queues messages)"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          )}
+          {(campaign.status === 'running' || campaign.status === 'scheduled') && (
+            <button
+              onClick={() => onAction(campaign.id, 'pause')}
+              disabled={actionPending}
+              className="p-1.5 text-gray-400 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-colors disabled:opacity-50"
+              title="Pause campaign"
+            >
+              <Pause className="w-4 h-4" />
+            </button>
+          )}
+          {campaign.status === 'paused' && (
+            <button
+              onClick={() => onAction(campaign.id, 'resume')}
+              disabled={actionPending}
+              className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors disabled:opacity-50"
+              title="Resume campaign"
+            >
+              <Play className="w-4 h-4" />
+            </button>
+          )}
+          {(campaign.status === 'running' || campaign.status === 'scheduled' || campaign.status === 'paused') && (
+            <button
+              onClick={() => onAction(campaign.id, 'cancel')}
+              disabled={actionPending}
+              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
+              title="Cancel campaign"
+            >
+              <Ban className="w-4 h-4" />
+            </button>
+          )}
           <button
             className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
             title="View details"
@@ -180,11 +295,43 @@ function CreateModal({
     message_template: '',
     segment: {},
     scheduled_at: '',
+    is_recurring: false,
+    recurrence_interval: 'weekly',
   })
   const [dryRun, setDryRun] = useState(false)
   const [dryRunCount, setDryRunCount] = useState<number | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [counting, setCounting] = useState(false)
+  const [audiencePreset, setAudiencePreset] = useState('none')
+  const [aiGoal, setAiGoal] = useState('')
+  const [aiDrafting, setAiDrafting] = useState(false)
+  const [aiBrief, setAiBrief] = useState<{ suggestedAudience: string; bestSendTime: string; cta: string; emailSubject: string; emailBody: string } | null>(null)
+
+  async function handleAiDraft() {
+    if (!aiGoal.trim()) return
+    setAiDrafting(true)
+    setAiBrief(null)
+    try {
+      const res = await fetch('/api/campaigns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'generate_brief', goal: aiGoal.trim() }),
+      })
+      const data = await res.json()
+      if (data.brief) {
+        setForm((p) => ({ ...p, name: data.brief.title, message_template: data.brief.whatsappMessage }))
+        setAiBrief({
+          suggestedAudience: data.brief.suggestedAudience,
+          bestSendTime: data.brief.bestSendTime,
+          cta: data.brief.cta,
+          emailSubject: data.brief.emailSubject,
+          emailBody: data.brief.emailBody,
+        })
+      }
+    } finally {
+      setAiDrafting(false)
+    }
+  }
 
   async function handleDryRun() {
     setCounting(true)
@@ -225,6 +372,39 @@ function CreateModal({
         </div>
 
         <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
+
+          {/* AI Campaign Builder (Priority 3) — drafts, never sends. */}
+          <div className="rounded-lg border border-violet-100 bg-violet-50 p-3">
+            <label className="block text-xs font-semibold text-violet-700 mb-1.5 flex items-center gap-1">
+              <Brain className="w-3.5 h-3.5" /> AI Campaign Builder — describe your goal
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={aiGoal}
+                onChange={(e) => setAiGoal(e.target.value)}
+                placeholder="e.g. Win back customers who haven't booked in 3 months"
+                className="flex-1 px-3 py-2 border border-violet-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+              />
+              <button
+                type="button"
+                onClick={() => void handleAiDraft()}
+                disabled={aiDrafting || !aiGoal.trim()}
+                className="px-3 py-2 bg-violet-600 text-white rounded-lg text-xs font-medium hover:bg-violet-700 disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {aiDrafting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Draft'}
+              </button>
+            </div>
+            {aiBrief && (
+              <div className="mt-2 text-xs text-violet-800 space-y-1">
+                <p><span className="font-semibold">Suggested audience:</span> {aiBrief.suggestedAudience}</p>
+                <p><span className="font-semibold">Best send time:</span> {aiBrief.bestSendTime}</p>
+                <p><span className="font-semibold">CTA:</span> {aiBrief.cta}</p>
+                <p className="text-violet-600">Name and WhatsApp message below were filled in — review and edit before sending. Email draft: <span className="font-semibold">{aiBrief.emailSubject}</span> — {aiBrief.emailBody}</p>
+              </div>
+            )}
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Campaign Name</label>
             <input
@@ -241,7 +421,21 @@ function CreateModal({
             <label className="block text-sm font-medium text-gray-700 mb-1">Campaign Type</label>
             <select
               value={form.type}
-              onChange={(e) => setForm((p) => ({ ...p, type: e.target.value as CampaignType }))}
+              onChange={(e) => {
+                const nextType = e.target.value as CampaignType
+                setForm((p) => {
+                  // Switching away from a recurring-segment type clears its
+                  // day-window field so it doesn't linger in the payload;
+                  // switching into one seeds the suggested default.
+                  const { upcoming_birthday_days, upcoming_anniversary_days, dormant_since_days, ...rest } = p.segment
+                  const seeded =
+                    nextType === 'birthday' ? { upcoming_birthday_days: SEGMENT_DAYS_DEFAULT.birthday } :
+                    nextType === 'anniversary' ? { upcoming_anniversary_days: SEGMENT_DAYS_DEFAULT.anniversary } :
+                    nextType === 'dormant' ? { dormant_since_days: SEGMENT_DAYS_DEFAULT.dormant } :
+                    {}
+                  return { ...p, type: nextType, segment: { ...rest, ...seeded } }
+                })
+              }}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               {CAMPAIGN_TYPES.map((t) => (
@@ -250,6 +444,79 @@ function CreateModal({
                 </option>
               ))}
             </select>
+          </div>
+
+          {form.type === 'birthday' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Birthday within next (days)</label>
+              <input
+                type="number"
+                min={1}
+                max={90}
+                value={form.segment.upcoming_birthday_days ?? SEGMENT_DAYS_DEFAULT.birthday}
+                onChange={(e) => setForm((p) => ({ ...p, segment: { ...p.segment, upcoming_birthday_days: Number(e.target.value) || 1 } }))}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="mt-1 text-xs text-gray-400">Matches leads with a birthday on file (from Customer Bulk Import) in this window.</p>
+            </div>
+          )}
+          {form.type === 'anniversary' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Anniversary within next (days)</label>
+              <input
+                type="number"
+                min={1}
+                max={90}
+                value={form.segment.upcoming_anniversary_days ?? SEGMENT_DAYS_DEFAULT.anniversary}
+                onChange={(e) => setForm((p) => ({ ...p, segment: { ...p.segment, upcoming_anniversary_days: Number(e.target.value) || 1 } }))}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="mt-1 text-xs text-gray-400">Matches leads with an anniversary on file in this window.</p>
+            </div>
+          )}
+          {form.type === 'dormant' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">No contact in at least (days)</label>
+              <input
+                type="number"
+                min={7}
+                max={365}
+                value={form.segment.dormant_since_days ?? SEGMENT_DAYS_DEFAULT.dormant}
+                onChange={(e) => setForm((p) => ({ ...p, segment: { ...p.segment, dormant_since_days: Number(e.target.value) || 7 } }))}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="mt-1 text-xs text-gray-400">Matches leads never contacted, or not contacted in this many days.</p>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Audience (optional refinement)</label>
+            <select
+              value={audiencePreset}
+              onChange={(e) => {
+                const preset = AUDIENCE_PRESETS.find((p) => p.value === e.target.value)
+                setAudiencePreset(e.target.value)
+                if (!preset) return
+                setForm((p) => {
+                  // Strip any previously-applied preset fields, keep the
+                  // campaign type's own segment fields (birthday/anniversary/
+                  // dormant days), then layer the newly-picked preset on top.
+                  const {
+                    is_vip, min_clv, repeat_customer, first_time_customer,
+                    proposal_abandoned_days, has_cancelled_booking, min_stay_nights,
+                    high_value_wedding_min, is_corporate, ...rest
+                  } = p.segment
+                  void is_vip; void min_clv; void repeat_customer; void first_time_customer
+                  void proposal_abandoned_days; void has_cancelled_booking; void min_stay_nights
+                  void high_value_wedding_min; void is_corporate
+                  return { ...p, segment: preset.apply(rest) }
+                })
+              }}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {AUDIENCE_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+            </select>
+            <p className="mt-1 text-xs text-gray-400">Narrows the recipient list beyond the campaign type&apos;s own segment. Use Count Recipients below to check size before sending.</p>
           </div>
 
           <div>
@@ -277,6 +544,34 @@ function CreateModal({
               onChange={(e) => setForm((p) => ({ ...p, scheduled_at: e.target.value }))}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
+          </div>
+
+          {/* Recurring campaign (Priority 3: Campaign Scheduler) — segment
+              is rebuilt fresh each run, so e.g. a "dormant 30+ days" or
+              "upcoming birthday" campaign stays accurate over time instead
+              of re-sending to the same fixed list. */}
+          <div className="flex items-center gap-3 p-3 bg-violet-50 rounded-lg">
+            <input
+              type="checkbox"
+              id="recurring"
+              checked={!!form.is_recurring}
+              onChange={(e) => setForm((p) => ({ ...p, is_recurring: e.target.checked }))}
+              className="rounded border-gray-300 text-violet-600"
+            />
+            <label htmlFor="recurring" className="text-sm text-gray-700 flex-1 flex items-center gap-1.5">
+              <Repeat className="w-3.5 h-3.5 text-violet-600" /> Repeat this campaign automatically
+            </label>
+            {form.is_recurring && (
+              <select
+                value={form.recurrence_interval ?? 'weekly'}
+                onChange={(e) => setForm((p) => ({ ...p, recurrence_interval: e.target.value as 'daily' | 'weekly' | 'monthly' }))}
+                className="px-2 py-1.5 border border-violet-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-violet-400"
+              >
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            )}
           </div>
 
           {/* Dry run section */}
@@ -340,12 +635,34 @@ function CreateModal({
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
+// Revenue Intelligence (Priority 2) — Marketing Analytics. Mirrors
+// src/lib/campaigns.ts's MarketingPerformance exactly.
+interface MarketingPerformance {
+  byType: Array<{ type: string; campaigns: number; sent: number; delivered: number; failed: number; replies: number; replyRatePct: number }>
+  bySource: Array<{ source: string; count: number; confirmedCount: number; conversionPct: number }>
+  whatsappConversionPct: number
+  acquisitionByMonth: Array<{ month: string; count: number }>
+  conversionTrackingAvailable: false
+  conversionTrackingNote: string
+}
+
 export default function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [summaryResult, setSummaryResult] = useState<string | null>(null)
+  const [performance, setPerformance] = useState<MarketingPerformance | null>(null)
+
+  const fetchPerformance = useCallback(async () => {
+    try {
+      const res = await fetch('/api/campaigns?view=performance')
+      const data = await res.json()
+      setPerformance(data.performance ?? null)
+    } catch {
+      setPerformance(null)
+    }
+  }, [])
 
   const fetchCampaigns = useCallback(async () => {
     setLoading(true)
@@ -362,13 +679,19 @@ export default function CampaignsPage() {
 
   useEffect(() => {
     fetchCampaigns()
-  }, [fetchCampaigns])
+    fetchPerformance()
+  }, [fetchCampaigns, fetchPerformance])
 
   async function handleCreate(form: NewCampaign) {
+    // NOTE: fixed a latent bug found while wiring up the scheduler UI —
+    // this call was missing `action: 'create'`, so every "Create Campaign"
+    // submission was hitting the POST route's fallthrough
+    // { error: 'Invalid action' } branch instead of actually creating a
+    // campaign.
     const res = await fetch('/api/campaigns', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(form),
+      body: JSON.stringify({ ...form, action: 'create' }),
     })
     if (res.ok) {
       await fetchCampaigns()
@@ -379,6 +702,27 @@ export default function CampaignsPage() {
     if (!confirm('Delete this campaign?')) return
     await fetch(`/api/campaigns?id=${id}`, { method: 'DELETE' })
     setCampaigns((prev) => prev.filter((c) => c.id !== id))
+  }
+
+  const [actioningId, setActioningId] = useState<string | null>(null)
+
+  // Campaign Scheduler (Priority 3): send/pause/resume/cancel all route
+  // through the same POST action-dispatch pattern already used for
+  // create/preview/generate_brief above.
+  async function handleAction(id: string, action: 'send' | 'pause' | 'resume' | 'cancel') {
+    if (action === 'send' && !confirm('Send this campaign now? Messages will be queued for delivery.')) return
+    if (action === 'cancel' && !confirm('Cancel this campaign? Any not-yet-sent messages will be skipped.')) return
+    setActioningId(id)
+    try {
+      const res = await fetch('/api/campaigns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, campaign_id: id, dry_run: false }),
+      })
+      if (res.ok) await fetchCampaigns()
+    } finally {
+      setActioningId(null)
+    }
   }
 
   async function handleGenerateSummary() {
@@ -464,6 +808,61 @@ export default function CampaignsPage() {
           <StatCard label="Total Replies" value={totalReplies.toLocaleString()} icon={BarChart3} color="bg-yellow-50 text-yellow-600" />
         </div>
 
+        {/* Marketing Analytics (Revenue Intelligence, Priority 2) */}
+        {performance && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <h2 className="text-sm font-semibold text-gray-900 mb-1">Lead Source Performance</h2>
+              <p className="text-xs text-gray-400 mb-3">Conversion = reached CONFIRMED stage</p>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-gray-400 uppercase">
+                    <th className="text-left font-medium pb-2">Source</th>
+                    <th className="text-right font-medium pb-2">Leads</th>
+                    <th className="text-right font-medium pb-2">Conversion</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {performance.bySource.map((s) => (
+                    <tr key={s.source}>
+                      <td className="py-1.5 text-gray-700 capitalize">{s.source}</td>
+                      <td className="py-1.5 text-right text-gray-600">{s.count}</td>
+                      <td className="py-1.5 text-right font-medium text-emerald-700">{s.conversionPct}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="mt-3 text-xs text-gray-400">WhatsApp conversion: <span className="font-medium text-gray-600">{performance.whatsappConversionPct}%</span></p>
+            </div>
+
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <h2 className="text-sm font-semibold text-gray-900 mb-1">Campaign Performance by Type</h2>
+              <p className="text-xs text-gray-400 mb-3">{performance.conversionTrackingNote}</p>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-gray-400 uppercase">
+                    <th className="text-left font-medium pb-2">Type</th>
+                    <th className="text-right font-medium pb-2">Sent</th>
+                    <th className="text-right font-medium pb-2">Reply Rate</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {performance.byType.map((t) => (
+                    <tr key={t.type}>
+                      <td className="py-1.5 text-gray-700 capitalize">{t.type.replace('_', ' ')}</td>
+                      <td className="py-1.5 text-right text-gray-600">{t.sent}</td>
+                      <td className="py-1.5 text-right font-medium text-emerald-700">{t.replyRatePct}%</td>
+                    </tr>
+                  ))}
+                  {performance.byType.length === 0 && (
+                    <tr><td colSpan={3} className="py-4 text-center text-gray-400">No campaigns sent yet</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         {/* Table */}
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-100">
@@ -501,7 +900,13 @@ export default function CampaignsPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-50">
                   {campaigns.map((c) => (
-                    <CampaignRow key={c.id} campaign={c} onDelete={handleDelete} />
+                    <CampaignRow
+                      key={c.id}
+                      campaign={c}
+                      onDelete={handleDelete}
+                      onAction={handleAction}
+                      actionPending={actioningId === c.id}
+                    />
                   ))}
                 </tbody>
               </table>

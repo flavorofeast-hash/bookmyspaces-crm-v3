@@ -52,6 +52,22 @@ export const CATALOG_ENTITIES = {
     columns: ['property_id', 'name', 'category', 'price', 'is_active'],
     orderBy: 'name',
   },
+  // Direct Event Sales Engine, Section 3 — Event Package Management. Reuses
+  // this same generic admin CRUD system (and the Catalog page's shared
+  // field-config UI) rather than a bespoke packages admin page — the richer
+  // domain-shaped reads (event-type filtering, tax-rate fallback to
+  // src/lib/tax.ts) that AI/proposal-generator code needs live separately
+  // in src/lib/packages/package-service.ts, which this table also backs.
+  'packages': {
+    table: 'packages',
+    columns: [
+      'name', 'venue', 'hall', 'seating_style', 'tier', 'base_price', 'max_guests', 'duration_hours',
+      'inclusions', 'addons', 'addon_service_ids', 'description', 'is_popular', 'ai_description',
+      'event_types', 'images', 'room_inventory_item_ids', 'meal_plan_id',
+      'tax_rate_override_pct', 'seasonal_pricing', 'standard_discount_pct', 'is_active',
+    ],
+    orderBy: 'tier',
+  },
 } as const
 
 export type CatalogEntity = keyof typeof CATALOG_ENTITIES

@@ -231,9 +231,21 @@ export async function retrieveRelevantKnowledge(query: string, limit = 4): Promi
   try {
     const supabaseAdmin = getSupabaseAdmin()
 
+    // SECURITY (RC hardening): these keywords are built directly from raw
+    // customer chat text (this function is reachable from the public,
+    // unauthenticated /api/chat route) and get interpolated into a
+    // PostgREST .or() filter string below and in retrieveFromKnowledgeSources().
+    // Comma/paren are that filter language's clause-separator/grouping
+    // syntax, so an unescaped keyword could inject extra clauses (e.g. widen
+    // the match to the whole table). Stripping them keeps every keyword a
+    // plain ILIKE term. Blast radius was already low — knowledge_chunks /
+    // knowledge_sources hold public FAQ-style content, not PII — but this is
+    // the correct fix regardless of severity.
     const keywords = query
       .toLowerCase()
       .split(' ')
+      .filter(w => w.length > 3)
+      .map(w => w.replace(/[,()]/g, ''))
       .filter(w => w.length > 3)
       .slice(0, 3)
 

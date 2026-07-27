@@ -5,8 +5,9 @@ export const maxDuration = 120
 import { NextRequest, NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
-import { buildSegment, generateFestivalMessage, generateCampaignMessage, getUpcomingFestivals } from '@/lib/campaigns'
+import { buildSegment, generateFestivalMessage, generateCampaignMessage, getUpcomingFestivals, getMarketingPerformance, generateCampaignBrief } from '@/lib/campaigns'
 import { requireAuth } from '@/lib/auth-guard'
+import { scheduleCampaignSend } from '@/lib/campaign-scheduler'
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth()
@@ -19,6 +20,11 @@ export async function GET(req: NextRequest) {
     if (view === 'festivals') {
       const festivals = await getUpcomingFestivals(60)
       return NextResponse.json({ festivals })
+    }
+
+    if (view === 'performance') {
+      const performance = await getMarketingPerformance()
+      return NextResponse.json({ performance })
     }
 
     const { data: campaigns, error, count } = await supabaseAdmin
@@ -54,7 +60,10 @@ export async function POST(req: NextRequest) {
       offer_details,
       context,
       tone,
+      goal,
       dry_run = true,
+      is_recurring = false,
+      recurrence_interval,
     } = body
 
     if (action === 'generate_festival') {
@@ -67,6 +76,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ message: msg })
     }
 
+    // AI Campaign Builder (Priority 3) — drafts title/WhatsApp/email/CTA/
+    // audience/send-time in one call. Pure draft, no side effects — the
+    // operator reviews and edits before using the existing create/send
+    // actions below. Never auto-sends anything.
+    if (action === 'generate_brief') {
+      if (!goal || typeof goal !== 'string') {
+        return NextResponse.json({ error: 'goal is required' }, { status: 400 })
+      }
+      const brief = await generateCampaignBrief(goal, context)
+      return NextResponse.json({ brief })
+    }
+
     if (action === 'preview') {
       const recipients = await buildSegment(segment || {})
       return NextResponse.json({
@@ -77,6 +98,7 @@ export async function POST(req: NextRequest) {
 
     if (action === 'create') {
       const recipients = await buildSegment(segment || {})
+      const recurring = !!is_recurring && ['daily', 'weekly', 'monthly'].includes(recurrence_interval)
 
       const { data: campaign, error } = await supabaseAdmin
         .from('broadcast_campaigns')
@@ -88,6 +110,13 @@ export async function POST(req: NextRequest) {
           template_name,
           recipient_count: recipients.length,
           status: 'draft',
+          is_recurring: recurring,
+          recurrence_interval: recurring ? recurrence_interval : null,
+          // First run is scheduled immediately on creation; the operator
+          // still triggers the initial send explicitly via the 'send'
+          // action below — next_run_at only governs *future* recurrences,
+          // set once that first send has gone out.
+          next_run_at: null,
         })
         .select('*')
         .single()
@@ -96,6 +125,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ campaign }, { status: 201 })
     }
 
+    // Campaign send now routes through message_queue (Priority 3: Campaign
+    // Scheduler) instead of sending synchronously inside this request.
+    // AUDIT FINDING: src/lib/queue.ts's enqueueMessage()/smartSend() were
+    // fully built (rate limiting, spam check, DB-backed queue) but never
+    // called anywhere — this reuses that infrastructure rather than
+    // continuing the old blocking for-loop, which could not be paused,
+    // resumed, or safely used for large recipient lists. Actual delivery
+    // happens in the /api/cron/campaign-queue drain, not in this request.
     if (action === 'send' && campaign_id) {
       const { data: campaign } = await supabaseAdmin
         .from('broadcast_campaigns')
@@ -105,9 +142,8 @@ export async function POST(req: NextRequest) {
 
       if (!campaign) return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
 
-      const recipients = await buildSegment(campaign.segment || {})
-
       if (dry_run) {
+        const recipients = await buildSegment(campaign.segment || {})
         return NextResponse.json({
           dry_run: true,
           count: recipients.length,
@@ -115,36 +151,69 @@ export async function POST(req: NextRequest) {
         })
       }
 
-      await supabaseAdmin
-        .from('broadcast_campaigns')
-        .update({ status: 'running', sent_at: new Date().toISOString() })
-        .eq('id', campaign_id)
+      const result = await scheduleCampaignSend(campaign_id)
+      if (!result.ok) return NextResponse.json({ error: result.error || 'Schedule failed' }, { status: 400 })
 
-      const broadcastRecipients = recipients.map(r => ({
-        whatsappNumber: r.phone!,
-        message: campaign.message_template,
-      }))
-
-      let sent = 0, failed = 0
-
-      const { sendWhatsAppText } = await import('@/lib/whatsapp/send-message')
-      for (const r of broadcastRecipients) {
-        try {
-          const result = await sendWhatsAppText(r.whatsappNumber, campaign.message_template)
-          if (result.success) sent++
-          else failed++
-          await new Promise(resolve => setTimeout(resolve, 1200))
-        } catch {
-          failed++
-        }
+      // If this campaign is recurring, arm the *next* run now that the
+      // first batch has been queued; scheduleCampaignSend() itself never
+      // touches next_run_at (it's also called by the recurrence advancer,
+      // which sets next_run_at itself after each subsequent run).
+      if (campaign.is_recurring && campaign.recurrence_interval) {
+        const days = { daily: 1, weekly: 7, monthly: 30 }[campaign.recurrence_interval as 'daily' | 'weekly' | 'monthly'] || 7
+        await supabaseAdmin
+          .from('broadcast_campaigns')
+          .update({ next_run_at: new Date(Date.now() + days * 86_400_000).toISOString() })
+          .eq('id', campaign_id)
       }
 
-      await supabaseAdmin
-        .from('broadcast_campaigns')
-        .update({ status: 'completed', sent_count: sent, failed_count: failed })
-        .eq('id', campaign_id)
+      return NextResponse.json({ success: true, queued: result.recipientCount })
+    }
 
-      return NextResponse.json({ success: true, sent, failed, total: recipients.length })
+    // Pause / resume / cancel (Priority 3: Campaign Scheduler). Pause and
+    // resume only toggle status — queued messages already in message_queue
+    // stay 'pending' either way, and the drain cron (processCampaignQueue)
+    // checks the campaign's live status per-batch before sending, so a
+    // pause takes effect on the next drain tick without touching every
+    // queued row. Cancel additionally marks any still-pending queued
+    // messages 'skipped' so they stop showing up as outstanding work.
+    if (action === 'pause' && campaign_id) {
+      const { data: campaign, error } = await supabaseAdmin
+        .from('broadcast_campaigns')
+        .update({ status: 'paused' })
+        .eq('id', campaign_id)
+        .select('*')
+        .single()
+      if (error) throw error
+      return NextResponse.json({ campaign })
+    }
+
+    if (action === 'resume' && campaign_id) {
+      const { data: campaign, error } = await supabaseAdmin
+        .from('broadcast_campaigns')
+        .update({ status: 'running' })
+        .eq('id', campaign_id)
+        .select('*')
+        .single()
+      if (error) throw error
+      return NextResponse.json({ campaign })
+    }
+
+    if (action === 'cancel' && campaign_id) {
+      const { data: campaign, error } = await supabaseAdmin
+        .from('broadcast_campaigns')
+        .update({ status: 'cancelled', is_recurring: false })
+        .eq('id', campaign_id)
+        .select('*')
+        .single()
+      if (error) throw error
+
+      await supabaseAdmin
+        .from('message_queue')
+        .update({ status: 'skipped' })
+        .eq('status', 'pending')
+        .eq('metadata->>campaign_id', campaign_id)
+
+      return NextResponse.json({ campaign })
     }
 
     return NextResponse.json({ error: 'Invalid action' }, { status: 400 })

@@ -110,8 +110,11 @@ export default function ReservationDetailsPage({ params }: { params: { id: strin
   const [actionPending, setActionPending] = useState<StatusAction | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [generatingProposal, setGeneratingProposal] = useState(false)
-  const [proposalResult, setProposalResult] = useState<{ proposalNumber: string | null; totalPrice: number } | null>(null)
+  const [proposalResult, setProposalResult] = useState<{ proposalId: string; proposalNumber: string | null; totalPrice: number } | null>(null)
   const [proposalError, setProposalError] = useState<string | null>(null)
+  // Invoice generation (Reservation Platform activation, Phase 5).
+  const [generatingInvoice, setGeneratingInvoice] = useState(false)
+  const [invoiceError, setInvoiceError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -150,18 +153,55 @@ export default function ReservationDetailsPage({ params }: { params: { id: strin
     }
   }
 
+  /** Shared by the "Generate proposal" and "Generate Invoice" actions below — a proposal is a prerequisite for an invoice (invoices are proposal-scoped, see /api/proposals/[id]/invoice), so both paths need "the reservation's proposal id, creating one if it doesn't exist yet" rather than duplicating the create-a-proposal call in two places. */
+  async function ensureProposalId(): Promise<string> {
+    const existing = reservation?.proposalId ?? proposalResult?.proposalId
+    if (existing) return existing
+
+    const res = await fetch(`/api/reservations/${params.id}/proposal`, { method: 'POST' })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error ?? 'Failed to generate proposal')
+    setProposalResult({ proposalId: json.proposalId, proposalNumber: json.proposalNumber, totalPrice: json.totalPrice })
+    return json.proposalId as string
+  }
+
   async function handleGenerateProposal() {
     setGeneratingProposal(true)
     setProposalError(null)
     try {
-      const res = await fetch(`/api/reservations/${params.id}/proposal`, { method: 'POST' })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error ?? 'Failed to generate proposal')
-      setProposalResult({ proposalNumber: json.proposalNumber, totalPrice: json.totalPrice })
+      await ensureProposalId()
     } catch (err) {
       setProposalError(err instanceof Error ? err.message : 'Failed to generate proposal')
     } finally {
       setGeneratingProposal(false)
+    }
+  }
+
+  /**
+   * Invoice generation (Reservation Platform activation, Phase 5). Reuses
+   * the existing, already-working invoice pipeline exactly as the Proposals
+   * page does (window.open(`/api/proposals/${id}/invoice`, '_blank') — see
+   * src/app/(crm)/proposals/page.tsx) rather than building a second invoice
+   * renderer: that route already does an idempotent create-or-fetch of the
+   * `invoices` row and now (this change) also writes the result back onto
+   * `reservations.invoice_id` when the proposal it's invoicing came from a
+   * reservation. This button's only job is to make sure a proposal exists
+   * first (invoices are proposal-scoped), then open that same route.
+   */
+  async function handleGenerateInvoice() {
+    setGeneratingInvoice(true)
+    setInvoiceError(null)
+    try {
+      const proposalId = await ensureProposalId()
+      window.open(`/api/proposals/${proposalId}/invoice`, '_blank')
+      // The invoice route sets reservations.invoice_id as a side effect once
+      // it runs (in the tab that just opened) — reload shortly after so this
+      // page picks up the link without the operator needing a manual refresh.
+      setTimeout(load, 1500)
+    } catch (err) {
+      setInvoiceError(err instanceof Error ? err.message : 'Failed to generate invoice')
+    } finally {
+      setGeneratingInvoice(false)
     }
   }
 
@@ -288,12 +328,24 @@ export default function ReservationDetailsPage({ params }: { params: { id: strin
             </button>
           )}
           {reservation.invoiceId ? (
-            <span className="inline-flex items-center gap-1.5 text-blue-600"><Receipt className="w-3.5 h-3.5" /> Invoice generated</span>
+            <button
+              onClick={() => window.open(`/api/proposals/${reservation.proposalId ?? proposalResult?.proposalId}/invoice`, '_blank')}
+              className="inline-flex items-center gap-1.5 text-blue-600 hover:underline"
+            >
+              <Receipt className="w-3.5 h-3.5" /> View invoice
+            </button>
           ) : (
-            <span className="inline-flex items-center gap-1.5 text-gray-400"><Receipt className="w-3.5 h-3.5" /> Generate an invoice from the proposal once created (Proposals page)</span>
+            <button
+              onClick={handleGenerateInvoice}
+              disabled={generatingInvoice}
+              className="inline-flex items-center gap-1.5 text-blue-600 hover:underline disabled:opacity-50"
+            >
+              <Receipt className="w-3.5 h-3.5" /> {generatingInvoice ? 'Generating…' : 'Generate Invoice'}
+            </button>
           )}
         </div>
         {proposalError && <div className="mt-2 text-sm text-red-700">{proposalError}</div>}
+        {invoiceError && <div className="mt-2 text-sm text-red-700">{invoiceError}</div>}
       </div>
 
       {/* ── Status actions ──────────────────────────────────────────────── */}

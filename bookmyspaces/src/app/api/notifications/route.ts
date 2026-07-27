@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { getCurrentUser } from '@/lib/supabase-server'
+import { logger } from '@/lib/logger'
 
 export const dynamic = 'force-dynamic'
 
@@ -31,7 +32,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const { data, error } = await query
 
     if (error) {
-      console.error('[API /notifications GET]', error.message)
+      logger.error('notifications', 'GET failed', error)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
@@ -49,8 +50,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     })
 
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[API /notifications GET] unexpected:', msg)
+    logger.error('notifications', 'GET unexpected error', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
@@ -91,8 +91,7 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ success: true })
 
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[API /notifications PATCH]', msg)
+    logger.error('notifications', 'PATCH unexpected error', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

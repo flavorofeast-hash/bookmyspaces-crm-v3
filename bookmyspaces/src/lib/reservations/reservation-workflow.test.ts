@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   createReservation: vi.fn(),
   transitionReservationStatus: vi.fn(),
   getInventoryItemRate: vi.fn(),
+  getMealPlanById: vi.fn(),
 }))
 
 vi.mock('./availability-service', () => ({
@@ -20,6 +21,11 @@ vi.mock('@/lib/pricing/pricing-service', () => ({
   getInventoryItemRate: mocks.getInventoryItemRate,
 }))
 
+// Meal Plan booking-flow integration (Reservation Platform activation, Phase 3).
+vi.mock('./property-service', () => ({
+  getMealPlanById: mocks.getMealPlanById,
+}))
+
 const activityInserts: Record<string, unknown>[] = []
 vi.mock('@/lib/supabase', () => ({
   getSupabaseAdmin: () => ({
@@ -32,7 +38,7 @@ vi.mock('@/lib/supabase', () => ({
   }),
 }))
 
-import { calculatePrice, createReservationWithQuote, confirmReservation, cancelReservation, checkInReservation, checkOutReservation } from './reservation-workflow'
+import { calculatePrice, calculateMealPlanCharge, createReservationWithQuote, confirmReservation, cancelReservation, checkInReservation, checkOutReservation } from './reservation-workflow'
 
 const baseInput = {
   guestName: 'Priya Sharma',
@@ -43,7 +49,10 @@ const baseInput = {
 }
 
 describe('calculatePrice', () => {
-  beforeEach(() => mocks.getInventoryItemRate.mockReset())
+  beforeEach(() => {
+    mocks.getInventoryItemRate.mockReset()
+    mocks.getMealPlanById.mockReset()
+  })
 
   it('sums a nightly rate across each night of the stay', async () => {
     mocks.getInventoryItemRate.mockResolvedValueOnce(5000).mockResolvedValueOnce(5500)
@@ -54,6 +63,8 @@ describe('calculatePrice', () => {
     expect(quote.nightlyRates).toEqual([5000, 5500])
     expect(quote.subtotal).toBe(10500)
     expect(quote.isComplete).toBe(true)
+    expect(quote.mealPlanCharge).toBe(0)
+    expect(quote.grandTotal).toBe(10500)
   })
 
   it('multiplies by roomCount', async () => {
@@ -71,6 +82,45 @@ describe('calculatePrice', () => {
     expect(quote.unpricedNights).toBe(1)
     expect(quote.isComplete).toBe(false)
   })
+
+  // Meal Plan booking-flow integration (Reservation Platform activation, Phase 3).
+  it('adds the meal plan charge (price x nights x roomCount) onto grandTotal without touching subtotal', async () => {
+    mocks.getInventoryItemRate.mockResolvedValueOnce(5000).mockResolvedValueOnce(5000)
+    mocks.getMealPlanById.mockResolvedValue({ id: 'mp-1', propertyId: 'prop-1', code: 'breakfast', name: 'Breakfast', description: null, price: 500, isActive: true })
+
+    const quote = await calculatePrice('item-1', '2026-08-01', '2026-08-03', 2, 'mp-1')
+
+    expect(quote.subtotal).toBe(20000) // 2 nights x 5000 x 2 rooms
+    expect(quote.mealPlanCharge).toBe(2000) // 500 x 2 nights x 2 rooms
+    expect(quote.grandTotal).toBe(22000)
+    expect(quote.mealPlanId).toBe('mp-1')
+  })
+
+  it('treats an unknown mealPlanId as no meal plan rather than throwing', async () => {
+    mocks.getInventoryItemRate.mockResolvedValue(5000)
+    mocks.getMealPlanById.mockResolvedValue(null)
+
+    const quote = await calculatePrice('item-1', '2026-08-01', '2026-08-02', 1, 'missing-plan')
+
+    expect(quote.mealPlanCharge).toBe(0)
+    expect(quote.grandTotal).toBe(quote.subtotal)
+  })
+})
+
+describe('calculateMealPlanCharge', () => {
+  beforeEach(() => mocks.getMealPlanById.mockReset())
+
+  it('returns 0 without a lookup when no mealPlanId is given', async () => {
+    expect(await calculateMealPlanCharge(null, 3, 2)).toBe(0)
+    expect(await calculateMealPlanCharge(undefined, 3, 2)).toBe(0)
+    expect(mocks.getMealPlanById).not.toHaveBeenCalled()
+  })
+
+  it('multiplies the meal plan price by nights and roomCount', async () => {
+    mocks.getMealPlanById.mockResolvedValue({ id: 'mp-1', propertyId: 'prop-1', code: 'map', name: 'MAP', description: null, price: 800, isActive: true })
+
+    expect(await calculateMealPlanCharge('mp-1', 4, 2)).toBe(6400) // 800 x 4 x 2
+  })
 })
 
 describe('createReservationWithQuote', () => {
@@ -78,6 +128,7 @@ describe('createReservationWithQuote', () => {
     mocks.checkAvailability.mockReset()
     mocks.createReservation.mockReset()
     mocks.getInventoryItemRate.mockReset().mockResolvedValue(5000)
+    mocks.getMealPlanById.mockReset()
     activityInserts.length = 0
   })
 
@@ -111,6 +162,31 @@ describe('createReservationWithQuote', () => {
     await createReservationWithQuote(baseInput)
 
     expect(activityInserts).toHaveLength(0)
+  })
+
+  // Meal Plan booking-flow integration (Reservation Platform activation,
+  // Phase 3) — the seam this test exists to catch: the quote's computed
+  // pricing must actually reach createReservation()'s persisted fields, not
+  // just come back in the returned `quote` object.
+  it('persists the quoted room rate and meal plan charge onto the reservation it creates', async () => {
+    mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-1', customerId: 'lead-1' } })
+    mocks.getMealPlanById.mockResolvedValue({ id: 'mp-1', propertyId: 'prop-1', code: 'breakfast', name: 'Breakfast', description: null, price: 500, isActive: true })
+
+    const result = await createReservationWithQuote({ ...baseInput, mealPlanId: 'mp-1' })
+
+    expect(result.quote?.subtotal).toBe(10000) // 2 nights x 5000
+    expect(result.quote?.mealPlanCharge).toBe(1000) // 500 x 2 nights
+    expect(result.quote?.grandTotal).toBe(11000)
+
+    expect(mocks.createReservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseRoomRate: 10000,
+        finalRoomRate: 11000,
+        mealPlanId: 'mp-1',
+        mealPlanCharge: 1000,
+      })
+    )
   })
 })
 

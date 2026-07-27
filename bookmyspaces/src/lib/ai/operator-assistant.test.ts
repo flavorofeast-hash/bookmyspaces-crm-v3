@@ -41,10 +41,12 @@ const baseContext: AIContext = {
   proposalHistory: [],
   customerPreferences: { preferredEventType: null, preferredGuestCount: null, preferredVenue: null, notes: null },
   activePackages: [],
+  upsellInventory: { mealPlans: [], addonServices: [] },
+  eventPackages: [],
   knowledgeBaseResults: [],
   pricing: { activePackages: [], pricingDrift: [] },
   businessRules: { cancellationWindowHours: 48, advancePaymentPercent: 30, checkInTime: '14:00', checkOutTime: '11:00', isLiveConfig: false },
-  degraded: { reservationHistory: false, conversationHistory: false },
+  degraded: { reservationHistory: false, conversationHistory: false, upsellInventory: false, eventPackages: false },
 }
 
 describe('runOperatorAssist', () => {

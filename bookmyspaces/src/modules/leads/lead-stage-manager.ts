@@ -4,6 +4,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { getSupabaseAdmin } from '@/lib/supabase';
+import { logger } from '@/lib/logger';
 import {
   LeadStage,
   LEAD_STAGES,
@@ -126,8 +127,7 @@ export async function transitionStage({
         metadata    : { forced: force },
       });
     } catch (auditErr: unknown) {
-      const auditMsg = auditErr instanceof Error ? auditErr.message : String(auditErr);
-      console.warn('[LeadStageManager] Audit log failed (stage update already applied):', auditMsg);
+      logger.warn('lead-stage-manager', 'Audit log failed (stage update already applied)', { leadId, error: auditErr instanceof Error ? auditErr.message : String(auditErr) });
     }
 
     return { success: true, previousStage: fromStage, newStage: toStage, error: null };
@@ -195,8 +195,8 @@ export async function autoAdvanceStage(
   });
 
   if (!result.success) {
-    console.warn('[LeadStageManager] Auto-advance failed:', result.error);
+    logger.warn('lead-stage-manager', 'Auto-advance failed', { leadId: lead.id, error: result.error });
   } else {
-    console.log(`[LeadStageManager] Auto-advanced ${lead.id}: ${result.previousStage} → ${result.newStage}`);
+    logger.info('lead-stage-manager', `Auto-advanced ${result.previousStage} -> ${result.newStage}`, { leadId: lead.id });
   }
 }

@@ -6,6 +6,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { logger } from '@/lib/logger'
 
 export const dynamic = 'force-dynamic'
 
@@ -69,7 +70,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .eq('id', proposalId)
 
     if (error) {
-      console.error('[API /proposals/track-view]', error.message)
+      logger.error('proposals-track-view', 'update failed', error)
     }
 
     return NextResponse.json({
@@ -81,8 +82,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   } catch (err: unknown) {
     // Never let tracking crash — proposal viewing must always work
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[API /proposals/track-view] non-fatal error:', msg)
+    logger.error('proposals-track-view', 'non-fatal error', err)
     return NextResponse.json({ tracked: false })
   }
 }

@@ -86,6 +86,8 @@ export async function POST(req: NextRequest) {
       specialRequests: body.specialRequests ?? null,
       crmLeadId: body.crmLeadId ?? body.customerId ?? null,
       proposalId: body.proposalId ?? null,
+      mealPlanId: body.mealPlanId ?? null,
+      addons: body.addons ?? undefined,
     })
 
     if (!reservationResult.ok) {

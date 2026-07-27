@@ -109,11 +109,21 @@ export const leadStageBodySchema = z.object({
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be a YYYY-MM-DD date')
 
+/** Add-on Services booking-flow integration (Reservation Platform activation, Phase 4). */
+export const addonLineSchema = z.object({
+  addonServiceId: uuid,
+  quantity      : z.number().int().positive().max(50).default(1),
+})
+
 export const checkAvailabilitySchema = z.object({
   inventoryItemId: uuid,
   checkInDate    : isoDate,
   checkOutDate   : isoDate,
   roomCount      : z.number().int().positive().max(50).nullish(),
+  /** Meal Plan booking-flow integration (Reservation Platform activation, Phase 3) — lets the live quote preview include the meal plan charge before the reservation is created. */
+  mealPlanId     : uuid.nullish(),
+  /** Add-on Services booking-flow integration (Reservation Platform activation, Phase 4) — same live-preview reasoning as mealPlanId above. */
+  addons         : z.array(addonLineSchema).max(20).nullish(),
 })
 
 export const createReservationSchema = z.object({
@@ -136,6 +146,10 @@ export const createReservationSchema = z.object({
   crmLeadId      : uuid.nullish(),
   /** Set when converting an accepted proposal into a reservation (Sprint 3). */
   proposalId     : uuid.nullish(),
+  /** Meal Plan booking-flow integration (Reservation Platform activation, Phase 3). */
+  mealPlanId     : uuid.nullish(),
+  /** Add-on Services booking-flow integration (Reservation Platform activation, Phase 4). */
+  addons         : z.array(addonLineSchema).max(20).nullish(),
 })
 
 export const reservationStatusActionSchema = z.object({
@@ -150,6 +164,11 @@ export const operatorAssistActionSchema = z.object({
   action: z.enum([
     'customer_summary', 'conversation_summary', 'suggested_whatsapp_reply',
     'suggested_email', 'recommended_room', 'recommended_package', 'recommended_follow_up',
+    'upsell_recommendations',
+    // Direct Event Sales Engine, Section 2/7 — structured (JSON) action,
+    // routed to runEventSalesAdvisor() instead of runOperatorAssist() by
+    // src/app/api/customers/[id]/ai/route.ts, see that file.
+    'event_sales_advisor',
   ]),
   conversationId: uuid.nullish(),
 })
@@ -289,6 +308,50 @@ export const createAddonServiceSchema = z.object({
 
 export const updateAddonServiceSchema = createAddonServiceSchema.partial()
 
+// Direct Event Sales Engine, Section 3 — Event Package Management, added to
+// the existing generic admin catalog CRUD (see catalog-service.ts's
+// CATALOG_ENTITIES['packages']) rather than a bespoke validation path.
+const packageAddonLineSchema = z.object({
+  name       : z.string().trim().min(1).max(200),
+  price      : money,
+  description: z.string().trim().max(500).nullish(),
+}).strict()
+
+// Business-strategy expansion (migration 024) — additive seasonal pricing rule.
+const packageSeasonalPricingRuleSchema = z.object({
+  label             : z.string().trim().min(1).max(200),
+  startDate         : z.string().trim().min(1).max(40),
+  endDate           : z.string().trim().min(1).max(40),
+  priceAdjustmentPct: z.number().min(-100).max(500),
+}).strict()
+
+export const createPackageCatalogSchema = z.object({
+  name                  : z.string().trim().min(1).max(200),
+  venue                 : z.string().trim().min(1).max(200),
+  hall                  : z.string().trim().max(200).nullish(),
+  seating_style         : z.string().trim().max(100).nullish(),
+  tier                  : z.number().int().min(1).max(10).optional(),
+  base_price            : money,
+  max_guests            : z.number().int().positive().max(10000).optional(),
+  duration_hours        : z.number().int().positive().max(72).optional(),
+  inclusions            : z.array(z.string().trim().max(300)).max(50).optional(),
+  addons                : z.array(packageAddonLineSchema).max(50).optional(),
+  addon_service_ids     : z.array(uuid).max(50).optional(),
+  description           : z.string().trim().max(4000).nullish(),
+  is_popular            : z.boolean().optional(),
+  ai_description        : z.string().trim().max(4000).nullish(),
+  event_types           : z.array(z.string().trim().max(50)).max(20).optional(),
+  images                : z.array(z.string().trim().max(2000)).max(30).optional(),
+  room_inventory_item_ids: z.array(uuid).max(50).optional(),
+  meal_plan_id          : uuid.nullish(),
+  tax_rate_override_pct : z.number().min(0).max(100).nullish(),
+  seasonal_pricing      : z.array(packageSeasonalPricingRuleSchema).max(20).optional(),
+  standard_discount_pct : z.number().min(0).max(100).nullish(),
+  is_active             : z.boolean().optional(),
+}).strict()
+
+export const updatePackageCatalogSchema = createPackageCatalogSchema.partial()
+
 // Entity → schema lookup used by the /api/admin/catalog/[entity] routes.
 export const catalogCreateSchemas = {
   'properties'     : createPropertySchema,
@@ -296,6 +359,7 @@ export const catalogCreateSchemas = {
   'meal-plans'     : createMealPlanSchema,
   'rate-plans'     : createRatePlanSchema,
   'addon-services' : createAddonServiceSchema,
+  'packages'       : createPackageCatalogSchema,
 } as const
 
 export const catalogUpdateSchemas = {
@@ -304,6 +368,7 @@ export const catalogUpdateSchemas = {
   'meal-plans'     : updateMealPlanSchema,
   'rate-plans'     : updateRatePlanSchema,
   'addon-services' : updateAddonServiceSchema,
+  'packages'       : updatePackageCatalogSchema,
 } as const
 
 // ─── Knowledge sources + AI prompts (V3 Phase 2c) ──────────────────────────

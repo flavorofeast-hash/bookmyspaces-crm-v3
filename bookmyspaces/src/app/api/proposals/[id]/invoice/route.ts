@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
+import { splitInclusiveTax } from '@/lib/tax'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -92,6 +93,13 @@ function buildInvoiceHTML(proposal: any, invoice: any, payments: any[]): string 
   const hasRooms    = roomItems.length > 0
   const totalWords  = amountInWords(totalPrice)
   const paidTotal   = advancePaid  // same value — reuse, no second reduce
+  // Priority 3 (Taxes) — tax_amount is read from the already-computed,
+  // already-persisted invoice row (see splitInclusiveTax() in the POST/GET
+  // handler below), not recomputed here, so a later rate change never
+  // alters an already-issued invoice's displayed split. 0 (today's default)
+  // means this line simply doesn't render — zero visual change for anyone
+  // who hasn't configured DEFAULT_TAX_RATE_PERCENT.
+  const taxAmount   = Number(invoice.tax_amount || 0)
 
   const clientName  = escapeHtml(proposal.client_name)
   const clientPhone = escapeHtml(proposal.client_phone)
@@ -344,6 +352,8 @@ ${hasRooms ? `
     <div class="fin-row"><span class="fin-lbl">Add-ons</span><span class="fin-val">${inr(addonsTotal)}</span></div>` : ''}
     ${hasRooms ? `
     <div class="fin-row"><span class="fin-lbl">Accommodation</span><span class="fin-val">${inr(roomsTotal)}</span></div>` : ''}
+    ${taxAmount>0 ? `
+    <div class="fin-row"><span class="fin-lbl" style="color:#8a8a9a">GST (included in total)</span><span class="fin-val" style="color:#8a8a9a">${inr(taxAmount)}</span></div>` : ''}
     ${discountAmt>0 ? `
     <div class="fin-sep-soft"></div>
     <div class="fin-row"><span class="fin-lbl fin-discount">Discount</span><span class="fin-val fin-discount">− ${inr(discountAmt)}</span></div>` : ''}
@@ -492,13 +502,20 @@ export async function GET(
     let invoice = existingInv
 
     if (!invoice) {
+      // Priority 3 (Taxes) — see src/lib/tax.ts for the full reasoning.
+      // Computed once, at invoice creation, same as invoice_number — a
+      // rate change afterward should not retroactively alter an already-
+      // issued invoice's tax split, matching how invoice_number is stable
+      // once assigned (trg_invoice_number, migration 009).
+      const tax = splitInclusiveTax(Number(proposal.total_price || 0))
+
       const { data: newInv, error: invErr } = await supabase
         .from('invoices')
         .insert({
           proposal_id     : params.id,
           subtotal        : Number(proposal.total_price || 0) + Number(proposal.discount_amount || 0),
           discount_amount : Number(proposal.discount_amount || 0),
-          tax_amount      : 0,
+          tax_amount      : tax.taxAmount,
           total_amount    : Number(proposal.total_price || 0),
           advance_received: totalPaid,
           balance_due     : balanceDue,
@@ -515,6 +532,28 @@ export async function GET(
         balance_due     : balanceDue,
         status          : balanceDue <= 0 ? 'paid' : 'sent',
       }).eq('id', invoice.id)
+    }
+
+    // Reservation Platform activation, Phase 5 — Invoice generation.
+    // reservations.invoice_id (migration 012) has existed since that schema
+    // was drafted but no code path ever populated it. If this proposal was
+    // generated FROM a reservation (migration 013's proposals.reservation_id,
+    // set by src/lib/proposals/proposal-service.ts's
+    // createProposalFromReservation()), link the invoice back onto that
+    // reservation here — the one place an invoice is actually resolved for
+    // any proposal, reservation-originated or not, so this is the correct
+    // single spot for the write rather than duplicating invoice-resolution
+    // logic in a separate reservation-scoped route. Best-effort: the invoice
+    // response below is already valid regardless of whether this succeeds.
+    if (proposal.reservation_id) {
+      try {
+        await supabase
+          .from('reservations')
+          .update({ invoice_id: invoice.id })
+          .eq('id', proposal.reservation_id)
+      } catch {
+        // Not fatal — see comment above.
+      }
     }
 
     const html     = buildInvoiceHTML(proposal, invoice, allPayments)

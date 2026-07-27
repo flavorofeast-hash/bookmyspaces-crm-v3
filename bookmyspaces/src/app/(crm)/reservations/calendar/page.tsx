@@ -64,6 +64,13 @@ const STATUS_STYLE: Record<ReservationStatus, string> = {
 
 const VISIBLE_STATUSES: ReservationStatus[] = ['inquiry', 'tentative', 'confirmed', 'checked_in', 'checked_out']
 
+// Priority 5 (Occupancy Dashboard) — same four "actually blocks the room"
+// statuses availability-service.ts and /api/dashboard/operations already
+// use (that route's BLOCKING_STATUSES), not VISIBLE_STATUSES above —
+// checked_out reservations are shown on the grid for history but shouldn't
+// count as "occupied" in a rate a manager is reading for planning purposes.
+const OCCUPANCY_STATUSES: ReservationStatus[] = ['inquiry', 'tentative', 'confirmed', 'checked_in']
+
 const INVENTORY_TYPE_LABEL: Record<string, string> = {
   room: 'Rooms',
   suite: 'Suites',
@@ -162,6 +169,24 @@ export default function ReservationCalendarPage() {
     }
     return map
   }, [reservations, days])
+
+  // Priority 5 (Occupancy Dashboard) — per-day occupancy % across the
+  // visible window, reusing `coverage`/`visibleItems` already computed
+  // above rather than a new API call. Respects the property filter, so
+  // switching properties updates the rate the same way the grid below it
+  // does. Denominator is `visibleItems.length`, same "how many bookable
+  // units exist" denominator /api/dashboard/operations uses for today.
+  const dailyOccupancy = useMemo(() => {
+    const total = visibleItems.length
+    return days.map((d) => {
+      let occupied = 0
+      for (const item of visibleItems) {
+        const res = coverage.get(item.id)?.get(d)
+        if (res && (OCCUPANCY_STATUSES as string[]).includes(res.status)) occupied += 1
+      }
+      return { date: d, occupied, total, pct: total > 0 ? Math.round((occupied / total) * 1000) / 10 : null }
+    })
+  }, [days, visibleItems, coverage])
 
   const todayISO = toISODate(new Date())
 
@@ -270,6 +295,28 @@ export default function ReservationCalendarPage() {
                     </th>
                   )
                 })}
+              </tr>
+              <tr className="border-b border-gray-100 bg-gray-50/60">
+                <th className="sticky left-0 bg-gray-50/60 px-4 py-1.5 text-left font-medium text-gray-400">Occupancy</th>
+                {dailyOccupancy.map(({ date, pct, occupied, total }) => (
+                  <th key={date} className={`px-2 py-1.5 text-center font-normal ${date === todayISO ? 'bg-indigo-50/70' : ''}`}>
+                    {pct === null ? (
+                      <span className="text-gray-300">—</span>
+                    ) : (
+                      <span
+                        title={`${occupied} / ${total} booked`}
+                        className={`inline-block rounded px-1 py-0.5 text-[10px] font-medium ${
+                          pct >= 85 ? 'bg-red-100 text-red-700'
+                          : pct >= 60 ? 'bg-amber-100 text-amber-700'
+                          : pct > 0 ? 'bg-emerald-100 text-emerald-700'
+                          : 'text-gray-300'
+                        }`}
+                      >
+                        {pct}%
+                      </span>
+                    )}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>

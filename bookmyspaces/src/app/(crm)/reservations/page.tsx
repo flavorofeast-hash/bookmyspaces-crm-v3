@@ -63,13 +63,46 @@ interface PriceQuote {
   subtotal: number
   nights: number
   isComplete: boolean
+  // Meal Plan booking-flow integration (Reservation Platform activation, Phase 3).
+  mealPlanCharge: number
+  // Add-on Services booking-flow integration (Reservation Platform activation, Phase 4).
+  addonsCharge: number
+  grandTotal: number
+}
+
+// Meal Plan booking-flow integration (Reservation Platform activation, Phase 3).
+interface MealPlan {
+  id: string
+  propertyId: string
+  name: string
+  price: number
+}
+
+// Add-on Services booking-flow integration (Reservation Platform activation, Phase 4).
+interface AddonService {
+  id: string
+  propertyId: string
+  name: string
+  category: string | null
+  price: number
 }
 
 // V3 Sprint 3 — Convert Proposal -> Reservation. Data pulled from
 // GET /api/proposals?id= to prefill the New Reservation modal when arriving
 // via the Proposals page's "Convert to Reservation" link.
 interface ProposalPrefill {
-  proposalId: string
+  // Optional — absent when arriving from a lead/conversation rather than an
+  // existing proposal (see `fromLeadId` below). `initial?.proposalId ?? null`
+  // downstream already treats "no proposal" as the normal manual-creation
+  // case, so this didn't need to change to support that path.
+  proposalId?: string
+  // CRM lead this booking should be linked to (reservations.customer_id).
+  // Wired through to POST /api/reservations' `customerId`, which the
+  // service layer already supported end-to-end (reservation-service.ts) —
+  // the UI simply never sent it, so reservations created via this modal
+  // were never linked back to a lead record even when one was known. Not
+  // set means "no known lead", same as today's manual-entry behavior.
+  leadId?: string | null
   guestName: string
   guestMobile: string
   guestEmail: string | null
@@ -121,6 +154,14 @@ export default function ReservationDashboardPage() {
 function ReservationDashboardContent() {
   const searchParams = useSearchParams()
   const fromProposalId = searchParams.get('fromProposalId')
+  // Priority 1 (WhatsApp Sales Platform) — "Booking creation" from the
+  // Inbox: a lead/conversation with no proposal yet. Reuses the exact same
+  // ProposalPrefill shape and modal as the proposal-conversion path above,
+  // just without a proposalId (already handled downstream as "not linked").
+  const fromLeadId = searchParams.get('fromLeadId')
+  const prefillName = searchParams.get('name')
+  const prefillPhone = searchParams.get('phone')
+  const prefillEmail = searchParams.get('email')
 
   const [reservations, setReservations] = useState<ReservationRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -163,6 +204,7 @@ function ReservationDashboardContent() {
         }
         setProposalPrefill({
           proposalId: p.id,
+          leadId: p.lead_id ?? null,
           guestName: p.client_name ?? '',
           guestMobile: p.client_phone ?? '',
           guestEmail: p.client_email ?? null,
@@ -177,6 +219,24 @@ function ReservationDashboardContent() {
         setShowNewModal(true)
       })
   }, [fromProposalId])
+
+  // Priority 1 (WhatsApp Sales Platform) — arriving from the Inbox's "New
+  // Reservation" quick action on a conversation: no proposal exists yet,
+  // just a known lead. Query params are already the full prefill (no fetch
+  // needed) — property/room/dates are still picked manually by the operator.
+  useEffect(() => {
+    if (!fromLeadId || fromProposalId) return
+    setProposalPrefill({
+      leadId: fromLeadId,
+      guestName: prefillName ?? '',
+      guestMobile: prefillPhone ?? '',
+      guestEmail: prefillEmail ?? null,
+      propertyId: null,
+      inventoryItemId: null,
+      checkInDate: null,
+    })
+    setShowNewModal(true)
+  }, [fromLeadId, fromProposalId, prefillName, prefillPhone, prefillEmail])
 
   const today = todayISO()
 
@@ -356,8 +416,15 @@ function NewReservationModal({
   onCreated: () => void
 }) {
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([])
+  const [mealPlans, setMealPlans] = useState<MealPlan[]>([])
+  const [addonServices, setAddonServices] = useState<AddonService[]>([])
   const [loadingProps, setLoadingProps] = useState(true)
   const [inventoryItemId, setInventoryItemId] = useState(initial?.inventoryItemId ?? '')
+  const [mealPlanId, setMealPlanId] = useState('')
+  // Add-on Services booking-flow integration (Reservation Platform
+  // activation, Phase 4). addonServiceId -> quantity; presence in the map
+  // means "selected", same convention as a checkbox list with per-item qty.
+  const [selectedAddons, setSelectedAddons] = useState<Record<string, number>>({})
   const [guestName, setGuestName] = useState(initial?.guestName ?? '')
   const [guestMobile, setGuestMobile] = useState(initial?.guestMobile ?? '')
   const [guestEmail, setGuestEmail] = useState(initial?.guestEmail ?? '')
@@ -372,12 +439,44 @@ function NewReservationModal({
   useEffect(() => {
     fetch('/api/properties')
       .then((r) => r.json())
-      .then((json) => setInventoryItems(json.inventoryItems ?? []))
-      .catch(() => setInventoryItems([]))
+      .then((json) => {
+        setInventoryItems(json.inventoryItems ?? [])
+        setMealPlans(json.mealPlans ?? [])
+        setAddonServices(json.addonServices ?? [])
+      })
+      .catch(() => { setInventoryItems([]); setMealPlans([]); setAddonServices([]) })
       .finally(() => setLoadingProps(false))
   }, [])
 
   const selectedItem = inventoryItems.find((i) => i.id === inventoryItemId)
+  // Meal Plan / Add-on Services booking-flow integration (Reservation
+  // Platform activation, Phases 3-4). meal_plans.property_id and
+  // addon_services.property_id each scope to one property — only offer
+  // options belonging to the property of the room/hall selected above, same
+  // scoping property-service.ts's list functions support server-side but
+  // the modal applies client-side since /api/properties already returns
+  // every active option across properties in one call.
+  const availableMealPlans = mealPlans.filter((mp) => !selectedItem || mp.propertyId === selectedItem.propertyId)
+  const availableAddonServices = addonServices.filter((a) => !selectedItem || a.propertyId === selectedItem.propertyId)
+
+  function toggleAddon(addonServiceId: string) {
+    setSelectedAddons((prev) => {
+      const next = { ...prev }
+      if (addonServiceId in next) delete next[addonServiceId]
+      else next[addonServiceId] = 1
+      return next
+    })
+    setQuote(null)
+    setAvailable(null)
+  }
+
+  function setAddonQuantity(addonServiceId: string, quantity: number) {
+    setSelectedAddons((prev) => ({ ...prev, [addonServiceId]: Math.max(1, Math.floor(quantity) || 1) }))
+    setQuote(null)
+    setAvailable(null)
+  }
+
+  const addonsPayload = Object.entries(selectedAddons).map(([addonServiceId, quantity]) => ({ addonServiceId, quantity }))
 
   async function handleCheckAvailability() {
     setFormError(null)
@@ -392,7 +491,7 @@ function NewReservationModal({
       const res = await fetch('/api/reservations/availability', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inventoryItemId, checkInDate, checkOutDate }),
+        body: JSON.stringify({ inventoryItemId, checkInDate, checkOutDate, mealPlanId: mealPlanId || null, addons: addonsPayload }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'Failed to check availability')
@@ -420,12 +519,15 @@ function NewReservationModal({
           guestName,
           guestMobile: guestMobile || null,
           guestEmail: guestEmail || null,
+          customerId: initial?.leadId ?? null,
           propertyId: selectedItem?.propertyId ?? initial?.propertyId,
           inventoryItemId,
           checkInDate,
           checkOutDate,
           bookingSource: 'direct',
           proposalId: initial?.proposalId ?? null,
+          mealPlanId: mealPlanId || null,
+          addons: addonsPayload,
         }),
       })
       const json = await res.json()
@@ -466,7 +568,13 @@ function NewReservationModal({
               <label className="text-xs font-medium text-gray-500">Room / Hall</label>
               <select
                 value={inventoryItemId}
-                onChange={(e) => { setInventoryItemId(e.target.value); setQuote(null); setAvailable(null) }}
+                onChange={(e) => {
+                  setInventoryItemId(e.target.value)
+                  setMealPlanId('') // meal plans are per-property — clear a selection that may no longer belong to the new room/hall's property
+                  setSelectedAddons({}) // same reasoning — add-ons are per-property too
+                  setQuote(null)
+                  setAvailable(null)
+                }}
                 className="mt-1 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
               >
                 <option value="">Select…</option>
@@ -476,6 +584,59 @@ function NewReservationModal({
                   </option>
                 ))}
               </select>
+            </div>
+          )}
+
+          {availableMealPlans.length > 0 && (
+            <div>
+              <label className="text-xs font-medium text-gray-500">Meal Plan (optional)</label>
+              <select
+                value={mealPlanId}
+                onChange={(e) => { setMealPlanId(e.target.value); setQuote(null); setAvailable(null) }}
+                className="mt-1 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="">Room only — no meal plan</option>
+                {availableMealPlans.map((mp) => (
+                  <option key={mp.id} value={mp.id}>
+                    {mp.name} (+₹{mp.price.toLocaleString('en-IN')}/night)
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {availableAddonServices.length > 0 && (
+            <div>
+              <label className="text-xs font-medium text-gray-500">Add-on Services (optional)</label>
+              <div className="mt-1 space-y-1.5 border border-gray-200 rounded-lg p-2.5">
+                {availableAddonServices.map((addon) => {
+                  const checked = addon.id in selectedAddons
+                  return (
+                    <div key={addon.id} className="flex items-center justify-between gap-2 text-sm">
+                      <label className="flex items-center gap-2 flex-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleAddon(addon.id)}
+                          className="rounded border-gray-300"
+                        />
+                        <span className="text-gray-700">
+                          {addon.name} <span className="text-gray-400">(₹{addon.price.toLocaleString('en-IN')} each)</span>
+                        </span>
+                      </label>
+                      {checked && (
+                        <input
+                          type="number"
+                          min={1}
+                          value={selectedAddons[addon.id]}
+                          onChange={(e) => setAddonQuantity(addon.id, Number(e.target.value))}
+                          className="w-14 border border-gray-200 rounded px-1.5 py-1 text-xs text-center"
+                        />
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           )}
 
@@ -517,8 +678,17 @@ function NewReservationModal({
             <div className="text-sm bg-green-50 border border-green-200 rounded-lg p-3">
               <div className="font-medium text-green-800">Available — {quote.nights} night(s)</div>
               <div className="text-green-700">
-                Quote: ₹{quote.subtotal.toLocaleString('en-IN')}
+                Room: ₹{quote.subtotal.toLocaleString('en-IN')}
                 {!quote.isComplete && <span className="text-amber-700"> (some nights have no rate plan yet — lower bound)</span>}
+              </div>
+              {quote.mealPlanCharge > 0 && (
+                <div className="text-green-700">Meal plan: ₹{quote.mealPlanCharge.toLocaleString('en-IN')}</div>
+              )}
+              {quote.addonsCharge > 0 && (
+                <div className="text-green-700">Add-ons: ₹{quote.addonsCharge.toLocaleString('en-IN')}</div>
+              )}
+              <div className="text-green-800 font-medium mt-1 pt-1 border-t border-green-200">
+                Total: ₹{quote.grandTotal.toLocaleString('en-IN')}
               </div>
             </div>
           )}

@@ -66,7 +66,11 @@ export async function GET(request: NextRequest) {
     }
 
     const message = WHATSAPP_MESSAGES.followUp(lead.name ?? undefined)
-    const ok      = await smartSend(lead.phone, message, { forceSpamCheck: true })
+    // Customer Journey Timeline fix (Priority 3): leadId now forwarded so
+    // this send shows up on the customer's Timeline (whatsapp_messages.
+    // lead_id is what fetchWhatsAppEntries() requires) — previously this
+    // cron's sends were logged with lead_id=null and invisible there.
+    const ok      = await smartSend(lead.phone, message, { forceSpamCheck: true, leadId: lead.id })
 
     if (ok) {
       await db.from('follow_ups').update({ status: 'sent', sent_at: now }).eq('id', row.id)

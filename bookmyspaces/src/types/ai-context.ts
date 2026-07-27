@@ -72,6 +72,51 @@ export interface PricingContext {
   pricingDrift: Array<{ packageName: string; hardcodedPrice: number; livePrice: number }>
 }
 
+// AI Sales Executive (Priority 1) — "AI Upsell Recommendations". Sourced
+// from the Reservation Platform's meal_plans/addon_services (migration 012),
+// via the exact same src/lib/reservations/property-service.ts functions the
+// booking UI already uses (listActiveMealPlans/listActiveAddonServices) —
+// no new query pattern, no hardcoded upsell catalog. `category` on an addon
+// service is a free-text DB column (e.g. "decoration", "airport_pickup",
+// "banquet"), not a fixed enum, so this stays data-driven: whatever a
+// property actually has configured is what the AI can recommend.
+export interface UpsellMealPlan {
+  name: string
+  code: string
+  price: number
+}
+
+export interface UpsellAddonService {
+  name: string
+  category: string | null
+  price: number
+}
+
+export interface UpsellInventory {
+  mealPlans: UpsellMealPlan[]
+  addonServices: UpsellAddonService[]
+}
+
+// Direct Event Sales Engine, Section 2 — AI Event Sales Advisor. Richer
+// than ActivePackage above (id + eventTypes so the AI can actually match a
+// lead's identified event type to a specific package instead of guessing
+// from name alone) — sourced from src/lib/packages/package-service.ts
+// (migration 023's extended `packages` table), additive alongside the
+// existing activePackages/pricing fields, which stay untouched so
+// recommended_package/upsell_recommendations keep working unchanged.
+export interface EventPackageOption {
+  id: string
+  name: string
+  venue: string
+  basePrice: number
+  maxGuests: number
+  durationHours: number
+  eventTypes: string[]
+  inclusions: string[]
+  addons: Array<{ name: string; price: number }>
+  isPopular: boolean
+}
+
 export interface BusinessRules {
   cancellationWindowHours: number
   advancePaymentPercent: number
@@ -88,6 +133,8 @@ export interface AIContext {
   proposalHistory: ProposalSummary[]
   customerPreferences: CustomerPreferences
   activePackages: ActivePackage[]
+  upsellInventory: UpsellInventory
+  eventPackages: EventPackageOption[]
   knowledgeBaseResults: KnowledgeContextItem[]
   pricing: PricingContext
   businessRules: BusinessRules
@@ -95,6 +142,8 @@ export interface AIContext {
   degraded: {
     reservationHistory: boolean
     conversationHistory: boolean
+    upsellInventory: boolean
+    eventPackages: boolean
   }
 }
 

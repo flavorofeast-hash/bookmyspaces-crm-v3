@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import UserMenu from '@/components/auth/UserMenu'
 
 const links = [
   { href: '/dashboard', label: 'Dashboard' },
@@ -12,6 +13,7 @@ const links = [
   // screen existed unless they already knew the URL. See
   // audit/SPRINT5_GO_LIVE_REPORT.md, Priority 7 (Operator Experience).
   { href: '/dashboard/revenue', label: 'Revenue' },
+  { href: '/dashboard/intelligence', label: 'Intelligence' },
   { href: '/dashboard/operations', label: 'Operations' },
   { href: '/customers', label: 'Customers' },
   { href: '/inbox', label: 'Inbox' },
@@ -48,9 +50,21 @@ export default function CRMLayout({
     <div className="flex min-h-screen bg-gray-50">
       {/* Sidebar */}
       <aside className="w-64 bg-black text-white p-5 flex flex-col">
-        <h1 className="text-2xl font-bold mb-8">
+        <h1 className="text-2xl font-bold mb-4">
           BookMySpaces
         </h1>
+
+        {/* RC hardening: a fully-built UserMenu (avatar, role, profile/
+            settings/admin links, sign-out) existed in the repo but was never
+            mounted anywhere — this sidebar had no way to see who's logged in
+            except the plain "Sign out" button below. Wrapped in a light card
+            since UserMenu's own styling assumes a light background; its
+            sign-out uses the same @supabase/ssr browser client + cookie
+            sync as the rest of the app's auth, so it's a working drop-in,
+            not new logic. */}
+        <div className="bg-white rounded-xl mb-4 px-1">
+          <UserMenu />
+        </div>
 
         <nav className="space-y-2 flex-1">
           {links.map((link) => {

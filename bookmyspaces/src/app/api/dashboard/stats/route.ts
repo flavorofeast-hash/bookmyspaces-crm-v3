@@ -9,6 +9,7 @@ import { NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '@/lib/supabase';
 import { DashboardSummary } from '@/modules/leads/types';
 import { requireAuth } from '@/lib/auth-guard';
+import { logger } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,7 +45,7 @@ export async function GET(): Promise<NextResponse> {
       );
 
     if (error) {
-      console.error('[API /dashboard/stats] Supabase error:', error.message);
+      logger.error('dashboard-stats', 'Supabase error', error);
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
@@ -113,8 +114,7 @@ export async function GET(): Promise<NextResponse> {
     return NextResponse.json(summary);
 
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error('[API /dashboard/stats] Unexpected error:', msg);
+    logger.error('dashboard-stats', 'Unexpected error', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

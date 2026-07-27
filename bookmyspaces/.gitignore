@@ -48,3 +48,32 @@ deployed_route.txt
 
 *.zip
 .env.local.20260603.backup
+
+# Scratch tsconfig files (scoped type-check configs created ad hoc during AI
+# sessions when full-project `tsc` was unreliable in that sandbox — see
+# PRODUCTION_BUILD_VALIDATION.md). Never real project config; tsconfig.json
+# itself is unaffected (this pattern requires two dots, tsconfig.json has one).
+tsconfig.*.json
+
+# One-off debug/fix scripts and dumps from ad hoc troubleshooting sessions —
+# not part of the application, never meant to be long-lived (reviewed during
+# Go-Live prep's final pre-commit cleanup, 2026-07-27).
+all_routes.txt
+build-log.txt
+build-output.log
+gcm-diagnose.log
+deployment-trigger.txt
+clean-supabase-imports.js
+dedup-route-exports.js
+finish-migration.js
+fix-all-missing-types.js
+fix-deployment.js
+fix-supabase-types.js
+fix-vercel-route.js
+migrate-supabase-admin.js
+
+# Accidental 0-byte artifacts (confirmed accidental by user, 2026-07-27 —
+# likely a redirected command output with no target). Flagged for manual
+# deletion; this sandbox's mount does not permit deleting them directly.
+git
+npm

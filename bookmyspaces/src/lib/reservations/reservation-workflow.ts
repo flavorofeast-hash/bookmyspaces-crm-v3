@@ -31,8 +31,9 @@
 
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { checkAvailability, type AvailabilityCheckResult } from './availability-service'
-import { createReservation, transitionReservationStatus, type CreateReservationInput, type CreateReservationResult, type TransitionResult } from './reservation-service'
+import { createReservation, transitionReservationStatus, type CreateReservationInput, type CreateReservationResult, type TransitionResult, type PricedAddonLine } from './reservation-service'
 import { getInventoryItemRate } from '@/lib/pricing/pricing-service'
+import { getMealPlanById, getAddonServicesByIds } from './property-service'
 
 export interface PriceQuote {
   inventoryItemId: string
@@ -46,7 +47,83 @@ export interface PriceQuote {
   unpricedNights: number
   nightlyRates: number[]
   subtotal: number
+  /** Meal Plan booking-flow integration (Reservation Platform activation, Phase 3). 0 when no mealPlanId was quoted. */
+  mealPlanId: string | null
+  mealPlanCharge: number
+  /** Add-on Services booking-flow integration (Reservation Platform activation, Phase 4). Empty/0 when no addons were quoted. */
+  addonLines: PricedAddonLine[]
+  addonsCharge: number
+  /** subtotal + mealPlanCharge + addonsCharge — what the reservation is actually persisted with (final_room_rate + meal_plan_charge, plus the reservation_addons rows). */
+  grandTotal: number
   isComplete: boolean
+}
+
+/**
+ * Meal Plan booking-flow integration (Reservation Platform activation,
+ * Phase 3). Looks the meal plan's price up server-side rather than trusting
+ * a client-submitted charge — same "never trust the client for a price"
+ * posture as calculatePrice()'s rate_plans lookup below. Charge convention:
+ * meal_plans.price is a per-night, per-room amount (matches how rate_plans
+ * prices are applied in the loop below), so the total charge for the stay is
+ * price x nights x roomCount.
+ */
+export async function calculateMealPlanCharge(
+  mealPlanId: string | null | undefined,
+  nights: number,
+  roomCount = 1
+): Promise<number> {
+  if (!mealPlanId) return 0
+  const mealPlan = await getMealPlanById(mealPlanId)
+  if (!mealPlan) return 0
+  return mealPlan.price * nights * roomCount
+}
+
+// ─── Add-on Services booking-flow integration (Reservation Platform activation, Phase 4) ──
+
+/** What a caller (API route) submits — a raw selection, unpriced. */
+export interface AddonLineInput {
+  addonServiceId: string
+  quantity: number
+}
+
+// PricedAddonLine (what gets quoted back and, on create, persisted into
+// reservation_addons) is defined in reservation-service.ts, next to
+// CreateReservationInput.addonLines that consumes it, and re-exported below
+// so callers of this file don't also need to import from reservation-service.
+
+/**
+ * Prices a caller-submitted add-on selection server-side — same "never trust
+ * the client for a price" posture as calculateMealPlanCharge() above.
+ * Unknown or inactive addon_service ids are silently dropped from the
+ * result rather than throwing (an add-on could be deactivated between the
+ * operator loading the form and submitting it — that's not a request
+ * error, the line item just doesn't get priced/added).
+ */
+export async function priceAddons(
+  addons: AddonLineInput[] | null | undefined
+): Promise<{ lines: PricedAddonLine[]; totalCharge: number }> {
+  if (!addons || addons.length === 0) return { lines: [], totalCharge: 0 }
+
+  const ids = Array.from(new Set(addons.map((a) => a.addonServiceId)))
+  const services = await getAddonServicesByIds(ids)
+  const byId = new Map(services.map((s) => [s.id, s]))
+
+  const lines: PricedAddonLine[] = []
+  for (const addon of addons) {
+    const service = byId.get(addon.addonServiceId)
+    if (!service) continue
+    const quantity = Math.max(1, Math.floor(addon.quantity))
+    lines.push({
+      addonServiceId: service.id,
+      name: service.name,
+      quantity,
+      unitPrice: service.price,
+      totalPrice: service.price * quantity,
+    })
+  }
+
+  const totalCharge = lines.reduce((sum, line) => sum + line.totalPrice, 0)
+  return { lines, totalCharge }
 }
 
 function enumerateNights(checkInDate: string, checkOutDate: string): string[] {
@@ -71,7 +148,11 @@ export async function calculatePrice(
   inventoryItemId: string,
   checkInDate: string,
   checkOutDate: string,
-  roomCount = 1
+  roomCount = 1,
+  /** Meal Plan booking-flow integration (Reservation Platform activation, Phase 3). Optional — omitted/null means no meal plan quoted, matching every existing caller that predates this parameter. */
+  mealPlanId?: string | null,
+  /** Add-on Services booking-flow integration (Reservation Platform activation, Phase 4). Optional — omitted/empty means no add-ons quoted, matching every existing caller that predates this parameter. */
+  addons?: AddonLineInput[] | null
 ): Promise<PriceQuote> {
   const nights = enumerateNights(checkInDate, checkOutDate)
   const rates = await Promise.all(nights.map((date) => getInventoryItemRate(inventoryItemId, date)))
@@ -80,6 +161,8 @@ export async function calculatePrice(
   const pricedNights = rates.filter((r) => r !== null).length
   const unpricedNights = nights.length - pricedNights
   const subtotal = nightlyRates.reduce((sum, r) => sum + r, 0) * roomCount
+  const mealPlanCharge = await calculateMealPlanCharge(mealPlanId, nights.length, roomCount)
+  const { lines: addonLines, totalCharge: addonsCharge } = await priceAddons(addons)
 
   return {
     inventoryItemId,
@@ -91,6 +174,11 @@ export async function calculatePrice(
     unpricedNights,
     nightlyRates,
     subtotal,
+    mealPlanId: mealPlanId ?? null,
+    mealPlanCharge,
+    addonLines,
+    addonsCharge,
+    grandTotal: subtotal + mealPlanCharge + addonsCharge,
     isComplete: unpricedNights === 0 && nights.length > 0,
   }
 }
@@ -109,6 +197,8 @@ async function logActivity(leadId: string | null, action: string, description: s
 export interface CreateReservationWithQuoteInput extends CreateReservationInput {
   /** Populated onto activity_logs / used for the CRM trail — separate from customerId, which is the reservations.customer_id FK. */
   crmLeadId?: string | null
+  /** Add-on Services booking-flow integration (Reservation Platform activation, Phase 4). Raw, unpriced selection — priced here via priceAddons() before being persisted. */
+  addons?: AddonLineInput[] | null
 }
 
 export interface CreateReservationWithQuoteResult {
@@ -134,15 +224,26 @@ export async function createReservationWithQuote(
     }
   }
 
-  const quote = await calculatePrice(input.inventoryItemId, input.checkInDate, input.checkOutDate, input.roomCount ?? 1)
-  const reservationResult = await createReservation(input)
+  const quote = await calculatePrice(input.inventoryItemId, input.checkInDate, input.checkOutDate, input.roomCount ?? 1, input.mealPlanId, input.addons)
+  // Meal Plan / Add-on Services booking-flow integration (Reservation
+  // Platform activation, Phases 3-4): the quote's pricing (room subtotal +
+  // meal plan charge + priced add-on lines) is now persisted onto the
+  // reservation itself, not just returned to the caller.
+  const reservationResult = await createReservation({
+    ...input,
+    baseRoomRate: quote.subtotal,
+    finalRoomRate: quote.grandTotal,
+    mealPlanId: quote.mealPlanId,
+    mealPlanCharge: quote.mealPlanCharge,
+    addonLines: quote.addonLines,
+  })
 
   if (reservationResult.ok) {
     await logActivity(
       input.crmLeadId ?? input.customerId ?? null,
       'reservation_created',
       `Reservation created for ${input.checkInDate} -> ${input.checkOutDate}`,
-      { reservationId: reservationResult.reservation.id, subtotal: quote.subtotal, isComplete: quote.isComplete }
+      { reservationId: reservationResult.reservation.id, subtotal: quote.subtotal, mealPlanCharge: quote.mealPlanCharge, addonsCharge: quote.addonsCharge, isComplete: quote.isComplete }
     )
   }
 
@@ -154,6 +255,25 @@ export async function confirmReservation(reservationId: string, crmLeadId?: stri
   const result = await transitionReservationStatus(reservationId, 'confirmed')
   if (result.ok) {
     await logActivity(crmLeadId ?? result.reservation.customerId, 'reservation_confirmed', `Reservation ${reservationId} confirmed`, { reservationId })
+
+    // Journey stage 3 (Customer Journey Automation, Priority 3): "Booking
+    // confirmed -> message". AUDIT FINDING: WHATSAPP_MESSAGES.bookingConfirmed()
+    // already existed but had zero callers repo-wide — this is the first
+    // wire-up, not new copy. Fire-and-forget: never let a WhatsApp send
+    // failure roll back or block the confirmation itself.
+    if (result.reservation.guestMobile) {
+      const { enqueueMessage } = await import('@/lib/queue')
+      const { WHATSAPP_MESSAGES } = await import('@/lib/templates')
+      await enqueueMessage({
+        phone: result.reservation.guestMobile,
+        message: WHATSAPP_MESSAGES.bookingConfirmed({
+          name: result.reservation.guestName,
+          date: result.reservation.checkInDate,
+        }),
+        type: 'session',
+        metadata: { journey: 'booking_confirmed', reservation_id: reservationId, lead_id: crmLeadId ?? result.reservation.customerId ?? null },
+      }).catch(() => null)
+    }
   }
   return result
 }
@@ -177,6 +297,24 @@ export async function checkInReservation(reservationId: string, crmLeadId?: stri
   const result = await transitionReservationStatus(reservationId, 'checked_in')
   if (result.ok) {
     await logActivity(crmLeadId ?? result.reservation.customerId, 'reservation_checked_in', `Reservation ${reservationId} checked in`, { reservationId })
+
+    // Journey stage: "Check-in message" (Customer Journey Automation).
+    // Fire-and-forget, same pattern as confirmReservation()'s booking-
+    // confirmed message above — never let a WhatsApp send failure roll
+    // back or block the check-in itself.
+    if (result.reservation.guestMobile) {
+      const { enqueueMessage } = await import('@/lib/queue')
+      const { WHATSAPP_MESSAGES } = await import('@/lib/templates')
+      await enqueueMessage({
+        phone: result.reservation.guestMobile,
+        message: WHATSAPP_MESSAGES.checkInMessage({
+          name: result.reservation.guestName,
+          checkOutDate: result.reservation.checkOutDate,
+        }),
+        type: 'session',
+        metadata: { journey: 'check_in', reservation_id: reservationId, lead_id: crmLeadId ?? result.reservation.customerId ?? null },
+      }).catch(() => null)
+    }
   }
   return result
 }
@@ -186,8 +324,23 @@ export async function checkOutReservation(reservationId: string, crmLeadId?: str
   const result = await transitionReservationStatus(reservationId, 'checked_out')
   if (result.ok) {
     await logActivity(crmLeadId ?? result.reservation.customerId, 'reservation_checked_out', `Reservation ${reservationId} checked out`, { reservationId })
+
+    // Journey stage: "Check-out message" — immediate farewell. The
+    // stay-lifecycle cron separately sends postStayThankYou the following
+    // day, so this and that are deliberately two different messages at
+    // two different times, not a duplicate.
+    if (result.reservation.guestMobile) {
+      const { enqueueMessage } = await import('@/lib/queue')
+      const { WHATSAPP_MESSAGES } = await import('@/lib/templates')
+      await enqueueMessage({
+        phone: result.reservation.guestMobile,
+        message: WHATSAPP_MESSAGES.checkOutMessage({ name: result.reservation.guestName }),
+        type: 'session',
+        metadata: { journey: 'check_out', reservation_id: reservationId, lead_id: crmLeadId ?? result.reservation.customerId ?? null },
+      }).catch(() => null)
+    }
   }
   return result
 }
 
-export type { AvailabilityCheckResult }
+export type { AvailabilityCheckResult, PricedAddonLine }

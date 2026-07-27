@@ -3,6 +3,7 @@ import { MessageDirection, MessageStatus, SourceChannel } from '@/constants/conv
 import { normalizePhone } from './normalize-phone'
 import { isMetaConfigured } from './meta-configured'
 import { mirrorWhatsAppOutbound } from '@/lib/conversations/whatsapp-unified-sync'
+import { logger } from '@/lib/logger'
 import type {
   WASendTextRequest,
   WASendTemplateRequest,
@@ -124,14 +125,14 @@ export async function sendWhatsAppText(
           senderType: opts.unifiedMirror ?? 'ai',
           externalMessageId: waMessageId,
         }).catch(err2 => {
-          console.error('[WA Send] unified mirror failed (non-fatal):', err2)
+          logger.error('whatsapp-send', 'Unified mirror failed (non-fatal)', err2, { phone: to })
         })
       }
 
       return { success: true, waMessageId: waMessageId ?? undefined }
     } catch (err: unknown) {
       lastError = err instanceof Error ? err.message : String(err)
-      console.error(`[WA Send] Attempt ${attempt + 1} failed for ${to}:`, lastError)
+      logger.error('whatsapp-send', `Attempt ${attempt + 1} failed`, lastError, { phone: to })
 
       if (attempt < MAX_RETRIES) {
         await new Promise(r => setTimeout(r, RETRY_DELAY_MS * (attempt + 1)))
@@ -146,7 +147,7 @@ export async function sendWhatsAppText(
       .eq('id', logId)
   }
 
-  console.error(`[WA Send] All retries failed for ${to}:`, lastError)
+  logger.error('whatsapp-send', 'All retries failed', lastError, { phone: to })
   return { success: false, error: lastError ?? 'Unknown error' }
 }
 

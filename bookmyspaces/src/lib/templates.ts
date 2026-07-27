@@ -253,6 +253,69 @@ Feel free to reach us anytime for rooms, events, or celebrations!
 📲 9051459463 | 🌐 www.bookmyspaces.in
 
 Have a wonderful day! ✨`,
+
+  // ── CUSTOMER JOURNEY: PRE-ARRIVAL ─────────────────────
+  // Priority 3 (Marketing Intelligence) — Customer Journey Automation.
+  preArrivalReminder: (params: { name?: string; checkInDate?: string; venue?: string }) =>
+    `👋 Hi${params.name ? ` ${params.name}` : ''}! Just a friendly reminder —
+
+Your stay at *BookMySpaces*${params.venue ? ` (${params.venue})` : ''} is coming up${params.checkInDate ? ` on *${params.checkInDate}*` : ' soon'}! 🎉
+
+We're looking forward to hosting you. Any special requests before you arrive?
+
+📞 9051459463 | 🌐 www.bookmyspaces.in`,
+
+  // ── CUSTOMER JOURNEY: CHECK-IN ────────────────────────
+  // Fires immediately when the front desk marks a reservation checked-in
+  // (reservation-workflow.ts's checkInReservation()) — distinct from
+  // preArrivalReminder (fires the day before, unattended) and from
+  // bookingConfirmed (fires at booking time, days/weeks earlier).
+  checkInMessage: (params: { name?: string; venue?: string; checkOutDate?: string }) =>
+    `🏨 Welcome${params.name ? `, ${params.name}` : ''}! You're checked in at *BookMySpaces*${params.venue ? ` (${params.venue})` : ''}. 🎉
+
+We hope you have a wonderful stay!${params.checkOutDate ? ` Your check-out date is *${params.checkOutDate}*.` : ''}
+
+Need anything during your stay? Just message us here. 😊
+
+📞 9051459463`,
+
+  // ── CUSTOMER JOURNEY: CHECK-OUT ───────────────────────
+  // Fires immediately when the front desk marks a reservation checked-out
+  // (checkOutReservation()) — an immediate farewell, distinct from
+  // postStayThankYou which fires the following day via the stay-lifecycle
+  // cron once the stay has had time to settle.
+  checkOutMessage: (params: { name?: string; venue?: string }) =>
+    `👋 Thank you for staying with us${params.name ? `, ${params.name}` : ''}! You've been checked out of *BookMySpaces*${params.venue ? ` (${params.venue})` : ''}.
+
+Safe travels, and we hope to host you again soon! 🙏`,
+
+  // ── CUSTOMER JOURNEY: WIN-BACK ────────────────────────
+  winBack: (name?: string) =>
+    `👋 Hi${name ? ` ${name}` : ''}! It's been a while since we last connected at *BookMySpaces* 🌟
+
+We've added new packages and offers since your last visit — we'd love to host you again!
+
+Reply here or call us to check availability for your next celebration or stay. 🎉
+
+📞 9051459463 | 🌐 www.bookmyspaces.in`,
+
+  // ── CUSTOMER JOURNEY: POST-STAY ───────────────────────
+  postStayThankYou: (params: { name?: string; venue?: string }) =>
+    `🙏 Thank you${params.name ? ` ${params.name}` : ''} for staying with *BookMySpaces*${params.venue ? ` at ${params.venue}` : ''}!
+
+We hope you had a wonderful experience. It was a pleasure hosting you. 🎉
+
+Come back and see us again soon! 😊`,
+
+  // ── CUSTOMER JOURNEY: REVIEW REQUEST ──────────────────
+  reviewRequestMessage: (params: { name?: string; reviewLink?: string }) =>
+    `⭐ Hi${params.name ? ` ${params.name}` : ''}! We hope you loved your time with *BookMySpaces*.
+
+Would you mind sharing a quick review? It really helps us out! 🙏
+
+${params.reviewLink ? `👉 ${params.reviewLink}` : 'Just reply here or search "BookMySpaces" on Google.'}
+
+Thank you for your support! 💛`,
 }
 
 // ─────────────────────────────────────────

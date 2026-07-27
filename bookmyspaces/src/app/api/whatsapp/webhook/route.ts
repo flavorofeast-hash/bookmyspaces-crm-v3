@@ -6,6 +6,8 @@ import { sendWhatsAppText }          from '@/lib/whatsapp/send-message'
 import { getSupabaseAdmin }          from '@/lib/supabase'
 import { verifySignature }           from '@/lib/whatsapp/verify-signature'
 import { handleInboundMessage, recordMessage } from '@/lib/conversations/unified-conversation-service'
+import { logger } from '@/lib/logger'
+import { checkRateLimit, clientIpFrom } from '@/lib/rate-limit'
 
 export const dynamic    = 'force-dynamic'
 export const runtime    = 'nodejs'
@@ -21,10 +23,7 @@ export async function GET(request: NextRequest) {
   const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN
 
   if (!verifyToken) {
-    console.error(
-      '[WA Webhook] WHATSAPP_WEBHOOK_VERIFY_TOKEN is not set.',
-      'Add it in Vercel → Project → Settings → Environment Variables, then redeploy.'
-    )
+    logger.error('whatsapp-webhook', 'WHATSAPP_WEBHOOK_VERIFY_TOKEN is not set. Add it in Vercel -> Project -> Settings -> Environment Variables, then redeploy.')
     return new NextResponse('Server configuration error', { status: 500 })
   }
 
@@ -45,13 +44,24 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  // RC hardening: the social webhook (api/social/webhook/[platform]) already had
+  // IP rate-limiting alongside its signature check; this route only had the
+  // signature check. Added for parity/defense-in-depth — matters most when
+  // WHATSAPP_APP_SECRET is unset (signatureCheck === 'unconfigured' below, which
+  // logs a warning but does not reject) or misconfigured, where this becomes the
+  // only backstop against a flood of forged requests.
+  const rl = checkRateLimit(`whatsapp-webhook:${clientIpFrom(request)}`, { limit: 120, windowMs: 60_000 })
+  if (!rl.allowed) {
+    return new NextResponse('Too Many Requests', { status: 429, headers: { 'Retry-After': String(rl.retryAfterSeconds) } })
+  }
+
   const rawBody = await request.text()
   const signatureCheck = verifySignature(rawBody, request.headers.get('x-hub-signature-256'))
 
   if (signatureCheck === 'unconfigured') {
-    console.warn('[WA Webhook] WHATSAPP_APP_SECRET not set — signature NOT verified. Configure it to enable ISS-004 enforcement.')
+    logger.warn('whatsapp-webhook', 'WHATSAPP_APP_SECRET not set — signature NOT verified. Configure it to enable ISS-004 enforcement.')
   } else if (signatureCheck === 'invalid') {
-    console.error('[WA Webhook] Rejected: invalid X-Hub-Signature-256 (forged or misconfigured request).')
+    logger.error('whatsapp-webhook', 'Rejected: invalid X-Hub-Signature-256 (forged or misconfigured request).')
     return new NextResponse('Forbidden', { status: 403 })
   }
 
@@ -75,7 +85,7 @@ export async function POST(request: NextRequest) {
         const value = change.value
 
         for (const status of value.statuses ?? []) {
-          console.log('[WA] Status update:', {
+          logger.info('whatsapp-webhook', 'Status update', {
             id:        status.id,
             status:    status.status,
             recipient: status.recipient_id,
@@ -91,7 +101,7 @@ export async function POST(request: NextRequest) {
       }
     }
   } catch (err) {
-    console.error('[WA Webhook] Error processing payload:', err)
+    logger.error('whatsapp-webhook', 'Error processing payload', err)
   }
 
   return new NextResponse('OK', { status: 200 })
@@ -120,11 +130,11 @@ async function handleIncomingMessage(
       // this environment) must never affect the WhatsApp reply already
       // sent, so it's caught here rather than by the outer try/catch.
       syncToUnifiedConversationPlatform(from, text, reply, message.id).catch(err => {
-        console.error(`[WA Webhook] Unified Conversation Platform sync failed for ${from} (non-fatal):`, err)
+        logger.error('whatsapp-webhook', 'Unified Conversation Platform sync failed (non-fatal)', err, { phone: from })
       })
     }
   } catch (err) {
-    console.error(`[WA Webhook] Error handling message from ${from}:`, err)
+    logger.error('whatsapp-webhook', 'Error handling message', err, { phone: from })
   }
 }
 
@@ -271,7 +281,7 @@ async function buildPricingReply(name: string): Promise<string> {
       `Share your event date and guest count for a precise quote!`,
     ].join('\n')
   } catch (err) {
-    console.error('[WA Webhook] buildPricingReply failed, using fallback copy:', err)
+    logger.error('whatsapp-webhook', 'buildPricingReply failed, using fallback copy', err)
     return fallback
   }
 }

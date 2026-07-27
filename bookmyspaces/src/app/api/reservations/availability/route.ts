@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
 
   const parsed = await parseBody(req, checkAvailabilitySchema)
   if (!parsed.ok) return parsed.response
-  const { inventoryItemId, checkInDate, checkOutDate, roomCount } = parsed.data
+  const { inventoryItemId, checkInDate, checkOutDate, roomCount, mealPlanId, addons } = parsed.data
 
   if (checkOutDate <= checkInDate) {
     return NextResponse.json({ error: 'checkOutDate must be after checkInDate' }, { status: 400 })
@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const availability = await checkAvailability(inventoryItemId, checkInDate, checkOutDate)
-    const quote = await calculatePrice(inventoryItemId, checkInDate, checkOutDate, roomCount ?? 1)
+    const quote = await calculatePrice(inventoryItemId, checkInDate, checkOutDate, roomCount ?? 1, mealPlanId, addons)
 
     return NextResponse.json({ availability, quote })
   } catch (error) {

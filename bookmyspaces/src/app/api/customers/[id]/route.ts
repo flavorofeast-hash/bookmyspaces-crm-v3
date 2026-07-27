@@ -19,6 +19,8 @@ import { NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
+import { computeLifetimeValue } from '@/lib/customers/lifetime-value'
+import { getOpportunityScoreForLead } from '@/lib/ai/opportunity-score'
 
 export async function GET(_req: Request, { params }: { params: { id: string } }) {
   const auth = await requireAuth()
@@ -35,7 +37,28 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
     if (error) throw error
     if (!data) return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
 
-    return NextResponse.json({ customer: data })
+    // Revenue Platform pivot — Customer Lifetime Value. Best-effort: a
+    // failure here (e.g. migration 012 not live) must not break the whole
+    // Customer Profile page, so it's fetched after the customer row is
+    // already confirmed to exist and never re-throws.
+    let lifetimeValue = null
+    try {
+      lifetimeValue = await computeLifetimeValue(params.id)
+    } catch (lvError) {
+      logger.error('customers/[id]', 'computeLifetimeValue failed', lvError)
+    }
+
+    // AI Sales Executive (Priority 1) — Opportunity Score. getOpportunityScoreForLead
+    // already never throws (returns a LOW/0 fallback), but wrapped anyway so
+    // a change to that contract can never take down this route.
+    let opportunityScore = null
+    try {
+      opportunityScore = await getOpportunityScoreForLead(params.id)
+    } catch (osError) {
+      logger.error('customers/[id]', 'getOpportunityScoreForLead failed', osError)
+    }
+
+    return NextResponse.json({ customer: data, lifetimeValue, opportunityScore })
   } catch (error) {
     logger.error('customers/[id]', 'GET failed', error)
     return NextResponse.json({ error: 'Failed to fetch customer' }, { status: 500 })

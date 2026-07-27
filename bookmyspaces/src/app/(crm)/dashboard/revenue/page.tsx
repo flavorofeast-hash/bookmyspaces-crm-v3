@@ -125,6 +125,7 @@ export default function RevenueDashboardPage() {
           <h1 className="text-xl font-bold text-slate-900">Revenue Dashboard</h1>
           <p className="mt-0.5 text-sm text-slate-500">
             Revenue = accepted proposals · <code className="text-xs bg-slate-100 rounded px-1">accepted_at IS NOT NULL</code>
+            {' '}&middot; Reservation Revenue shown separately below
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -172,6 +173,53 @@ export default function RevenueDashboardPage() {
                 label="Avg Deal Value"
                 value={data ? formatINR(data.revenue.avg_value) : '—'}
                 sub="per accepted proposal"
+                color="border-l-amber-400"
+              />
+            </>
+          )}
+        </div>
+      </section>
+
+      {/* ── Reservation Revenue (direct bookings) ───────────────────────────
+          Kept as its own section, not merged into the KPIs above: a
+          reservation can be linked to an accepted proposal (proposal_id),
+          and this dashboard doesn't dedupe that overlap — see
+          `linked_to_proposal_count` below. Treat the two revenue figures as
+          two lenses on the business, not as summable. */}
+      <section>
+        <SectionTitle>Reservation Revenue (Direct Bookings)</SectionTitle>
+        <p className="-mt-2 mb-4 text-xs text-slate-400">
+          Room revenue from confirmed/checked-in/checked-out reservations · not included in Revenue above
+        </p>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {loading ? (
+            Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
+          ) : (
+            <>
+              <KpiCard
+                label="Reservation Revenue"
+                value={data ? formatINR(data.reservationRevenue.total) : '—'}
+                sub={
+                  data?.reservationRevenue.degraded
+                    ? 'Reservation platform not live yet'
+                    : `${data?.reservationRevenue.count ?? 0} reservations`
+                }
+                color="border-l-violet-500"
+              />
+              <KpiCard
+                label="This Month"
+                value={data ? formatINR(data.reservationRevenue.this_month) : '—'}
+                color="border-l-violet-400"
+              />
+              <KpiCard
+                label="Last Month"
+                value={data ? formatINR(data.reservationRevenue.last_month) : '—'}
+                color="border-l-slate-300"
+              />
+              <KpiCard
+                label="Linked to Proposals"
+                value={data ? formatINR(data.reservationRevenue.linked_to_proposal_revenue) : '—'}
+                sub={`${data?.reservationRevenue.linked_to_proposal_count ?? 0} reservations — overlap with Revenue above`}
                 color="border-l-amber-400"
               />
             </>

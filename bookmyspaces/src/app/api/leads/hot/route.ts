@@ -7,6 +7,7 @@
 import { NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '@/lib/supabase';
 import { requireAuth } from '@/lib/auth-guard';
+import { logger } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,7 +37,7 @@ export async function GET(): Promise<NextResponse> {
       .limit(500);
 
     if (error) {
-      console.error('[API /leads/hot] Supabase error:', error.message);
+      logger.error('leads-hot', 'Supabase error', error);
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
@@ -60,8 +61,7 @@ export async function GET(): Promise<NextResponse> {
     });
 
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error('[API /leads/hot] Unexpected error:', msg);
+    logger.error('leads-hot', 'Unexpected error', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

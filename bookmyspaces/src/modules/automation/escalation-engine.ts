@@ -4,6 +4,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { getSupabaseAdmin } from '@/lib/supabase';
+import { logger } from '@/lib/logger';
 import { Lead, EscalationResult } from '../leads/types';
 
 // ─── Escalation rules ─────────────────────────────────────────────────────────
@@ -102,11 +103,11 @@ export async function applyEscalation(
     .eq('escalation_required', false);  // only update if not already escalated
 
   if (error) {
-    console.error('[EscalationEngine] Failed to write escalation:', error.message);
+    logger.error('escalation-engine', 'Failed to write escalation', error, { leadId });
     return { ...result, notified: false };
   }
 
-  console.log(`[EscalationEngine] 🚨 Lead ${leadId} escalated: ${result.reason}`);
+  logger.info('escalation-engine', `Lead escalated: ${result.reason}`, { leadId });
 
   // Write activity log
   await db.from('activity_logs').insert({

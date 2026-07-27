@@ -21,6 +21,16 @@ export interface ExtractedLeadDetails {
   occasion    : string | null;
   guest_count : number | null;
   budget      : string | null;   // TEXT column in leads — keep as string
+  /**
+   * AI Sales Executive (Priority 1) — "Buying signals": explicit
+   * booking-intent phrases in the message, e.g. "how do I book", "is it
+   * available on <date>", "send me the price", "I want to confirm". Distinct
+   * from event_type/budget/guest_count (which describe WHAT the customer
+   * wants) — this describes HOW READY they are to act right now. Same
+   * regex-only, zero-latency, never-throws approach as the rest of this
+   * file, not a new LLM call.
+   */
+  buying_signals: string[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -246,25 +256,81 @@ function extractOccasion(text: string): string | null {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Buying-signal detector
+// Each entry is [canonicalSignal, [...matchPatterns]] — same table shape as
+// EVENT_TYPE_KEYWORDS above. A message can carry multiple signals at once
+// (e.g. "is it available on 12 Dec, how do I book?" → AVAILABILITY_CHECK +
+// READY_TO_BOOK), so this returns every match, not just the first.
+// ─────────────────────────────────────────────────────────────────────────────
+const BUYING_SIGNAL_KEYWORDS: Array<[string, string[]]> = [
+  ["READY_TO_BOOK", [
+    "how do i book", "want to book", "book now", "confirm the booking",
+    "want to confirm", "i'll confirm", "ready to book", "let's finalize",
+    "let's finalise", "go ahead and book", "please book",
+    "বুক করব", "কনফার্ম করব", "बुक करना है", "कन्फर्म करना है",
+  ]],
+  ["AVAILABILITY_CHECK", [
+    "is it available", "is this available", "any availability", "do you have availability",
+    "is the date available", "available on", "vacant on",
+    "খালি আছে", "उपलब्ध है",
+  ]],
+  ["PRICE_REQUEST", [
+    "send me the price", "what is the price", "what's the price", "how much",
+    "send quotation", "send the quote", "send me a quote", "pricing details",
+    "cost details", "price list", "send rate", "what are the rates",
+    "দাম কত", "কত টাকা", "कितना पैसा", "कीमत क्या है", "रेट भेजो",
+  ]],
+  ["SITE_VISIT_REQUEST", [
+    "can i visit", "want to visit", "site visit", "come and see", "see the venue",
+    "venue visit", "want to see the place", "can we come see",
+    "দেখতে যাব", "দেখতে আসব", "देखने आना है",
+  ]],
+  ["COMPARISON_SHOPPING", [
+    "comparing", "also looking at", "other options", "checking other venues",
+    "getting quotes from", "best price", "any discount", "can you reduce",
+    "better rate", "final price",
+  ]],
+  ["HESITATION", [
+    "let me think", "will get back to you", "will confirm later", "not sure yet",
+    "need to discuss", "checking with family", "checking with my", "will decide",
+  ]],
+];
+
+function extractBuyingSignals(text: string): string[] {
+  const lower = text.toLowerCase();
+  const found: string[] = [];
+  for (const [canonical, keywords] of BUYING_SIGNAL_KEYWORDS) {
+    for (const kw of keywords) {
+      if (lower.includes(kw.toLowerCase())) {
+        found.push(canonical);
+        break; // one hit per category is enough
+      }
+    }
+  }
+  return found;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main export
 // ─────────────────────────────────────────────────────────────────────────────
 export function extractLeadDetails(message: string): ExtractedLeadDetails {
   // Safety wrapper — must never throw; any error returns all-null
   try {
     if (!message || typeof message !== "string") {
-      return { event_type: null, occasion: null, guest_count: null, budget: null };
+      return { event_type: null, occasion: null, guest_count: null, budget: null, buying_signals: [] };
     }
 
-    const event_type  = extractEventType(message);
-    const occasion    = extractOccasion(message);
-    const guest_count = extractGuestCount(message);
-    const budget      = extractBudget(message);
+    const event_type      = extractEventType(message);
+    const occasion        = extractOccasion(message);
+    const guest_count     = extractGuestCount(message);
+    const budget          = extractBudget(message);
+    const buying_signals  = extractBuyingSignals(message);
 
-    return { event_type, occasion, guest_count, budget };
+    return { event_type, occasion, guest_count, budget, buying_signals };
 
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn("[extractLeadDetails] Non-fatal extraction error:", msg);
-    return { event_type: null, occasion: null, guest_count: null, budget: null };
+    return { event_type: null, occasion: null, guest_count: null, budget: null, buying_signals: [] };
   }
 }

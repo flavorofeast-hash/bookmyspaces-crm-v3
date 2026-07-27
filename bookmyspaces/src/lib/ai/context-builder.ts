@@ -40,6 +40,8 @@
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { getActivePackagePrices, checkSystemPromptPricingDrift } from '@/lib/pricing/pricing-service'
 import { retrieveKnowledgeByVector } from '@/lib/knowledge/knowledge-retrieval'
+import { listActiveMealPlans, listActiveAddonServices } from '@/lib/reservations/property-service'
+import { listPackages } from '@/lib/packages/package-service'
 import type {
   AIContext,
   BuildAIContextInput,
@@ -49,6 +51,8 @@ import type {
   ReservationSummary,
   ConversationHistoryEntry,
   BusinessRules,
+  UpsellInventory,
+  EventPackageOption,
 } from '@/types/ai-context'
 
 const DEFAULT_BUSINESS_RULES: Omit<BusinessRules, 'isLiveConfig'> = {
@@ -174,6 +178,54 @@ async function getConversationHistory(conversationId: string | null | undefined)
   }
 }
 
+// AI Sales Executive (Priority 1) — upsell inventory, reusing the exact
+// booking-flow functions unchanged. Same fault-tolerant "degrade, don't
+// throw" pattern as reservations/conversation history above, since this
+// also reads migration-012 tables.
+async function getUpsellInventory(): Promise<{ inventory: UpsellInventory; degraded: boolean }> {
+  try {
+    const [mealPlans, addonServices] = await Promise.all([
+      listActiveMealPlans(),
+      listActiveAddonServices(),
+    ])
+    return {
+      inventory: {
+        mealPlans: mealPlans.map((m) => ({ name: m.name, code: m.code, price: m.price })),
+        addonServices: addonServices.map((a) => ({ name: a.name, category: a.category, price: a.price })),
+      },
+      degraded: false,
+    }
+  } catch {
+    return { inventory: { mealPlans: [], addonServices: [] }, degraded: true }
+  }
+}
+
+// Direct Event Sales Engine, Section 2 — event-type-aware package catalog
+// for the AI Event Sales Advisor. Same fault-tolerant "degrade, don't
+// throw" pattern as everything else in this file.
+async function getEventPackages(): Promise<{ packages: EventPackageOption[]; degraded: boolean }> {
+  try {
+    const packages = await listPackages({ activeOnly: true })
+    return {
+      packages: packages.map((p) => ({
+        id: p.id,
+        name: p.name,
+        venue: p.venue,
+        basePrice: p.basePrice,
+        maxGuests: p.maxGuests,
+        durationHours: p.durationHours,
+        eventTypes: p.eventTypes,
+        inclusions: p.inclusions,
+        addons: p.addons.map((a) => ({ name: a.name, price: a.price })),
+        isPopular: p.isPopular,
+      })),
+      degraded: false,
+    }
+  } catch {
+    return { packages: [], degraded: true }
+  }
+}
+
 async function getBusinessRules(): Promise<BusinessRules> {
   try {
     const supabase = getSupabaseAdmin()
@@ -217,6 +269,8 @@ export async function buildAIContext(input: BuildAIContextInput): Promise<AICont
     pricingDrift,
     knowledgeResults,
     businessRules,
+    upsellResult,
+    eventPackagesResult,
   ] = await Promise.all([
     getCustomerProfileAndPreferences(input.leadId),
     getProposalHistory(input.leadId),
@@ -226,6 +280,8 @@ export async function buildAIContext(input: BuildAIContextInput): Promise<AICont
     checkSystemPromptPricingDrift(),
     retrieveKnowledgeByVector(input.query),
     getBusinessRules(),
+    getUpsellInventory(),
+    getEventPackages(),
   ])
 
   return {
@@ -235,6 +291,8 @@ export async function buildAIContext(input: BuildAIContextInput): Promise<AICont
     proposalHistory,
     customerPreferences: preferences,
     activePackages,
+    upsellInventory: upsellResult.inventory,
+    eventPackages: eventPackagesResult.packages,
     knowledgeBaseResults: knowledgeResults.map((k) => ({
       content: k.content,
       sourceFile: k.sourceFile,
@@ -246,6 +304,8 @@ export async function buildAIContext(input: BuildAIContextInput): Promise<AICont
     degraded: {
       reservationHistory: reservationResult.degraded,
       conversationHistory: conversationResult.degraded,
+      upsellInventory: upsellResult.degraded,
+      eventPackages: eventPackagesResult.degraded,
     },
   }
 }

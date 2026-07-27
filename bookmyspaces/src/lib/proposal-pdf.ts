@@ -224,7 +224,7 @@ export function generateProposalHTML(
   // ── Accommodation table rows ───────────────────────────────────────────
   const accomRowsHtml = roomItems.map(r => `
     <tr>
-      <td class="accom-td"><span class="accom-icon">🛏</span>${r.room_type}</td>
+      <td class="accom-td"><span class="accom-icon">🛏</span>${escapeHtml(r.room_type)}</td>
       <td class="accom-td" style="text-align:center">${r.quantity}</td>
       <td class="accom-td" style="text-align:center">${r.nights} night${r.nights > 1 ? 's' : ''}</td>
       <td class="accom-td" style="text-align:right">${inr(r.rate)}</td>
@@ -232,9 +232,15 @@ export function generateProposalHTML(
     </tr>`).join('')
 
   // ── Addon rows ─────────────────────────────────────────────────────────
+  // SECURITY: room_type/addon name fixed to also go through escapeHtml() —
+  // this file's own header comment already claimed "room/add-on/package
+  // names" were covered by the Version 1.0 XSS fix, but these two
+  // interpolation sites were missed (numeric quantity/rate/nights fields
+  // are safe as-is, no escaping needed for numbers). Found during the RC
+  // hardening pass's security review.
   const addonsRowsHtml = addons.map((a: any) => `
     <tr>
-      <td class="lbl" style="padding:4px 0">${a.name}</td>
+      <td class="lbl" style="padding:4px 0">${escapeHtml(a.name)}</td>
       <td class="val" style="padding:4px 0">${inr(Number(a.price) || 0)}</td>
     </tr>`).join('')
 

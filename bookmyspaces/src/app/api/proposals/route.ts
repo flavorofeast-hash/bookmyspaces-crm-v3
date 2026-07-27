@@ -10,6 +10,9 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
 import { generateProposalCoverNote } from '@/lib/scoring'
 import { parseEventDate } from '@/lib/ai'
+import { enqueueMessage } from '@/lib/queue'
+import { WHATSAPP_MESSAGES } from '@/lib/templates'
+import { getPackageById, resolvePackagePrice } from '@/lib/packages/package-service'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -82,7 +85,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
 
-    const {
+    let {
       lead_id,
       client_name,
       client_phone,
@@ -92,9 +95,11 @@ export async function POST(req: NextRequest) {
       event_time,
       guest_count,
       venue,
+      hall,
       package_name,
       base_price         = 0,
       addons             = [] as AddonItem[],
+      addon_service_ids  = [] as string[],
       room_items         = [] as RoomItem[],   // ← NEW: room line items
       discount_amount    = 0,
       discount_reason,
@@ -102,6 +107,43 @@ export async function POST(req: NextRequest) {
       inclusions,
       generate_cover_note = true,
     } = body
+    const { package_id = null } = body
+
+    // ── Smart Proposal Generator (Direct Event Sales Engine, Section 4) ─────
+    // When the operator picked a package (from the AI Event Sales Advisor's
+    // recommendation, or manually), auto-fill package_name/base_price/
+    // addons/venue/hall/addon_service_ids/inclusions from it — SAFE-FILL
+    // only, same convention as auto-qualify.ts: a value the client already
+    // sent in the request body is never overwritten, only genuinely-missing
+    // fields get the package's defaults. The operator still reviews/edits
+    // before saving — this populates the form, it doesn't remove their
+    // control over it.
+    //
+    // base_price additionally runs through resolvePackagePrice() so a
+    // seasonal pricing rule (migration 024) that matches the event_date is
+    // applied automatically — still just a starting number the operator
+    // sees and can override, never a silent charge.
+    if (package_id) {
+      const pkg = await getPackageById(package_id)
+      if (pkg) {
+        if (!package_name) package_name = pkg.name
+        if (!base_price) base_price = resolvePackagePrice(pkg, event_date ?? null).price
+        if (!venue) venue = pkg.venue
+        if (!hall) hall = pkg.hall
+        if (!guest_count) guest_count = pkg.maxGuests
+        if (!inclusions) inclusions = pkg.inclusions.join(', ')
+        if (!addons || (Array.isArray(addons) && addons.length === 0)) {
+          addons = pkg.addons.map((a) => ({ name: a.name, price: a.price }))
+        }
+        if (!addon_service_ids || addon_service_ids.length === 0) {
+          addon_service_ids = pkg.addonServiceIds
+        }
+        if (!discount_amount && pkg.standardDiscountPct) {
+          discount_amount = Math.round((Number(base_price) || 0) * (pkg.standardDiscountPct / 100))
+          if (!discount_reason) discount_reason = `${pkg.name} standard discount (${pkg.standardDiscountPct}%)`
+        }
+      }
+    }
 
     // ── Validation (fix/customer-proposal-sync) ─────────────────────────────
     // Requires at least one contact method (phone OR email, not both) when
@@ -185,9 +227,12 @@ export async function POST(req: NextRequest) {
         event_time,
         guest_count      : guest_count ? parseInt(String(guest_count)) : null,
         venue,
+        hall             : hall || null,
         package_name,
+        package_id       : package_id || null,
         base_price       : Number(base_price) || 0,
         addons,
+        addon_service_ids: addon_service_ids || [],
         room_items,                                    // ← stored as JSONB
         discount_amount  : Number(discount_amount) || 0,
         discount_reason  : discount_reason || null,
@@ -277,12 +322,12 @@ export async function PUT(req: NextRequest) {
     const { data: proposal, error: fetchErr } = token
       ? await supabaseAdmin
           .from('proposals')
-          .select('id, status, share_view_count, lead_id, proposal_number, sent_at')
+          .select('id, status, share_view_count, lead_id, proposal_number, sent_at, share_token, client_name, client_phone')
           .eq('share_token', token)
           .single()
       : await supabaseAdmin
           .from('proposals')
-          .select('id, status, share_view_count, lead_id, proposal_number, sent_at')
+          .select('id, status, share_view_count, lead_id, proposal_number, sent_at, share_token, client_name, client_phone')
           .eq('id', id)
           .single()
 
@@ -297,9 +342,19 @@ export async function PUT(req: NextRequest) {
       if (proposal.status === 'sent') { updates.status = 'viewed'; updates.viewed_at = now }
     }
 
+    // Journey stage 2 (Customer Journey Automation, Priority 3): "Proposal
+    // sent -> Reminder". This is the actual moment a proposal goes out —
+    // the operator shares the wa.me/email link client-side and calls back
+    // here; our own send-message infra was never in that path (confirmed:
+    // WHATSAPP_MESSAGES.proposalFollowUp had zero callers repo-wide before
+    // this). Only fires on the draft->sent transition, not on repeat
+    // shares of an already-sent proposal, so re-clicking "share" doesn't
+    // stack up duplicate reminders.
+    const isFirstSend = proposal.status === 'draft'
+
     if (action === 'whatsapp_sent') {
       updates.whatsapp_sent_at = now
-      if (proposal.status === 'draft') { updates.status = 'sent'; updates.sent_at = now }
+      if (isFirstSend) { updates.status = 'sent'; updates.sent_at = now }
       if (proposal.lead_id) {
         await supabaseAdmin.from('activity_logs').insert({
           lead_id     : proposal.lead_id,
@@ -312,7 +367,7 @@ export async function PUT(req: NextRequest) {
 
     if (action === 'email_sent') {
       updates.email_sent_at = now
-      if (proposal.status === 'draft') { updates.status = 'sent'; updates.sent_at = now }
+      if (isFirstSend) { updates.status = 'sent'; updates.sent_at = now }
       if (proposal.lead_id) {
         await supabaseAdmin.from('activity_logs').insert({
           lead_id     : proposal.lead_id,
@@ -321,6 +376,17 @@ export async function PUT(req: NextRequest) {
           performed_by: 'admin',
         })
       }
+    }
+
+    if (isFirstSend && (action === 'whatsapp_sent' || action === 'email_sent') && proposal.client_phone) {
+      const shareUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://bookmyspaces.in'}/proposals/share/${proposal.share_token}`
+      await enqueueMessage({
+        phone: proposal.client_phone,
+        message: WHATSAPP_MESSAGES.proposalFollowUp(proposal.client_name ?? undefined, proposal.proposal_number, shareUrl),
+        type: 'session',
+        scheduled_at: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
+        metadata: { journey: 'proposal_reminder', proposal_id: proposal.id, lead_id: proposal.lead_id },
+      })
     }
 
     await supabaseAdmin.from('proposals').update(updates).eq('id', proposal.id)

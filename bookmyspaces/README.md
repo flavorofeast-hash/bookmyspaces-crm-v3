@@ -1,220 +1,60 @@
-# BookMySpaces AI CRM — Phase 1 Complete
+# BookMySpaces CRM V3
 
-## 🏨 System Overview
+An AI-powered event sales and hospitality CRM for BookMySpaces (Kolkata) — Skyline Serenity and Monurama Homestay — covering event bookings, direct room bookings, WhatsApp/social conversions, proposal generation, and repeat-customer marketing, all grounded in one customer timeline.
 
-A production-ready AI-powered hospitality CRM for:
-- **BookMySpaces.in** — Platform
-- **Skyline Serenity** — Near Kolkata Airport
-- **Monurama Homestay** — Mukundapur, EM Bypass
+Status: **Release Candidate v1.0** (2026-07-27). See `RELEASE_REPORT.md` for the full production-readiness assessment.
 
----
+## What this is
 
-## 📦 What's Built (Phase 1)
+Not an OTA or channel manager — this CRM exists to maximize direct event bookings, direct room bookings, and repeat business, with AI doing the qualification/recommendation/drafting work and humans keeping approval control over anything customer-facing.
 
-| Feature | Status |
-|---|---|
-| Next.js 14 App | ✅ |
-| Supabase DB + RLS | ✅ |
-| AI Chatbot (Aria) | ✅ |
-| Claude API (Primary) | ✅ |
-| OpenAI Fallback | ✅ |
-| RAG / Vector Search | ✅ |
-| CRM Dashboard | ✅ |
-| Lead Pipeline | ✅ |
-| Google Sheets Sync | ✅ |
-| Knowledge Base Seeding | ✅ |
-| Admin Panel | ✅ |
-| Health Check | ✅ |
-| Mobile Responsive | ✅ |
-| Premium UI (Gold theme) | ✅ |
+## Core features
 
----
+- **AI-first omnichannel intake** — website chat, WhatsApp (Meta Cloud API), and Facebook/Instagram Lead Ads + Messenger + DM, all resolved to one customer identity, one timeline.
+- **Direct Event Sales Engine** — AI Event Sales Advisor recommends a package from live inventory (venue/hall/capacity/seating/menu/decor/AV/rooms/add-ons/seasonal pricing), auto-drafts a proposal, tracks recommendation success rate against actual bookings.
+- **Reservation Platform** — rooms, halls, meal plans, add-on services, availability engine, invoicing, taxes.
+- **Revenue Intelligence** — sales funnel, revenue forecast, proposal/booking/customer analytics, sales productivity, event revenue by hall/venue/package/lead-source/campaign.
+- **Customer Journey Automation** — 9-stage lifecycle (welcome through win-back), fully automatic, campaign-driven.
+- **Campaign Scheduler** — queue-based sends, pause/resume/cancel, recurring campaigns, birthday/anniversary/dormant segmentation.
+- **Operator tooling** — Kanban lead pipeline, unified inbox, AI-assisted replies (suggest/rewrite/translate/tone), audit logging.
 
-## 🚀 Local Setup (Step by Step)
+## Getting started
 
-### 1. Install Dependencies
+New to this codebase? Start with `INSTALL.md` for local setup. For production deployment, see `DEPLOYMENT.md` and `DEPLOYMENT_CHECKLIST.md`.
 
 ```bash
-cd bookmyspaces
 npm install
-```
-
-### 2. Create Environment File
-
-```bash
-cp .env.example .env.local
-# Fill in all values in .env.local
-```
-
-### 3. Set Up Supabase
-
-1. Go to [supabase.com](https://supabase.com) → Create new project
-2. Copy your **Project URL**, **Anon Key**, and **Service Role Key** to `.env.local`
-3. Go to **SQL Editor** → Run the file: `supabase/migrations/001_initial_schema.sql`
-4. Go to **Storage** → Create bucket named `documents` (set to private)
-5. Enable **pgvector** extension: Settings → Database Extensions → enable `vector`
-
-### 4. Get Google Sheets Sync (Optional but recommended)
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com)
-2. Create project → Enable **Google Sheets API**
-3. Create Service Account → Download JSON key
-4. Create a new Google Sheet → Copy the Sheet ID from URL
-5. Share the Sheet with the service account email (Editor access)
-6. Add to `.env.local`:
-   - `GOOGLE_SERVICE_ACCOUNT_EMAIL` = service account email
-   - `GOOGLE_PRIVATE_KEY` = private key from JSON
-   - `GOOGLE_SHEETS_ID` = sheet ID from URL
-
-### 5. Run Development Server
-
-```bash
+cp .env.example .env.local   # fill in your keys — see ENVIRONMENT_VARIABLES.md
 npm run dev
 ```
 
-Open: [http://localhost:3000](http://localhost:3000)
+## Documentation map
 
-### 6. Seed Knowledge Base
+| Doc | Covers |
+|---|---|
+| `INSTALL.md` | Local development setup, step by step |
+| `DEPLOYMENT.md` | Production deployment procedure (Vercel + Supabase) |
+| `DEPLOYMENT_CHECKLIST.md` | Pre-launch go-live checklist |
+| `PRODUCTION_CHECKLIST.md` | Code-readiness checklist (quality/build/tests/security/perf) |
+| `ENVIRONMENT_VARIABLES.md` | Every env var, what it's for, which ones are security-critical |
+| `ARCHITECTURE.md` | Pointer to the full architecture doc set |
+| `BOOKMYSPACES_V3_MASTER_ARCHITECTURE.md` | Full system architecture, layering, principles |
+| `AI_ARCHITECTURE.md` | AI provider layer, grounding, orchestration, Direct Event Sales Engine AI |
+| `DATABASE_ARCHITECTURE.md` | Schema, migration inventory, RLS |
+| `PRODUCTION_MIGRATION_CHECKLIST.md` | Migration apply order, dependencies, rollback |
+| `API_SPECIFICATION.md` | API route inventory and conventions (serves as the API reference) |
+| `SECURITY_REVIEW.md` | Security posture and RC-pass findings |
+| `PERFORMANCE_REVIEW.md` | Query patterns, N+1 audit, known scaling considerations |
+| `UI_UX_REVIEW.md` | Loading/empty/error state and accessibility audit |
+| `WORKFLOW_VERIFICATION.md` | Every business workflow traced end-to-end against actual code |
+| `RELEASE_REPORT.md` | Overall production-readiness assessment, risk register, version recommendation |
 
-1. Go to [http://localhost:3000/admin](http://localhost:3000/admin)
-2. Run **Health Check** to verify all services
-3. Click **"Seed Static Business Knowledge"**
-4. Wait ~30 seconds for embeddings to process
-5. Test the chatbot — it should now answer about packages, pricing, etc.
-
----
-
-## 🌐 Vercel Deployment
-
-### 1. Push to GitHub
+## Testing
 
 ```bash
-git init
-git add .
-git commit -m "BookMySpaces AI CRM Phase 1"
-git remote add origin https://github.com/YOUR_USERNAME/bookmyspaces-crm.git
-git push -u origin main
+npm run test
 ```
 
-### 2. Deploy to Vercel
+## Business contact info (built into the app's chat/proposal templates)
 
-1. Go to [vercel.com](https://vercel.com) → Import GitHub repo
-2. Framework: **Next.js**
-3. Add all environment variables from `.env.local`
-4. Deploy!
-
-### 3. Set Up Production
-
-After deployment:
-1. Visit `YOUR_URL/admin`
-2. Run Health Check
-3. Seed Knowledge Base
-4. Test chatbot at `YOUR_URL`
-
----
-
-## 🔑 Environment Variables Reference
-
-| Variable | Required | Description |
-|---|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | ✅ | Supabase project URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | ✅ | Supabase anon/public key |
-| `SUPABASE_SERVICE_ROLE_KEY` | ✅ | Supabase service role key (server only) |
-| `ANTHROPIC_API_KEY` | ✅ | Claude API key from console.anthropic.com |
-| `OPENAI_API_KEY` | ✅ | OpenAI key for embeddings |
-| `GOOGLE_SERVICE_ACCOUNT_EMAIL` | ⚠️ | For Google Sheets sync |
-| `GOOGLE_PRIVATE_KEY` | ⚠️ | Google service account private key |
-| `GOOGLE_SHEETS_ID` | ⚠️ | Target spreadsheet ID |
-
----
-
-## 📁 Project Structure
-
-```
-bookmyspaces/
-├── src/
-│   ├── app/
-│   │   ├── page.tsx              # Public homepage
-│   │   ├── layout.tsx            # Root layout + ChatWidget
-│   │   ├── globals.css           # Design system + fonts
-│   │   ├── dashboard/
-│   │   │   └── page.tsx          # CRM Dashboard
-│   │   ├── admin/
-│   │   │   └── page.tsx          # Admin panel
-│   │   └── api/
-│   │       ├── chat/route.ts     # AI chat endpoint
-│   │       ├── leads/route.ts    # CRM CRUD
-│   │       ├── knowledge/route.ts # RAG management
-│   │       └── health/route.ts   # System health
-│   ├── components/
-│   │   └── chatbot/
-│   │       └── ChatWidget.tsx    # Floating AI chatbot
-│   └── lib/
-│       ├── supabase.ts          # DB client + types
-│       ├── ai.ts                # Claude + OpenAI + RAG
-│       ├── sheets.ts            # Google Sheets sync
-│       └── documents.ts         # Knowledge base processor
-├── supabase/
-│   └── migrations/
-│       └── 001_initial_schema.sql
-├── .env.example
-├── next.config.js
-├── tailwind.config.ts
-└── package.json
-```
-
----
-
-## 🧪 Testing Checklist
-
-- [ ] Homepage loads at `/`
-- [ ] Chat widget appears and opens
-- [ ] Aria responds to "hello"
-- [ ] Aria answers about packages (after knowledge seeding)
-- [ ] Lead created in Supabase after providing name + phone
-- [ ] Dashboard shows leads at `/dashboard`
-- [ ] Status can be updated in dashboard
-- [ ] WhatsApp link works from dashboard
-- [ ] Admin health check passes at `/admin`
-- [ ] Knowledge seeding completes successfully
-- [ ] Google Sheets receives lead data
-
----
-
-## 🛠️ Troubleshooting
-
-**Chat not responding:**
-- Check `ANTHROPIC_API_KEY` in env
-- Check `/api/health` for error details
-
-**Knowledge base empty:**
-- Go to Admin → Seed Static Knowledge
-- Ensure `OPENAI_API_KEY` is set (used for embeddings)
-
-**Supabase errors:**
-- Ensure you ran the migration SQL
-- Ensure `pgvector` extension is enabled
-- Ensure RLS policies allow service role
-
-**Google Sheets not syncing:**
-- Verify service account email has Edit access to the sheet
-- Check `GOOGLE_PRIVATE_KEY` has newlines escaped properly
-
----
-
-## 📞 Business Contact Info (Built-in)
-
-- **BookMySpaces:** www.bookmyspaces.in
-- **Monurama:** 9051459463 / 7003853624
-- **Skyline:** 9830509991 / 9123005489
-
----
-
-## ⏭️ Phase 2 (Next): WhatsApp AI Automation
-
-Phase 2 will add:
-- Wati.io / Interakt webhook integration
-- AI auto-replies on WhatsApp
-- Voice note transcription
-- WhatsApp → CRM sync
-- Campaign messaging
+BookMySpaces · Mukundapur, near EM Bypass, Kolkata · www.bookmyspaces.in · 9051459463 / 9830509991

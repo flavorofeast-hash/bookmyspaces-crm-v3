@@ -91,6 +91,15 @@ export async function smartSend(
     templateName?:   string
     templateParams?: Array<{ name: string; value: string }>
     forceSpamCheck?: boolean
+    // AUDIT FINDING (Priority 3 — Customer Journey Timeline): sendWhatsAppText/
+    // sendWhatsAppTemplateSimple already log every send to `whatsapp_messages`
+    // with a `lead_id` column, and timeline-service.ts's fetchWhatsAppEntries()
+    // already filters strictly on that column — but smartSend() never forwarded
+    // a leadId through, so every message sent via this queue (campaigns,
+    // journey automation, and the pre-existing followups/escalations crons)
+    // was logged with lead_id=null and silently never showed up on the
+    // customer's Timeline. This closes that gap; no new timeline code needed.
+    leadId?:         string | null
   } = {}
 ): Promise<boolean> {
   if (!isMetaConfigured()) {
@@ -110,9 +119,9 @@ export async function smartSend(
   }
   let success = false
   if (options.type === 'template' && options.templateName) {
-    success = (await sendWhatsAppTemplateSimple(phone, options.templateName, options.templateParams)).success
+    success = (await sendWhatsAppTemplateSimple(phone, options.templateName, options.templateParams, { leadId: options.leadId })).success
   } else {
-    success = (await sendWhatsAppText(phone, message)).success
+    success = (await sendWhatsAppText(phone, message, { leadId: options.leadId })).success
   }
   if (success) markSent(phone)
   return success

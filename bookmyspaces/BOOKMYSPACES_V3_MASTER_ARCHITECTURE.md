@@ -1,6 +1,6 @@
 # BOOKMYSPACES V3 — MASTER ARCHITECTURE
 
-Last updated: 2026-07-21. How the platform is built. Deep-dive grounding: `audit/PHASE1_ARCHITECTURE_REVIEW_OMNICHANNEL.md` (428-line code-level review — still accurate except where noted below as since-implemented).
+Last updated: 2026-07-27 (Release Candidate hardening pass — see `RELEASE_REPORT.md` for the full RC summary; this file only picks up architecturally-relevant changes since 2026-07-21 below). How the platform is built. Deep-dive grounding: `audit/PHASE1_ARCHITECTURE_REVIEW_OMNICHANNEL.md` (428-line code-level review — still accurate except where noted below as since-implemented).
 
 ## Stack
 
@@ -58,6 +58,14 @@ New module; see `SOCIAL_MEDIA_ARCHITECTURE.md`. Reuses the same adapter + unifie
 ## Principles
 
 1. Extend, never rebuild. 2. Adapters for every integration. 3. CRM is the single source of record. 4. Additive-only migrations; live DB is source of truth — verify before assuming (ISS-009/010 lesson). 5. One customer, one timeline. 6. Deployable at every phase end (build/tsc/lint/tests/docs). 7. Human approval before customer-facing sends and destructive actions.
+
+## Direct Event Sales Engine (shipped since 2026-07-21)
+
+Business-strategy addition, layered on the Hospitality/Booking layer above: AI Event Sales Advisor + automatic Package Recommendation + Smart Proposal Generator + Event Revenue Dashboard (revenue by hall/venue/package/event-type, AI Recommendation Success Rate). Reuses the existing `packages`/`proposals`/`ai_interaction_log` tables (extended additively via migrations 023-024) rather than new ones. See `AI_ARCHITECTURE.md`'s "Direct Event Sales Engine" section for the AI-specific detail.
+
+## Release Candidate Hardening Pass (2026-07-27)
+
+A full RC pass covering dead-code audit, build verification, database migration review, end-to-end workflow tracing, security review, performance review, and UI/UX polish. Produced: `SECURITY_REVIEW.md`, `PERFORMANCE_REVIEW.md`, `UI_UX_REVIEW.md`, `WORKFLOW_VERIFICATION.md`, `PRODUCTION_MIGRATION_CHECKLIST.md`, `PRODUCTION_CHECKLIST.md`, `DEPLOYMENT_CHECKLIST.md`, `RELEASE_REPORT.md`. No architectural changes came out of this pass — it found the layering above sound and made targeted fixes within it (rate limiting parity, filter-injection sanitization, XSS-escaping completeness, PII-in-logs cleanup, one missing `loading.tsx`). See those reports for specifics.
 
 ## Known Environment Hazards (do not skip)
 

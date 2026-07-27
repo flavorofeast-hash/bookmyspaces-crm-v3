@@ -8,6 +8,10 @@ import { syncLeadToSheets } from '@/lib/sheets'
 import { requireAuth } from '@/lib/auth-guard'
 import { parseBody, createLeadSchema, updateLeadSchema } from '@/lib/validation'
 import { resolveIdentity } from '@/lib/identity/resolve-identity'
+import { enqueueMessage } from '@/lib/queue'
+import { WHATSAPP_MESSAGES } from '@/lib/templates'
+import { qualifyLeadFromMessage } from '@/lib/whatsapp/auto-qualify'
+import { runAutoPackageRecommendation } from '@/lib/leads/auto-package-recommendation'
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth()
@@ -24,7 +28,17 @@ export async function GET(req: NextRequest) {
     let query = supabaseAdmin.from('leads').select('*', { count: 'exact' }).order('created_at', { ascending: false }).range(offset, offset + limit - 1)
     if (status && status !== 'all') query = query.eq('status', status)
     if (source && source !== 'all') query = query.eq('source', source)
-    if (search) query = query.or(`name.ilike.%${search}%,phone.ilike.%${search}%,email.ilike.%${search}%,event_type.ilike.%${search}%`)
+    // SECURITY (RC hardening): PostgREST's .or() filter string treats comma
+    // and parentheses as syntax (clause separators / grouping), so an
+    // unescaped search term could inject extra filter clauses. Route is
+    // already behind requireAuth() and getSupabaseAdmin() already bypasses
+    // RLS (full access regardless), so this was never a data-exposure risk —
+    // but stripping the two syntax characters keeps the query well-formed
+    // and is the correct defensive habit regardless of blast radius.
+    if (search) {
+      const safeSearch = search.replace(/[,()]/g, '')
+      query = query.or(`name.ilike.%${safeSearch}%,phone.ilike.%${safeSearch}%,email.ilike.%${safeSearch}%,event_type.ilike.%${safeSearch}%`)
+    }
 
     const { data, error, count } = await query
     if (error) throw error
@@ -92,6 +106,48 @@ export async function POST(req: NextRequest) {
       ...(possibleDuplicateLeadId && { metadata: { possible_duplicate_of: possibleDuplicateLeadId, matched_on: 'email' } }),
     })
     await syncLeadToSheets(lead)
+
+    // Direct Event Sales Engine, Section 1 (Social Media / Website Lead
+    // Capture): "run AI qualification" for every enquiry. Reuses
+    // qualifyLeadFromMessage() exactly as process-inbound.ts does for
+    // WhatsApp — never throws, safe-fills only currently-null fields.
+    // Website/manual-entry forms don't have a chat transcript, so we
+    // synthesize the "message" qualifyLeadFromMessage extracts from out of
+    // whatever the form actually captured (event type/guest count/budget/
+    // special requirements) rather than skipping qualification entirely.
+    const syntheticText = [
+      body.event_type ? `Event type: ${body.event_type}` : null,
+      body.guest_count ? `Guest count: ${body.guest_count}` : null,
+      body.budget ? `Budget: ${body.budget}` : null,
+      body.special_requirements,
+      body.notes,
+    ].filter(Boolean).join('. ') || null
+
+    await qualifyLeadFromMessage(lead.id, syntheticText)
+
+    // Phase 5, Revenue Automation (Direct Event Sales Engine): Lead Created
+    // -> AI Qualification -> Package Recommendation -> Proposal Suggestion.
+    // Reuses the same AI Event Sales Advisor Section 2/7 already built —
+    // self-gated (no-op without an event_type signal or if a proposal
+    // already exists), never blocks lead creation on failure.
+    await runAutoPackageRecommendation(lead.id).catch(() => null)
+
+    // Journey stage 1 (Customer Journey Automation, Priority 3): "New lead
+    // -> Welcome message". Only for leads NOT already sourced from WhatsApp
+    // — those already get the bot's own conversational greeting via
+    // src/services/whatsapp/process-inbound.ts, so sending this too would
+    // double-greet the same person. whatsapp_opted_in is only ever set
+    // false by an explicit opt-out; a brand-new lead defaults to null,
+    // which we treat as "not yet opted out."
+    if (lead.phone && body.source !== 'whatsapp' && lead.whatsapp_opted_in !== false) {
+      await enqueueMessage({
+        phone: lead.phone,
+        message: WHATSAPP_MESSAGES.greeting(lead.name ?? undefined),
+        type: 'session',
+        metadata: { journey: 'welcome', lead_id: lead.id },
+      }).catch(() => null)
+    }
+
     return NextResponse.json({
       lead,
       ...(possibleDuplicateLeadId && { possibleDuplicateOf: possibleDuplicateLeadId }),

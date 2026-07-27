@@ -197,6 +197,7 @@ export default function KanbanPage() {
           <button
             onClick={fetchLeads}
             className="p-2 rounded-lg hover:bg-white"
+            aria-label="Refresh leads"
           >
             <RefreshCw size={15} style={{ color: 'var(--slate)' }} className={isLoading ? 'animate-spin' : ''} />
           </button>
@@ -307,7 +308,7 @@ export default function KanbanPage() {
                 <h2 className="text-xl font-light" style={{ fontFamily: 'var(--font-display)' }}>
                   {selectedLead.name || 'Unknown Guest'}
                 </h2>
-                <button onClick={() => setSelectedLead(null)} className="text-gray-400 hover:text-gray-600">✕</button>
+                <button onClick={() => setSelectedLead(null)} className="text-gray-400 hover:text-gray-600" aria-label="Close lead details">✕</button>
               </div>
 
               {/* AI Score */}
@@ -449,8 +450,6 @@ export default function KanbanPage() {
                       const val = (document.getElementById('kfup-date') as HTMLInputElement)?.value
                       if (!val) return
                       const utcValue = new Date(val).toISOString()
-                      console.log('[FollowUp] local input:', val)
-                      console.log('[FollowUp] utc value:', utcValue)
                       await fetch('/api/followups', {
                         method : 'POST',
                         headers: { 'Content-Type': 'application/json' },

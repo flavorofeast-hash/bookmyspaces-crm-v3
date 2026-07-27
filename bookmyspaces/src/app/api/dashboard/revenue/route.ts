@@ -7,6 +7,7 @@
 import { NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '@/lib/supabase';
 import { requireAuth } from '@/lib/auth-guard';
+import { logger } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,7 +36,11 @@ interface ProposalRow {
 // grep before this fix — so this KPI block would have stayed frozen forever
 // once the V3 reservation workflow went live. See RELEASE_CANDIDATE_3_REPORT.md.
 interface ReservationStatsRow {
-  status: string | null;
+  status            : string | null;
+  final_room_rate   : number | null;
+  meal_plan_charge  : number | null;
+  proposal_id       : string | null;
+  created_at        : string | null;
 }
 
 // ─── Response shape ───────────────────────────────────────────────────────────
@@ -68,6 +73,29 @@ export interface RevenueSummary {
     last_month : number;
     avg_value  : number;
     deal_count : number;
+  };
+  /**
+   * Room revenue sourced directly from `reservations` (final_room_rate +
+   * meal_plan_charge), for statuses where the booking is real and not just
+   * an inquiry (`confirmed`, `checked_in`, `checked_out`) — mirrors the
+   * `confirmed`/`completed` status grouping already used in the `bookings`
+   * block above. Deliberately kept SEPARATE from `revenue.total` rather than
+   * merged into it: a reservation can be linked to an accepted proposal via
+   * `proposal_id`, and this route has no live-data access to confirm whether
+   * summing both blocks would double-count that overlap. `linked_to_proposal`
+   * surfaces the size of that overlap so the dashboard can label both blocks
+   * honestly instead of implying `revenue.total + reservationRevenue.total`
+   * is a business's true combined revenue.
+   */
+  reservationRevenue: {
+    total                       : number;
+    this_month                  : number;
+    last_month                  : number;
+    count                       : number;
+    linked_to_proposal_count    : number;
+    linked_to_proposal_revenue  : number;
+    /** True when `reservations` (migration 012) isn't queryable yet. */
+    degraded                    : boolean;
   };
   charts: {
     revenue_by_month  : Array<{ month: string; revenue: number; deals: number }>;
@@ -106,15 +134,17 @@ export async function GET(): Promise<NextResponse> {
 
     // Surface any Supabase error immediately
     if (leadsResult.error) {
-      console.error('[API /dashboard/revenue] leads error:', leadsResult.error.message);
+      logger.error('dashboard-revenue', 'leads error', leadsResult.error);
       return NextResponse.json({ error: leadsResult.error.message }, { status: 500 });
     }
     if (proposalsResult.error) {
-      console.error('[API /dashboard/revenue] proposals error:', proposalsResult.error.message);
+      logger.error('dashboard-revenue', 'proposals error', proposalsResult.error);
       return NextResponse.json({ error: proposalsResult.error.message }, { status: 500 });
     }
 
-    const reservationsResult = await db.from('reservations').select('status');
+    const reservationsResult = await db
+      .from('reservations')
+      .select('status, final_room_rate, meal_plan_charge, proposal_id, created_at');
     const reservationsDegraded = reservationsResult.error !== null;
     if (reservationsDegraded) {
       // Expected until migration 012 is applied live — log at info level, not error.
@@ -186,6 +216,29 @@ export async function GET(): Promise<NextResponse> {
       ? Math.round(totalRevenue / acceptedProposals.length)
       : 0;
 
+    // ── Reservation revenue (Priority 4) ─────────────────────────────────────
+    // Revenue-recognized statuses: the booking is real, not just an inquiry
+    // (`inquiry`/`tentative` excluded) and didn't fall through
+    // (`cancelled`/`no_show` excluded) — same status semantics already used
+    // for `confirmedReservations`/`completedReservations` above.
+    const REVENUE_RECOGNIZED_STATUSES = new Set(['confirmed', 'checked_in', 'checked_out']);
+    const revenueReservations = reservations.filter((r) => r.status && REVENUE_RECOGNIZED_STATUSES.has(r.status));
+    const reservationAmount = (r: ReservationStatsRow) =>
+      (Number(r.final_room_rate) || 0) + (Number(r.meal_plan_charge) || 0);
+
+    const reservationRevenueTotal = revenueReservations.reduce((sum, r) => sum + reservationAmount(r), 0);
+
+    const reservationRevenueThisMonth = revenueReservations
+      .filter((r) => r.created_at && r.created_at >= thisMonthStart)
+      .reduce((sum, r) => sum + reservationAmount(r), 0);
+
+    const reservationRevenueLastMonth = revenueReservations
+      .filter((r) => r.created_at && r.created_at >= lastMonthStart && r.created_at <= lastMonthEnd)
+      .reduce((sum, r) => sum + reservationAmount(r), 0);
+
+    const linkedToProposal = revenueReservations.filter((r) => r.proposal_id !== null);
+    const linkedToProposalRevenue = linkedToProposal.reduce((sum, r) => sum + reservationAmount(r), 0);
+
     // ── Charts ────────────────────────────────────────────────────────────────
 
     // Revenue by month — last 6 months, fill gaps with zero
@@ -253,6 +306,15 @@ export async function GET(): Promise<NextResponse> {
         avg_value  : avgValue,
         deal_count : acceptedProposals.length,
       },
+      reservationRevenue: {
+        total                      : reservationRevenueTotal,
+        this_month                 : reservationRevenueThisMonth,
+        last_month                 : reservationRevenueLastMonth,
+        count                      : revenueReservations.length,
+        linked_to_proposal_count   : linkedToProposal.length,
+        linked_to_proposal_revenue : linkedToProposalRevenue,
+        degraded                   : reservationsDegraded,
+      },
       charts: {
         revenue_by_month  : revenueByMonth,
         leads_by_source   : bySource,
@@ -263,8 +325,7 @@ export async function GET(): Promise<NextResponse> {
     return NextResponse.json(summary);
 
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error('[API /dashboard/revenue] Unexpected error:', msg);
+    logger.error('dashboard-revenue', 'Unexpected error', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

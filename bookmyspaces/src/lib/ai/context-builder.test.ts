@@ -9,6 +9,9 @@ const state = {
   unifiedMessagesError: null as { message: string } | null,
   settingsRows: [] as Record<string, unknown>[],
   settingsError: null as { message: string } | null,
+  mealPlans: [] as Record<string, unknown>[],
+  addonServices: [] as Record<string, unknown>[],
+  packages: [] as Record<string, unknown>[],
 }
 
 const mocks = vi.hoisted(() => ({
@@ -72,6 +75,40 @@ vi.mock('@/lib/supabase', () => ({
           }),
         }
       }
+      // Priority 1 (AI Sales Executive) — upsell inventory. Mirrors
+      // property-service.ts's listActiveMealPlans/listActiveAddonServices
+      // query shape (no propertyId arg from context-builder.ts, so no
+      // second .eq()); the query object itself is the awaited thenable.
+      if (table === 'meal_plans') {
+        return {
+          select: () => ({
+            eq: () => ({
+              order: () => Promise.resolve({ data: state.mealPlans, error: null }),
+            }),
+          }),
+        }
+      }
+      if (table === 'addon_services') {
+        return {
+          select: () => ({
+            eq: () => ({
+              order: () => Promise.resolve({ data: state.addonServices, error: null }),
+            }),
+          }),
+        }
+      }
+      // Direct Event Sales Engine, Section 2 — event-type-aware package
+      // catalog (src/lib/packages/package-service.ts's listPackages(),
+      // default activeOnly:true call shape: select -> order -> eq).
+      if (table === 'packages') {
+        return {
+          select: () => ({
+            order: () => ({
+              eq: () => Promise.resolve({ data: state.packages, error: null }),
+            }),
+          }),
+        }
+      }
       throw new Error(`unexpected table: ${table}`)
     },
   }),
@@ -88,6 +125,9 @@ function resetState() {
   state.unifiedMessagesError = null
   state.settingsRows = []
   state.settingsError = null
+  state.mealPlans = []
+  state.addonServices = []
+  state.packages = []
 }
 
 describe('buildAIContext', () => {

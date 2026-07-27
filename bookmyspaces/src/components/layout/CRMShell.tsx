@@ -1,3 +1,17 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// DEPRECATED — NOT MOUNTED ANYWHERE. Do not wire this back in.
+//
+// RC Phase 1 audit (production-readiness pass): confirmed via full-repo grep
+// that no file imports CRMShell — CRMLayout.tsx (the only layout actually
+// used by the app root) has its own comment explaining why: this component's
+// sign-out button posted to /api/auth/logout... wait, to a nonexistent
+// /api/auth/signout URL, which is why CRMLayout.tsx was written as its
+// replacement with the correct route. Left in the tree (not deleted) only
+// because this sandbox's tooling couldn't get delete permission for this
+// specific file during the audit — safe to delete manually. See
+// PRODUCTION_CHECKLIST.md / the RC audit findings for the full list.
+// ─────────────────────────────────────────────────────────────────────────────
+
 'use client'
 
 import Link from 'next/link'

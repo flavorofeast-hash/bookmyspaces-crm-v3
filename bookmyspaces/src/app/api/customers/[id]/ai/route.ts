@@ -18,7 +18,7 @@ import { logger } from '@/lib/logger'
 import { requireAuth } from '@/lib/auth-guard'
 import { parseBody, operatorAssistActionSchema } from '@/lib/validation'
 import { buildAIContext } from '@/lib/ai/context-builder'
-import { runOperatorAssist } from '@/lib/ai/operator-assistant'
+import { runOperatorAssist, runEventSalesAdvisor } from '@/lib/ai/operator-assistant'
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   const auth = await requireAuth()
@@ -34,6 +34,16 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       query: '',
       conversationId: conversationId ?? null,
     })
+
+    // Direct Event Sales Engine, Section 2/7 — 'event_sales_advisor' is a
+    // structured-JSON action with its own return shape, not the free-text
+    // OperatorAssistResult every other action here returns, so it's routed
+    // to its own function rather than forcing it through runOperatorAssist().
+    if (action === 'event_sales_advisor') {
+      const result = await runEventSalesAdvisor(context, params.id, conversationId ?? null)
+      if (!result.ok) return NextResponse.json({ error: result.error }, { status: 502 })
+      return NextResponse.json({ action, ...result.result })
+    }
 
     const result = await runOperatorAssist(action, context, params.id, conversationId ?? null)
 
