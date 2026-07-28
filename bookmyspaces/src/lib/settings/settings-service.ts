@@ -58,11 +58,35 @@ export interface WhatsAppSettings {
   webhookUrl: string
 }
 
+/**
+ * Phase 1B — Orchestration rollout kill-switch.
+ *
+ * This section exists ONLY to support the Phase 1B gradual rollout
+ * (audit/PHASE_1B_DESIGN_DOCUMENT.md, audit/PHASE_1B_IMPLEMENTATION_BACKLOG.md,
+ * Step 1). It is pure configuration: as of this step, no runtime code reads
+ * this section at all -- src/lib/ai/orchestrate() remains completely unwired
+ * from every channel adapter (the WhatsApp webhook, process-inbound.ts,
+ * etc.), exactly as it was at the Phase 1A.1 baseline (commit c2384ea, tag
+ * phase-1a.1-complete). Adding this section changes no behavior anywhere.
+ *
+ * `enabled` MUST default to false and MUST remain false until a later,
+ * explicitly-approved Phase 1B step wires a real caller behind it. Future
+ * developers: if you are looking for where this flag is consulted, it is
+ * intentionally nowhere yet -- see the implementation backlog for the
+ * planned sequencing (Steps 6-8) before adding a reader.
+ */
+export interface OrchestrationSettings {
+  /** Master switch for the Phase 1B orchestration pipeline. Default false; do not flip in code. */
+  enabled: boolean
+}
+
 export interface AppSettings {
   venue: VenueSettings
   ai: AISettings
   notifications: NotificationSettings
   whatsapp: WhatsAppSettings
+  /** Phase 1B rollout kill-switch -- see OrchestrationSettings' own doc comment. */
+  orchestration: OrchestrationSettings
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -99,10 +123,15 @@ export const DEFAULT_SETTINGS: AppSettings = {
     accessTokenSet: false,
     webhookUrl: '',
   },
+  orchestration: {
+    // MUST remain false until an explicitly-approved later Phase 1B step
+    // wires a real caller. See OrchestrationSettings' doc comment above.
+    enabled: false,
+  },
 }
 
 const APP_CATEGORY = 'app'
-const SECTION_KEYS = ['venue', 'ai', 'notifications', 'whatsapp'] as const
+const SECTION_KEYS = ['venue', 'ai', 'notifications', 'whatsapp', 'orchestration'] as const
 export type SettingsSectionKey = (typeof SECTION_KEYS)[number]
 
 export function isSettingsSectionKey(key: string): key is SettingsSectionKey {
