@@ -15,9 +15,25 @@ import type { AutoResponseContext } from '@/types/whatsapp'
 // All messages are deterministic — no AI generation.
 // Edit copy here to update what users see.
 
-const MESSAGES = {
+// Phase 1B, Step 3 (audit/PHASE_1B_IMPLEMENTATION_BACKLOG.md,
+// audit/PHASE_1B_STEP3_READINESS_REVIEW.md): exported so a future
+// tool-registry entry (Step 5+) can reuse this exact customer-facing copy
+// instead of duplicating it. No template's text changed by this export --
+// pinned by auto-responder.test.ts. `ASK_EVENT_TYPE` is the one net-new
+// addition (see its own comment below) -- everything else here is
+// unchanged from before Step 3.
+export const MESSAGES = {
   GREETING: (name: string | null) =>
     `👋 Hi${name ? ` ${name}` : ''}! Welcome to *BookMySpaces* 🎉\n\nWe specialise in premium event venues in Kolkata — from intimate gatherings to grand celebrations.\n\nCould you tell us what *type of event* you're planning?\n\n_(e.g. Wedding, Birthday, Corporate Event, Engagement, etc.)_`,
+
+  // Phase 1B, Step 3 -- new template. Not used by processAutoResponse()
+  // today (GREETING already asks this on a brand-new conversation) --
+  // added so a future ask_question/collect_missing_information tool
+  // (Step 5+) can ask for eventType alone, e.g. for a returning customer
+  // who doesn't need to be re-greeted. Deliberately mirrors GREETING's own
+  // question wording/tone for consistency.
+  ASK_EVENT_TYPE:
+    `Could you tell us what *type of event* you're planning? 🎉\n\n_(e.g. Wedding, Birthday, Corporate Event, Engagement, etc.)_`,
 
   ASK_EVENT_DATE:
     `Great choice! 📅\n\nWhat *date* are you thinking for your event?\n\n_(Please share the date, e.g. "15 June 2025" or "15/06/2025")_`,
@@ -210,7 +226,11 @@ export async function processAutoResponse(ctx: AutoResponseContext): Promise<num
 
 // ─── Operator notification via WhatsApp ──────────────────────────────────────
 
-async function notifyOperator(
+// Phase 1B, Step 3: exported so a future notify_staff tool implementation
+// (Step 5+) can reuse this exact operator-alert logic instead of
+// duplicating it. Behavior unchanged -- same notification_settings lookup,
+// same message format, same sendWhatsAppText call as before this export.
+export async function notifyOperator(
   customerPhone: string,
   name: string | null,
   eventType: string,

@@ -43,6 +43,8 @@ Migration numbering confirmed against the repo: the latest applied migration is 
 
 ## Step 2 — Database migration: `unified_messages` idempotency + `orchestration_decisions` table
 
+**Status: ✅ COMPLETE.** Implemented and provisionally accepted; see `audit/PHASE_1B_STEP2_REPORT.md` (Step 2 Close-Out section) for the full record — files touched, DB objects added, rollback procedure, risk changes, and the one disclosed deviation from this backlog's original file list (an additional smoke-test script + one `package.json` line, added to satisfy this same document's own Section 9/12 testing requirements, which had no other mechanism available). Migration not yet applied to any environment — still infrastructure-only, feature flag still `false`, still unwired.
+
 **Objective:** Give `inbound-guard.ts`'s duplicate/replay check a real backing store, and give shadow mode somewhere durable to write decisions.
 
 **Files to modify:** none in `src/`.
@@ -98,6 +100,8 @@ Rollback file drops both in reverse order (`DROP TABLE IF EXISTS orchestration_d
 
 ## Step 3 — Export `auto-responder.ts` templates + `notifyOperator()`
 
+**Status: ✅ COMPLETE — approved.** Implemented exactly as approved in `PHASE_1B_STEP3_READINESS_REVIEW.md` and formally closed out; see `audit/PHASE_1B_STEP3_REPORT.md` (Step 3 Close-Out + Engineering Notes sections) for the full record — files touched, tests added, risks in/out, rollback procedure, and a factual account of one unexpected implementation event encountered mid-Step-3 (an unapproved test-file alteration, rejected and reverted before the report was finalized).
+
 **Objective:** Turn two module-private pieces of already-correct, already-live logic into reusable exports, with zero change to their behavior or to `processAutoResponse()`'s existing call sites.
 
 **Files to modify:**
@@ -130,6 +134,8 @@ Rollback file drops both in reverse order (`DROP TABLE IF EXISTS orchestration_d
 ---
 
 ## Step 4 — Build `action-arguments.ts` (pure mapping layer)
+
+**Status: ✅ COMPLETE — approved.** Implemented exactly within the approved scope of `PHASE_1B_STEP4_READINESS_REVIEW.md` and formally closed out; see `audit/PHASE_1B_STEP4_REPORT.md` (Step 4 Close-Out + Step 4 Design Corrections sections) for the full record — files created, 25 tests, risks in/out, rollback procedure, and five design corrections discovered while grounding the module against real function signatures and re-reading `orchestration-engine.ts`/`decision-table.ts` closely. Not wired anywhere — confirmed by grep, only its own test file imports it.
 
 **Objective:** Implement the 13-action argument-building functions from the design doc's Section 6 table, fully unit-tested, called by nothing yet.
 
@@ -165,6 +171,8 @@ Rollback file drops both in reverse order (`DROP TABLE IF EXISTS orchestration_d
 
 ## Step 5 — Build `orchestration-executor.ts`
 
+**Status: ✅ COMPLETE.** Implemented exactly within the approved scope of `PHASE_1B_STEP5_READINESS_REVIEW.md`; see `audit/PHASE_1B_STEP5_REPORT.md` for the full record — files created, 11 tests, the Canonical Orchestration Result Contract documenting all four `action-arguments.ts` branches and each consumer's responsibility, and the explicit "unavailable" no-op preserved and recorded as an open Step 6 rollout decision (not resolved here, per instruction). Not wired anywhere — confirmed by grep, only its own test file imports it.
+
 **Objective:** Implement the single new business-logic file this whole phase needs (design doc Section 4.2) — calls the right tool with the right arguments, normalizes the result, sends the reply, records it, runs post-reply handoff. Still not called from any route.
 
 **Files to modify:** none.
@@ -198,6 +206,10 @@ Rollback file drops both in reverse order (`DROP TABLE IF EXISTS orchestration_d
 ---
 
 ## Step 6 — Wire the webhook route: shadow mode only, limited environment
+
+**Status: ⚠️ IMPLEMENTATION COMPLETE — VERIFICATION OUTSTANDING.** Delivered this session per an explicit, revised kickoff that superseded this section's original shadow-mode/allow-list staging (see below) with a single-step, flag-gated, active-mode wiring — the final Phase 1B engineering step. `src/app/api/whatsapp/webhook/route.ts` now branches on `settings.orchestration.enabled` (still default `false`); flag-off behavior is byte-identical to pre-Step-6. `npm test` / `npm run lint` / `npx tsc --noEmit` could not be completed in-sandbox this session (45-second per-command limit hit on every attempt, including previously-fast single test files — see `audit/PHASE_1B_STEP6_REPORT.md`'s Verification section). **Do not flip this flag in any environment until those three commands have been run and pass.** Full detail, deviations, and risks: `audit/PHASE_1B_STEP6_REPORT.md`.
+
+**Important:** this implementation does not include the shadow-mode/test-number-allow-list staging this section originally specified (see below) — the approved Step 6 kickoff redefined Step 6 as a single global on/off flag with no staged rollout. This is a disclosed deviation, not an oversight — see the Step 6 report's "Deviations" section. Steps 7 and 8 below, as originally drafted, are therefore superseded/not applicable to what was actually built; a future step would need to be freshly scoped if staged rollout is wanted.
 
 **Objective:** First time `orchestrate()` ever runs against real traffic. Computes and logs a decision on every real inbound WhatsApp message; changes nothing a customer can see.
 

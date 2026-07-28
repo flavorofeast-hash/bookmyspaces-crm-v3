@@ -10,7 +10,8 @@
     "test": "vitest run",
     "db:migrate:v3": "node scripts/apply-v3-migrations.mjs",
     "db:rollback:v3": "node scripts/apply-v3-migrations.mjs --rollback",
-    "db:smoke-test:v3": "node scripts/smoke-test-v3.mjs"
+    "db:smoke-test:v3": "node scripts/smoke-test-v3.mjs",
+    "db:smoke-test:orchestration-observability": "node scripts/smoke-test-orchestration-observability.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.24.3",
