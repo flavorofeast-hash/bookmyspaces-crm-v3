@@ -31,6 +31,14 @@
 // leads, knowledge base) and picks up the rest automatically once migration
 // 012 is applied, with no code change required.
 //
+// Hardening Sprint (Performance): `input.skipExpensiveRetrieval` (default
+// false/omitted — see BuildAIContextInput in src/types/ai-context.ts) skips
+// exactly the four sections the Hardening Sprint brief names as the
+// expensive ones — knowledge base vector search, pricing, reservation
+// history, proposal history — returning their normal empty defaults
+// instead. Strictly additive: every existing caller that doesn't pass the
+// flag gets byte-for-byte the same behavior as before this sprint.
+//
 // Deliberately does NOT call src/lib/ai.ts's chatWithAI() itself — this
 // builds the context object; wiring it into an actual AI call is the
 // caller's job (Unified Conversation Service's handleInboundMessage()),
@@ -260,6 +268,24 @@ async function getBusinessRules(): Promise<BusinessRules> {
  * the others from returning real data.
  */
 export async function buildAIContext(input: BuildAIContextInput): Promise<AIContext> {
+  const skip = input.skipExpensiveRetrieval === true
+
+  // Typed as functions (not inline ternaries inside the Promise.all array)
+  // so each branch keeps the real function's own return type exactly --
+  // avoids the empty-array-literal-in-a-ternary inference trap under
+  // strict mode, and keeps the "skip -> safe empty default" mapping
+  // readable as its own named step per section.
+  const fetchProposalHistory = (): ReturnType<typeof getProposalHistory> =>
+    skip ? Promise.resolve([]) : getProposalHistory(input.leadId)
+  const fetchReservationHistory = (): ReturnType<typeof getReservationHistory> =>
+    skip ? Promise.resolve({ reservations: [], degraded: false }) : getReservationHistory(input.leadId)
+  const fetchActivePackages = (): ReturnType<typeof getActivePackagePrices> =>
+    skip ? Promise.resolve([]) : getActivePackagePrices()
+  const fetchPricingDrift = (): ReturnType<typeof checkSystemPromptPricingDrift> =>
+    skip ? Promise.resolve([]) : checkSystemPromptPricingDrift()
+  const fetchKnowledgeResults = (): ReturnType<typeof retrieveKnowledgeByVector> =>
+    skip ? Promise.resolve([]) : retrieveKnowledgeByVector(input.query)
+
   const [
     { profile, preferences },
     proposalHistory,
@@ -273,12 +299,12 @@ export async function buildAIContext(input: BuildAIContextInput): Promise<AICont
     eventPackagesResult,
   ] = await Promise.all([
     getCustomerProfileAndPreferences(input.leadId),
-    getProposalHistory(input.leadId),
-    getReservationHistory(input.leadId),
+    fetchProposalHistory(),
+    fetchReservationHistory(),
     getConversationHistory(input.conversationId),
-    getActivePackagePrices(),
-    checkSystemPromptPricingDrift(),
-    retrieveKnowledgeByVector(input.query),
+    fetchActivePackages(),
+    fetchPricingDrift(),
+    fetchKnowledgeResults(),
     getBusinessRules(),
     getUpsellInventory(),
     getEventPackages(),

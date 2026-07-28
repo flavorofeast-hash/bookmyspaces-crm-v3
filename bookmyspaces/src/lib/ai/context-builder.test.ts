@@ -226,4 +226,43 @@ describe('buildAIContext', () => {
 
     expect(ctx.pricing.pricingDrift).toEqual([{ packageName: 'Gold', hardcodedPrice: 50000, livePrice: 55000 }])
   })
+
+  // Hardening Sprint (Performance) -- skipExpensiveRetrieval
+  describe('skipExpensiveRetrieval', () => {
+    it('is additive-only: omitting it fetches every section exactly as before', async () => {
+      state.lead = { id: 'lead-1', name: 'X', phone: null, email: null, status: null, event_type: null, guest_count: null, venue: null, special_requirements: null }
+      state.proposals = [{ id: 'prop-1', proposal_number: 'BMS-1', package_name: 'Gold', total_price: '1000', status: 'sent', created_at: '2026-01-01' }]
+
+      const ctx = await buildAIContext({ leadId: 'lead-1', query: 'pricing' })
+
+      expect(ctx.proposalHistory).toHaveLength(1)
+      expect(ctx.activePackages).toHaveLength(1)
+      expect(ctx.knowledgeBaseResults).toHaveLength(1)
+      expect(mocks.retrieveKnowledgeByVector).toHaveBeenCalled()
+      expect(mocks.getActivePackagePrices).toHaveBeenCalled()
+    })
+
+    it('when true, skips knowledge base, pricing, reservations and proposal history, returning safe empty defaults', async () => {
+      state.lead = { id: 'lead-1', name: 'X', phone: null, email: null, status: null, event_type: null, guest_count: null, venue: null, special_requirements: null }
+      state.proposals = [{ id: 'prop-1', proposal_number: 'BMS-1', package_name: 'Gold', total_price: '1000', status: 'sent', created_at: '2026-01-01' }]
+
+      mocks.getActivePackagePrices.mockClear()
+      mocks.checkSystemPromptPricingDrift.mockClear()
+      mocks.retrieveKnowledgeByVector.mockClear()
+
+      const ctx = await buildAIContext({ leadId: 'lead-1', query: 'anything', skipExpensiveRetrieval: true })
+
+      expect(ctx.proposalHistory).toEqual([])
+      expect(ctx.reservationHistory).toEqual([])
+      expect(ctx.activePackages).toEqual([])
+      expect(ctx.pricing).toEqual({ activePackages: [], pricingDrift: [] })
+      expect(ctx.knowledgeBaseResults).toEqual([])
+      expect(mocks.retrieveKnowledgeByVector).not.toHaveBeenCalled()
+      expect(mocks.getActivePackagePrices).not.toHaveBeenCalled()
+      expect(mocks.checkSystemPromptPricingDrift).not.toHaveBeenCalled()
+      // Untouched sections still populate -- only the four named sections are skipped.
+      expect(ctx.customerProfile.name).toBe('X')
+      expect(ctx.degraded).toEqual({ reservationHistory: false, conversationHistory: false, upsellInventory: false, eventPackages: false })
+    })
+  })
 })

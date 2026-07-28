@@ -154,4 +154,19 @@ export interface BuildAIContextInput {
   query: string
   /** Optional: conversation id in the Unified Conversation Platform, to pull message history from. */
   conversationId?: string | null
+  /**
+   * Hardening Sprint (Performance) — opt-in, additive-only. When true,
+   * skips the four heaviest sections — knowledge base vector search,
+   * pricing, reservation history, proposal history — and returns their
+   * safe empty defaults instead, same shape as an unidentified visitor
+   * gets for those fields today. Omitted/false behaves EXACTLY as before
+   * for every existing caller (unified-conversation-service.ts,
+   * auto-package-recommendation.ts, and api/customers/[id]/ai/route.ts all
+   * leave this unset and are completely unaffected by its existence).
+   * Intended for a caller (orchestration-engine.ts) that can already prove,
+   * from cheap/synchronous signals alone and before context is built, that
+   * the eventual decision cannot possibly need this data — see
+   * orchestration-engine.ts's own skip predicate for the exact condition.
+   */
+  skipExpensiveRetrieval?: boolean
 }
