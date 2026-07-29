@@ -23,6 +23,7 @@ describe('dateRangesOverlap (pure logic, no DB)', () => {
 
 const mockReservationsTable = {
   rows: [] as Array<{ id: string; check_in_date: string; check_out_date: string }>,
+  error: null as { message: string } | null,
 }
 
 vi.mock('@/lib/supabase', () => ({
@@ -32,7 +33,12 @@ vi.mock('@/lib/supabase', () => ({
         eq: () => ({
           in: () => ({
             lt: () => ({
-              gt: () => Promise.resolve({ data: mockReservationsTable.rows, error: null }),
+              gt: () =>
+                Promise.resolve(
+                  mockReservationsTable.error
+                    ? { data: null, error: mockReservationsTable.error }
+                    : { data: mockReservationsTable.rows, error: null }
+                ),
             }),
           }),
         }),
@@ -46,11 +52,13 @@ import { checkAvailability } from './availability-service'
 describe('checkAvailability', () => {
   beforeEach(() => {
     mockReservationsTable.rows = []
+    mockReservationsTable.error = null
   })
 
   it('reports available when there are no existing reservations for the item', async () => {
     const result = await checkAvailability('item-1', '2026-08-01', '2026-08-05')
     expect(result.available).toBe(true)
+    expect(result.status).toBe('available')
     expect(result.conflictingReservationIds).toEqual([])
   })
 
@@ -60,6 +68,7 @@ describe('checkAvailability', () => {
     const result = await checkAvailability('item-1', '2026-08-01', '2026-08-05')
 
     expect(result.available).toBe(false)
+    expect(result.status).toBe('unavailable')
     expect(result.conflictingReservationIds).toEqual(['res-1'])
   })
 
@@ -69,5 +78,16 @@ describe('checkAvailability', () => {
     const result = await checkAvailability('item-1', '2026-08-05', '2026-08-08')
 
     expect(result.available).toBe(true)
+    expect(result.status).toBe('available')
+  })
+
+  it('reports status "unknown" (not "unavailable") when the query itself fails', async () => {
+    mockReservationsTable.error = { message: 'connection reset' }
+
+    const result = await checkAvailability('item-1', '2026-08-01', '2026-08-05')
+
+    expect(result.status).toBe('unknown')
+    expect(result.available).toBe(false) // still fails closed for any caller only reading `.available`
+    expect(result.conflictingReservationIds).toEqual([])
   })
 })

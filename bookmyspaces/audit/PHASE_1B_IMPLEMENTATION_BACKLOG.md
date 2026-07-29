@@ -2,7 +2,15 @@
 
 Derived from `audit/PHASE_1B_DESIGN_DOCUMENT.md`, Section 12 (the 9-step rollout). Baseline: commit `c2384ea`, tag `phase-1a.1-complete`.
 
-Status: **planning only — no code has been written.** This backlog exists so Step 1 can be approved and scoped precisely before anything is touched.
+## ✓ PHASE 1B COMPLETE
+
+Steps 1–6 delivered, reviewed, and verified. Step 6 (this session) closed out Phase 1B's engineering work as the final step, per an explicit revised kickoff that redefined the rollout as a single flag-gated step rather than the originally-planned Steps 6–8 staged rollout (shadow mode → allow-list → 100%) — see Step 6's status note below and `audit/PHASE_1B_STEP6_REPORT.md`'s "Deviations" section for the full disclosure. `settings.orchestration.enabled` remains `false` (default, unflipped in every environment) as of Phase 1B's close. Full closing record, architecture summary, and recommended next steps: `audit/PHASE_1B_COMPLETION_REPORT.md`.
+
+Steps 7, 8, and 9 below are the **original** staged-rollout plan as first drafted (before this session's revised Step 6 kickoff) and are kept here for historical record only — they were **not** built, and are superseded by Step 6's single-flag design. Any future staged rollout (shadow mode, allow-list) would need to be freshly scoped as new work, not resumed from these sections.
+
+---
+
+Status (historical, pre-Step-1): **planning only — no code has been written.** This backlog exists so Step 1 can be approved and scoped precisely before anything is touched.
 
 Migration numbering confirmed against the repo: the latest applied migration is `024_event_sales_expansion.sql`, and every migration in this repo already ships with a paired `..._ROLLBACK.sql` file (`015` through `024` all follow this convention) — Step 2 below reuses that existing convention rather than inventing a new one.
 
@@ -207,7 +215,7 @@ Rollback file drops both in reverse order (`DROP TABLE IF EXISTS orchestration_d
 
 ## Step 6 — Wire the webhook route: shadow mode only, limited environment
 
-**Status: ⚠️ IMPLEMENTATION COMPLETE — VERIFICATION OUTSTANDING.** Delivered this session per an explicit, revised kickoff that superseded this section's original shadow-mode/allow-list staging (see below) with a single-step, flag-gated, active-mode wiring — the final Phase 1B engineering step. `src/app/api/whatsapp/webhook/route.ts` now branches on `settings.orchestration.enabled` (still default `false`); flag-off behavior is byte-identical to pre-Step-6. `npm test` / `npm run lint` / `npx tsc --noEmit` could not be completed in-sandbox this session (45-second per-command limit hit on every attempt, including previously-fast single test files — see `audit/PHASE_1B_STEP6_REPORT.md`'s Verification section). **Do not flip this flag in any environment until those three commands have been run and pass.** Full detail, deviations, and risks: `audit/PHASE_1B_STEP6_REPORT.md`.
+**Status: ✓ Step 6 Complete — VERIFIED.** Delivered this session per an explicit, revised kickoff that superseded this section's original shadow-mode/allow-list staging (see below) with a single-step, flag-gated, active-mode wiring — the final Phase 1B engineering step. `src/app/api/whatsapp/webhook/route.ts` now branches on `settings.orchestration.enabled` (still default `false`); flag-off behavior is byte-identical to pre-Step-6. Verified locally by the user: `npm test` (41 files / 377 tests passed), `npm run lint` (passed — one pre-existing, unrelated warning), `npx tsc --noEmit` (passed, no errors). A one-line post-verification ESLint fix was applied to `src/lib/ai/orchestration-executor.ts` (an unresolvable `@typescript-eslint/no-explicit-any` disable-comment, since that plugin was never registered in this project's `.eslintrc.json` — no business logic changed). Full detail, deviations, and risks: `audit/PHASE_1B_STEP6_REPORT.md`.
 
 **Important:** this implementation does not include the shadow-mode/test-number-allow-list staging this section originally specified (see below) — the approved Step 6 kickoff redefined Step 6 as a single global on/off flag with no staged rollout. This is a disclosed deviation, not an oversight — see the Step 6 report's "Deviations" section. Steps 7 and 8 below, as originally drafted, are therefore superseded/not applicable to what was actually built; a future step would need to be freshly scoped if staged rollout is wanted.
 
@@ -244,6 +252,8 @@ Rollback file drops both in reverse order (`DROP TABLE IF EXISTS orchestration_d
 
 ## Step 7 — Enable active mode for a test-number allow-list
 
+**Status: NOT BUILT — superseded.** Phase 1B's actual Step 6 (see above) went directly to a single active/inactive flag with no allow-list stage. This section is kept for historical record only.
+
 **Objective:** First time this pipeline's decision is actually acted on for a real (but controlled) conversation.
 
 **Files to modify:**
@@ -278,6 +288,8 @@ Rollback file drops both in reverse order (`DROP TABLE IF EXISTS orchestration_d
 
 ## Step 8 — Enable active mode for 100% of WhatsApp
 
+**Status: NOT BUILT — superseded.** Phase 1B's actual Step 6 (see above) already reaches 100% of WhatsApp traffic the moment the single flag is flipped on — there is no separate config-only step to reach full rollout. This section is kept for historical record only.
+
 **Objective:** The new pipeline becomes the real, live reply path for every WhatsApp customer.
 
 **Files to modify:**
@@ -310,6 +322,8 @@ Rollback file drops both in reverse order (`DROP TABLE IF EXISTS orchestration_d
 ---
 
 ## Step 9 — Deprecate the old pipelines (comment-only; physical removal is Phase 1C)
+
+**Status: NOT BUILT — deferred.** Pipeline A (`buildAutoReply`/`persistConversation`, now `runLegacyReplyPath()`) is still fully live and is Phase 1B's own rollback path, so marking it dead would be premature — `settings.orchestration.enabled` is still `false` everywhere as of Phase 1B's close. This is a natural Phase 1C candidate once the flag has actually been exercised in production. This section is kept for historical record only.
 
 **Objective:** Mark dead code dead, without deleting the safety net yet.
 

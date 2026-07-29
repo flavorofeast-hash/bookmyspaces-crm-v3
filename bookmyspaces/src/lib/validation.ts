@@ -158,6 +158,18 @@ export const reservationStatusActionSchema = z.object({
   crmLeadId: uuid.nullish(),
 })
 
+// Sprint 1, Priority 1 — manual availability override. Deliberately much
+// smaller than createReservationSchema above: no guest/pricing/meal-plan
+// fields, since createManualBlock() (reservation-workflow.ts) doesn't accept
+// or need them — reason is required so every block is self-explanatory.
+export const createManualBlockSchema = z.object({
+  propertyId     : uuid,
+  inventoryItemId: uuid,
+  checkInDate    : isoDate,
+  checkOutDate   : isoDate,
+  reason         : z.string().trim().min(1).max(500),
+})
+
 // ─── AI Operator Assistant (V3 Sprint 4 — Priority 4) ──────────────────────
 
 export const operatorAssistActionSchema = z.object({

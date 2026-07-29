@@ -30,6 +30,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { getSupabaseAdmin } from '@/lib/supabase'
+import type { Reservation } from '@/types/reservation'
 import { checkAvailability, type AvailabilityCheckResult } from './availability-service'
 import { createReservation, transitionReservationStatus, type CreateReservationInput, type CreateReservationResult, type TransitionResult, type PricedAddonLine } from './reservation-service'
 import { getInventoryItemRate } from '@/lib/pricing/pricing-service'
@@ -248,6 +249,63 @@ export async function createReservationWithQuote(
   }
 
   return { reservationResult, quote }
+}
+
+// ─── Manual availability override (Sprint 1, Priority 1) ───────────────────
+// Smallest practical admin capability for "staff needs to block a room/hall
+// for dates with no real guest" (maintenance, owner use, a booking taken by
+// phone before it can be entered properly, etc.). Deliberately NOT a new
+// mechanism: createReservation() already blocks availability for any
+// reservation in an 'inquiry'/'tentative'/'confirmed'/'checked_in' status
+// (availability-service.ts's BLOCKING_STATUSES) -- this just calls it
+// directly, skipping calculatePrice()/createReservationWithQuote() entirely
+// (a manual block has no guest, no rate, no meal plan to quote), and tags
+// the reservation so it's identifiable as a block rather than a real
+// booking in every existing list/dashboard view that already reads
+// `reservations` (Reservation Dashboard, Calendar, Customers) -- no new
+// table, no new status, no new field.
+
+export interface CreateManualBlockInput {
+  propertyId: string
+  inventoryItemId: string
+  checkInDate: string
+  checkOutDate: string
+  /** Why this is blocked -- required so every block is self-explanatory to whoever looks at it later (Reservation Dashboard shows guestName; this becomes part of it). */
+  reason: string
+  /** Staff member creating the block, for the CRM activity trail. Optional -- activity logging degrades gracefully without it, same as every other logActivity() call in this file. */
+  createdBy?: string | null
+}
+
+const MANUAL_BLOCK_SOURCE: Reservation['bookingSource'] = 'other'
+
+/**
+ * Manual availability override -- blocks an inventory item for a date range
+ * without a real guest. Reuses createReservation() exactly as-is (same
+ * availability check, same conflict handling, same DB write) -- the only
+ * difference from a normal booking is which fields this wrapper supplies.
+ */
+export async function createManualBlock(input: CreateManualBlockInput): Promise<CreateReservationResult> {
+  // No logActivity() call here, deliberately: that helper no-ops without a
+  // leadId (see its own definition above), and a manual block has no lead
+  // -- calling it would silently do nothing while looking like an audit
+  // trail was written. The reservation row itself IS the audit trail: it's
+  // clearly tagged (guestName/specialRequests/bookingSource) and already
+  // shows up in every existing view that reads `reservations` (Reservation
+  // Dashboard, Calendar) -- no separate log needed to find it later.
+  const specialRequestsSuffix = input.createdBy ? ` (blocked by ${input.createdBy})` : ''
+
+  return createReservation({
+    guestName: `BLOCKED — ${input.reason}`,
+    propertyId: input.propertyId,
+    inventoryItemId: input.inventoryItemId,
+    checkInDate: input.checkInDate,
+    checkOutDate: input.checkOutDate,
+    roomCount: 1,
+    bookingSource: MANUAL_BLOCK_SOURCE,
+    specialRequests: `Manual availability block. Reason: ${input.reason}${specialRequestsSuffix}`,
+    baseRoomRate: 0,
+    finalRoomRate: 0,
+  })
 }
 
 /** Confirm Reservation — named wrapper around the existing state machine (inquiry/tentative -> confirmed). */

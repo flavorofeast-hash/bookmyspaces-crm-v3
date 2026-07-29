@@ -74,6 +74,22 @@ import type { OrchestrationSuccess } from '@/lib/ai/orchestration-engine'
 import type { OrchestrationAction } from '@/lib/ai/decision-table'
 import type { SlotConflict } from '@/lib/ai/slot-memory'
 import type { ChannelType } from '@/types/conversation'
+import type { AvailabilityCheckResult } from '@/lib/reservations/availability-service'
+
+// Sprint 1, Priority 1: the two availability actions share checkAvailability()
+// (tool-registry.ts) -- this narrows its `unknown`-typed return (performToolCall
+// casts tool.fn generically, see its own comment) without adding a new import
+// dependency beyond the type itself.
+const AVAILABILITY_ACTIONS: OrchestrationAction[] = ['check_room_availability', 'check_banquet_availability']
+
+function isUnknownAvailabilityResult(action: OrchestrationAction, returned: unknown): boolean {
+  if (!AVAILABILITY_ACTIONS.includes(action)) return false
+  return (
+    typeof returned === 'object' &&
+    returned !== null &&
+    (returned as Partial<AvailabilityCheckResult>).status === 'unknown'
+  )
+}
 
 // ─── Input / output ──────────────────────────────────────────────────────────
 
@@ -106,6 +122,17 @@ export interface ExecutorResult {
   reason: string | null
   conflicts: SlotConflict[]
   hadConflicts: boolean
+  /**
+   * True when a check_room_availability/check_banquet_availability tool_call
+   * ran but checkAvailability() returned status 'unknown' (DB/query failure --
+   * could not verify availability either way). Distinct from `kind ===
+   * 'unavailable'` (action-arguments.ts could not even attempt the check).
+   * Added Sprint 1, Priority 1. This file still does not invent customer-
+   * facing copy (see file header) -- callers should apply the same interim
+   * policy they already apply for `kind === 'unavailable'` (see the WhatsApp
+   * webhook route's Step 6 interim rollout policy).
+   */
+  availabilityUnknown: boolean
   /** True once a real orchestration_decisions row was written for this call (best-effort -- a logging failure here is non-fatal and never surfaces as a thrown error, matching this codebase's established convention). */
   decisionRecorded: boolean
 }
@@ -114,7 +141,7 @@ export interface ExecutorResult {
 
 async function performToolCall(
   result: Extract<ActionArgumentsResult, { kind: 'tool_call' }>
-): Promise<{ replyText: string | null; sideEffectsApplied: string[] }> {
+): Promise<{ replyText: string | null; sideEffectsApplied: string[]; availabilityUnknown: boolean }> {
   try {
     const tool = getTool(result.action)
     // Note: tool.fn's real parameter types vary per action; result.args was built by
@@ -133,24 +160,26 @@ async function performToolCall(
     // business data this file deliberately does not format into new copy.
     const replyText = result.action === 'answer_immediately' && typeof returned === 'string' ? returned : null
 
-    return { replyText, sideEffectsApplied: [`tool_call:${result.action}`] }
+    const availabilityUnknown = isUnknownAvailabilityResult(result.action, returned)
+
+    return { replyText, sideEffectsApplied: [`tool_call:${result.action}`], availabilityUnknown }
   } catch (err) {
     // Safe failure, structured -- matches inbound-guard.ts / tool-registry.ts's
     // getTool() convention: a thrown/rejected tool.fn must never crash the
     // Executor. No reply is invented in place of the failure.
-    return { replyText: null, sideEffectsApplied: [`tool_call_failed:${result.action}`] }
+    return { replyText: null, sideEffectsApplied: [`tool_call_failed:${result.action}`], availabilityUnknown: false }
   }
 }
 
 function performTemplateReply(
   result: Extract<ActionArgumentsResult, { kind: 'template_reply' }>
-): { replyText: string; sideEffectsApplied: string[] } {
-  return { replyText: result.replyText, sideEffectsApplied: [`template_reply:${result.action}`] }
+): { replyText: string; sideEffectsApplied: string[]; availabilityUnknown: boolean } {
+  return { replyText: result.replyText, sideEffectsApplied: [`template_reply:${result.action}`], availabilityUnknown: false }
 }
 
 async function performBranch(
   result: ActionArgumentsResult
-): Promise<{ replyText: string | null; sideEffectsApplied: string[] }> {
+): Promise<{ replyText: string | null; sideEffectsApplied: string[]; availabilityUnknown: boolean }> {
   switch (result.kind) {
     case 'tool_call':
       return performToolCall(result)
@@ -168,6 +197,7 @@ async function performBranch(
       return {
         replyText: inner.replyText,
         sideEffectsApplied: [`downgraded:${result.action}->${result.downgradedTo}`, ...inner.sideEffectsApplied],
+        availabilityUnknown: inner.availabilityUnknown,
       }
     }
 
@@ -177,7 +207,7 @@ async function performBranch(
       // "unavailable" entry and audit/PHASE_1B_STEP5_REPORT.md's "Step 6
       // Rollout Decision Needed" section. Current behavior (no reply, no
       // invented messaging) is preserved.
-      return { replyText: null, sideEffectsApplied: [] }
+      return { replyText: null, sideEffectsApplied: [], availabilityUnknown: false }
   }
 }
 
@@ -274,11 +304,13 @@ export async function executeOrchestration(
 
   let replyText: string | null = null
   let sideEffectsApplied: string[] = []
+  let availabilityUnknown = false
 
   if (ctx.mode === 'active') {
     const performed = await performBranch(result)
     replyText = performed.replyText
     sideEffectsApplied = performed.sideEffectsApplied
+    availabilityUnknown = performed.availabilityUnknown
 
     if (replyText) {
       const customerPhone = outcome.aiContext.customerProfile.phone
@@ -305,5 +337,6 @@ export async function executeOrchestration(
     conflicts: outcome.slots.conflicts,
     hadConflicts: outcome.slots.hasConflicts,
     decisionRecorded,
+    availabilityUnknown,
   }
 }

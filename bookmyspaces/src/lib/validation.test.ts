@@ -5,7 +5,7 @@
 // this sandbox instead of only statically type-checked.
 
 import { describe, it, expect } from 'vitest'
-import { createLeadSchema, updateLeadSchema, leadStageBodySchema } from './validation'
+import { createLeadSchema, updateLeadSchema, leadStageBodySchema, createManualBlockSchema } from './validation'
 
 describe('createLeadSchema', () => {
   it('accepts a minimal valid lead', () => {
@@ -75,5 +75,49 @@ describe('leadStageBodySchema', () => {
   it('rejects a missing stage', () => {
     const result = leadStageBodySchema.safeParse({ reason: 'no stage provided' })
     expect(result.success).toBe(false)
+  })
+})
+
+describe('createManualBlockSchema (Sprint 1, Priority 1 — manual availability override)', () => {
+  const valid = {
+    propertyId: '11111111-1111-1111-1111-111111111111',
+    inventoryItemId: '22222222-2222-2222-2222-222222222222',
+    checkInDate: '2026-09-01',
+    checkOutDate: '2026-09-03',
+    reason: 'Maintenance',
+  }
+
+  it('accepts a valid manual block request', () => {
+    const result = createManualBlockSchema.safeParse(valid)
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects a missing reason (a block must always be self-explanatory)', () => {
+    const { reason, ...withoutReason } = valid
+    const result = createManualBlockSchema.safeParse(withoutReason)
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects an empty-string reason', () => {
+    const result = createManualBlockSchema.safeParse({ ...valid, reason: '   ' })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects a non-UUID inventoryItemId', () => {
+    const result = createManualBlockSchema.safeParse({ ...valid, inventoryItemId: 'not-a-uuid' })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects a malformed date', () => {
+    const result = createManualBlockSchema.safeParse({ ...valid, checkInDate: '09/01/2026' })
+    expect(result.success).toBe(false)
+  })
+
+  it('has no guest/pricing fields -- unlike createReservationSchema, none are expected or accepted here', () => {
+    const result = createManualBlockSchema.safeParse({ ...valid, guestName: 'Should not matter' })
+    // Not .strict(), so an extra unknown field is just ignored by zod's default
+    // behavior -- the important guarantee is that omitting guestName/pricing
+    // fields entirely (as `valid` does) still passes, proving they're not required.
+    expect(result.success).toBe(true)
   })
 })

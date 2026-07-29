@@ -272,7 +272,45 @@ describe('executeOrchestration', () => {
       expect(result.replyText).toBeNull()
       expect(result.sideEffectsApplied).toEqual([])
       expect(result.kind).toBe('unavailable')
+      expect(result.availabilityUnknown).toBe(false)
       expect(dbState.insertedRows[0]).toMatchObject({ executed: false })
+    })
+  })
+
+  describe('active mode -- tool_call kind, availability status "unknown" (Sprint 1, Priority 1)', () => {
+    it('check_room_availability returning status "unknown": flagged via availabilityUnknown, still no invented reply', async () => {
+      toolFnMock.mockResolvedValueOnce({ status: 'unknown', available: false, conflictingReservationIds: [] })
+      const outcome = makeOutcome({
+        action: 'check_room_availability',
+        slots: makeSlots({ eventDate: '2026-09-10' }),
+      })
+      const result = await executeOrchestration(outcome, makeCtx({ inventoryItemId: 'item-1' }))
+
+      expect(toolFnMock).toHaveBeenCalledTimes(1)
+      expect(result.kind).toBe('tool_call')
+      expect(result.replyText).toBeNull() // this file still never invents customer-facing copy
+      expect(result.availabilityUnknown).toBe(true)
+      expect(result.sideEffectsApplied).toEqual(['tool_call:check_room_availability'])
+    })
+
+    it('check_banquet_availability returning a real status (available/unavailable): NOT flagged', async () => {
+      toolFnMock.mockResolvedValueOnce({ status: 'unavailable', available: false, conflictingReservationIds: ['res-1'] })
+      const outcome = makeOutcome({
+        action: 'check_banquet_availability',
+        slots: makeSlots({ eventDate: '2026-09-10' }),
+      })
+      const result = await executeOrchestration(outcome, makeCtx({ inventoryItemId: 'item-1' }))
+
+      expect(result.availabilityUnknown).toBe(false)
+    })
+
+    it('an unrelated tool_call (e.g. notify_staff) is never flagged, even if its return value happens to shape-match', async () => {
+      toolFnMock.mockResolvedValueOnce({ status: 'unknown' })
+      dbState.notificationSetting = { value: '9830509991' }
+      const outcome = makeOutcome({ action: 'notify_staff' })
+      const result = await executeOrchestration(outcome, makeCtx())
+
+      expect(result.availabilityUnknown).toBe(false)
     })
   })
 

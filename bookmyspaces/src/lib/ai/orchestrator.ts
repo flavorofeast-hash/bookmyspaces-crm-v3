@@ -30,6 +30,15 @@ export type HandoffReason =
   | 'refund_request'
   | 'payment_issue'
   | 'low_confidence'
+  // Added Sprint 1, Priority 1: closes the gap both action-arguments.ts's
+  // buildHandoffToHumanArgs() and the WhatsApp webhook's Step 6 interim
+  // rollout policy previously documented as "no existing HandoffReason
+  // literal means 'availability could not be determined'" -- the webhook
+  // route used 'low_confidence' as an approximate stand-in. Availability
+  // being genuinely unknown (a DB/query failure, not a real "fully
+  // booked") is a distinct, real reason, not the same as low AI-reply
+  // confidence.
+  | 'availability_unknown'
 
 export interface HandoffDecision {
   escalate: boolean

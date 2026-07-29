@@ -38,7 +38,7 @@ vi.mock('@/lib/supabase', () => ({
   }),
 }))
 
-import { calculatePrice, calculateMealPlanCharge, createReservationWithQuote, confirmReservation, cancelReservation, checkInReservation, checkOutReservation } from './reservation-workflow'
+import { calculatePrice, calculateMealPlanCharge, createReservationWithQuote, createManualBlock, confirmReservation, cancelReservation, checkInReservation, checkOutReservation } from './reservation-workflow'
 
 const baseInput = {
   guestName: 'Priya Sharma',
@@ -187,6 +187,88 @@ describe('createReservationWithQuote', () => {
         mealPlanCharge: 1000,
       })
     )
+  })
+})
+
+describe('createManualBlock (Sprint 1, Priority 1 — manual availability override)', () => {
+  beforeEach(() => {
+    mocks.createReservation.mockReset()
+    mocks.getInventoryItemRate.mockReset()
+    activityInserts.length = 0
+  })
+
+  it('calls createReservation() directly -- no pricing/quote step -- with a clearly-tagged guest name and bookingSource "other"', async () => {
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-block-1' } })
+
+    const result = await createManualBlock({
+      propertyId: 'prop-1',
+      inventoryItemId: 'item-1',
+      checkInDate: '2026-09-01',
+      checkOutDate: '2026-09-03',
+      reason: 'Maintenance — AC repair',
+    })
+
+    expect(result).toEqual({ ok: true, reservation: { id: 'res-block-1' } })
+    expect(mocks.createReservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guestName: 'BLOCKED — Maintenance — AC repair',
+        propertyId: 'prop-1',
+        inventoryItemId: 'item-1',
+        checkInDate: '2026-09-01',
+        checkOutDate: '2026-09-03',
+        roomCount: 1,
+        bookingSource: 'other',
+        baseRoomRate: 0,
+        finalRoomRate: 0,
+      })
+    )
+    // No pricing lookup, unlike createReservationWithQuote.
+    expect(mocks.getInventoryItemRate).not.toHaveBeenCalled()
+  })
+
+  it('includes createdBy in specialRequests when provided, without changing any other field', async () => {
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-block-2' } })
+
+    await createManualBlock({
+      propertyId: 'prop-1',
+      inventoryItemId: 'item-1',
+      checkInDate: '2026-09-01',
+      checkOutDate: '2026-09-03',
+      reason: 'Owner personal use',
+      createdBy: 'raju',
+    })
+
+    const call = mocks.createReservation.mock.calls[0][0]
+    expect(call.specialRequests).toContain('Owner personal use')
+    expect(call.specialRequests).toContain('blocked by raju')
+  })
+
+  it('propagates an "unavailable" result unchanged when the dates are already taken (createReservation\'s own availability check still applies)', async () => {
+    mocks.createReservation.mockResolvedValue({ ok: false, error: 'unavailable', conflictingReservationIds: ['res-existing'] })
+
+    const result = await createManualBlock({
+      propertyId: 'prop-1',
+      inventoryItemId: 'item-1',
+      checkInDate: '2026-09-01',
+      checkOutDate: '2026-09-03',
+      reason: 'Maintenance',
+    })
+
+    expect(result).toEqual({ ok: false, error: 'unavailable', conflictingReservationIds: ['res-existing'] })
+  })
+
+  it('never writes to activity_logs (would silently no-op without a leadId anyway -- the reservation row is the audit trail)', async () => {
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-block-3' } })
+
+    await createManualBlock({
+      propertyId: 'prop-1',
+      inventoryItemId: 'item-1',
+      checkInDate: '2026-09-01',
+      checkOutDate: '2026-09-03',
+      reason: 'Maintenance',
+    })
+
+    expect(activityInserts).toHaveLength(0)
   })
 })
 

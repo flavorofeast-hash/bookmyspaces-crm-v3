@@ -21,6 +21,17 @@ import type { ReservationStatus } from '@/types/reservation'
 const BLOCKING_STATUSES: ReservationStatus[] = ['inquiry', 'tentative', 'confirmed', 'checked_in']
 
 export interface AvailabilityCheckResult {
+  /**
+   * 'unknown' means the query itself failed (DB error) -- we could not
+   * verify availability either way. Distinct from 'unavailable' (query
+   * succeeded, a real conflicting reservation exists). Added Sprint 1,
+   * Priority 1: previously both collapsed into `available: false`, which
+   * is indistinguishable from "genuinely fully booked" to every caller --
+   * the precise gap the "unknown availability -> automatic escalation"
+   * requirement calls out. `available` is kept unchanged (still true only
+   * for 'available') so every existing caller/test keeps working as-is.
+   */
+  status: 'available' | 'unavailable' | 'unknown'
   available: boolean
   conflictingReservationIds: string[]
 }
@@ -64,8 +75,11 @@ export async function checkAvailability(
   const { data, error } = await query
 
   if (error || !data) {
-    // Fail closed: if we can't verify availability, don't claim it's available.
-    return { available: false, conflictingReservationIds: [] }
+    // Fail closed AND distinguishable: if we can't verify availability,
+    // don't claim it's available -- but also don't claim it's genuinely
+    // booked. Callers (e.g. orchestration-executor.ts) treat 'unknown'
+    // as "escalate to a human", not "tell the customer no".
+    return { status: 'unknown', available: false, conflictingReservationIds: [] }
   }
 
   // Re-checked in application code as a defense-in-depth safety net (cheap
@@ -75,6 +89,7 @@ export async function checkAvailability(
   const conflicts = data.filter((r) => dateRangesOverlap(checkInDate, checkOutDate, r.check_in_date, r.check_out_date))
 
   return {
+    status: conflicts.length === 0 ? 'available' : 'unavailable',
     available: conflicts.length === 0,
     conflictingReservationIds: conflicts.map((r) => r.id),
   }

@@ -292,7 +292,20 @@ async function handleIncomingMessageViaOrchestration(
   // a booking, never silently fail. Every "unavailable" decision gets a
   // polite holding reply, an unconditional escalation, and a log line --
   // no exceptions, no confidence check.
-  if (result.kind === 'unavailable') {
+  //
+  // Sprint 1, Priority 1: widened to also cover `result.availabilityUnknown`
+  // -- a DIFFERENT gap than `kind === 'unavailable'`. `kind === 'unavailable'`
+  // means action-arguments.ts couldn't even attempt the check (no resolvable
+  // inventoryItemId/eventDate). `availabilityUnknown` means the check WAS
+  // attempted and checkAvailability() ran, but the query itself failed (DB
+  // error) -- previously that case fell through this block entirely
+  // (result.kind stayed 'tool_call', a successful, non-throwing call) and
+  // produced no reply and no escalation at all. Same customer-facing
+  // treatment is correct for both: in neither case do we actually know
+  // whether the room/hall is free, so neither should ever be presented to
+  // the customer as "unavailable" (a real, false negative) or silently
+  // dropped.
+  if (result.kind === 'unavailable' || result.availabilityUnknown) {
     const politeReply = "Thank you for your enquiry. We're checking availability with our team and will get back to you shortly."
 
     const sendResult = await sendWhatsAppText(from, politeReply, {
@@ -312,23 +325,24 @@ async function handleIncomingMessageViaOrchestration(
     }
 
     // Always escalate -- not conditional on confidence, per the approved
-    // policy ("Automatically escalate to a human/staff member"). No
-    // existing HandoffReason literal means "availability could not be
-    // determined" (same closed-union constraint already documented in
-    // audit/PHASE_1B_STEP4_REPORT.md for a different case) --
-    // 'low_confidence' is the closest existing fit. Not a perfect semantic
-    // match; not solved here by inventing a new HandoffReason value, which
-    // would be a new abstraction outside this step's scope.
+    // policy ("Automatically escalate to a human/staff member"). Sprint 1,
+    // Priority 1: now uses the dedicated 'availability_unknown' HandoffReason
+    // (orchestrator.ts) instead of the 'low_confidence' placeholder this
+    // block used previously -- that placeholder was an explicitly-documented
+    // stand-in ("not a perfect semantic match... would be a new abstraction
+    // outside this step's scope"); adding the real reason is exactly that
+    // next step, not a rewrite of this block's behavior.
     await applyHandoff({
       conversationId: ingest.conversationId,
       leadId:         ingest.identity?.leadId ?? null,
-      reason:         'low_confidence',
+      reason:         'availability_unknown',
     })
 
-    logger.warn('whatsapp-webhook', 'Orchestration path: availability unavailable -- interim rollout policy applied (polite reply + auto-escalation)', {
+    logger.warn('whatsapp-webhook', 'Orchestration path: availability unavailable/unknown -- interim rollout policy applied (polite reply + auto-escalation)', {
       conversationId: ingest.conversationId,
       action:         result.action,
       reason:         result.reason,
+      availabilityUnknown: result.availabilityUnknown,
     })
   }
 }
