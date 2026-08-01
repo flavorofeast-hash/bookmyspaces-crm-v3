@@ -188,7 +188,15 @@ export async function ensureLeadForProposal(
         name  : input.name.trim() || null,
         phone : input.phone?.trim() ? normalizePhone(input.phone) : null,
         email : input.email?.trim() ? input.email.trim().toLowerCase() : null,
-        source: 'proposal',
+        // 'other', not 'proposal' — leads.source is acquisition-channel data
+        // (see architecture decision, this session); the true channel is
+        // unknown at this point (resolveIdentity found no existing lead),
+        // and 'proposal' would mix a workflow label into channel-attribution
+        // analytics (dashboard/revenue, campaigns.ts, revenue-intelligence.ts
+        // all group by this column). The fact that this lead has a proposal
+        // is already correctly modeled by proposals.lead_id, set on the
+        // insert immediately following this one — no data is lost.
+        source: 'other',
         status: 'new_inquiry',
       })
       .select('id')

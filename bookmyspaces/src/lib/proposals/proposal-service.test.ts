@@ -189,7 +189,7 @@ describe('ensureLeadForProposal', () => {
       name: 'Sneha',
       phone: '919051459463', // canonicalized by normalizePhone
       email: null,
-      source: 'proposal',
+      source: 'other', // acquisition channel unknown at this point — not a workflow label
       status: 'new_inquiry',
     })
   })

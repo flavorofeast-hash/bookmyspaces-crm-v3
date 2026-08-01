@@ -1,10 +1,11 @@
--- ROLLBACK for migration 017.
+-- ROLLBACK for migration 017 (rewritten version — extends the original
+-- 6-value list directly, does not depend on migration 016).
 --
--- Restores leads.source CHECK constraint to its migration-016 definition
--- (7 values, without 'excel_import').
+-- Restores leads.source CHECK constraint to its original
+-- 001_initial_schema.sql definition (6 values, without 'excel_import').
 --
 -- WARNING: if any leads rows have been inserted with source = 'excel_import'
--- since migration 017 was applied (i.e. any successful Lead Import since
+-- since this migration was applied (i.e. any successful Lead Import since
 -- this fix shipped), this rollback will FAIL — those existing rows would
 -- violate the restored, narrower constraint. Check first:
 --
@@ -29,8 +30,7 @@ ALTER TABLE leads
     'instagram',
     'justdial',
     'referral',
-    'other',
-    'proposal'
+    'other'
   ));
 
 COMMIT;
