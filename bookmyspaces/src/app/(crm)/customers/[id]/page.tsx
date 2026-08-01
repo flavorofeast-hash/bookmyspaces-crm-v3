@@ -82,6 +82,9 @@ interface LifetimeValue {
 }
 
 // Mirrors src/lib/ai/opportunity-score.ts's OpportunityScoreResult exactly.
+// siteVisitEngagement/proposalEngagement added Sprint 2 (Revenue Conversion
+// Engine) — this score is reused unchanged as the pipeline's "Revenue
+// Probability" for every opportunity.
 interface OpportunityScore {
   score: number
   band: 'HIGH' | 'MEDIUM' | 'LOW'
@@ -91,6 +94,8 @@ interface OpportunityScore {
     followUpEngagement: number
     customerValue: number
     repeatCustomerBonus: number
+    siteVisitEngagement: number
+    proposalEngagement: number
   }
   reasoning: string[]
 }
@@ -309,12 +314,14 @@ export default function CustomerProfilePage({ params }: { params: { id: string }
             <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-2">
               Opportunity Score Breakdown
             </p>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-3 text-xs">
-              <div><span className="text-gray-400">Qualification</span><div className="font-semibold text-gray-800">{opportunityScore.components.qualification}/40</div></div>
-              <div><span className="text-gray-400">Proposal status</span><div className="font-semibold text-gray-800">{opportunityScore.components.proposalStatus}/20</div></div>
-              <div><span className="text-gray-400">Follow-up</span><div className="font-semibold text-gray-800">{opportunityScore.components.followUpEngagement}/15</div></div>
-              <div><span className="text-gray-400">Customer value</span><div className="font-semibold text-gray-800">{opportunityScore.components.customerValue}/15</div></div>
-              <div><span className="text-gray-400">Repeat bonus</span><div className="font-semibold text-gray-800">{opportunityScore.components.repeatCustomerBonus}/10</div></div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3 text-xs">
+              <div><span className="text-gray-400">Qualification</span><div className="font-semibold text-gray-800">{opportunityScore.components.qualification}/30</div></div>
+              <div><span className="text-gray-400">Proposal status</span><div className="font-semibold text-gray-800">{opportunityScore.components.proposalStatus}/15</div></div>
+              <div><span className="text-gray-400">Follow-up</span><div className="font-semibold text-gray-800">{opportunityScore.components.followUpEngagement}/10</div></div>
+              <div><span className="text-gray-400">Customer value</span><div className="font-semibold text-gray-800">{opportunityScore.components.customerValue}/10</div></div>
+              <div><span className="text-gray-400">Repeat bonus</span><div className="font-semibold text-gray-800">{opportunityScore.components.repeatCustomerBonus}/5</div></div>
+              <div><span className="text-gray-400">Site visit</span><div className="font-semibold text-gray-800">{opportunityScore.components.siteVisitEngagement}/15</div></div>
+              <div><span className="text-gray-400">Proposal viewed</span><div className="font-semibold text-gray-800">{opportunityScore.components.proposalEngagement}/15</div></div>
             </div>
             <ul className="text-xs text-gray-500 space-y-0.5">
               {opportunityScore.reasoning.map((r, i) => <li key={i}>{r}</li>)}

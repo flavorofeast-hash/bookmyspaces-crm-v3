@@ -12,7 +12,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
-import { RefreshCw, AlertTriangle, IndianRupee, Repeat, BedDouble, ChevronRight, MapPin, Clock } from 'lucide-react'
+import { RefreshCw, AlertTriangle, IndianRupee, Repeat, BedDouble, ChevronRight, MapPin, Clock, CheckCircle2, Sparkles } from 'lucide-react'
 
 interface PendingPayment {
   id: string
@@ -110,6 +110,8 @@ export default function OperationsDashboardPage() {
   const [data, setData] = useState<OperationsSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [updatingVisitId, setUpdatingVisitId] = useState<string | null>(null)
+  const [conversionNotice, setConversionNotice] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -126,6 +128,34 @@ export default function OperationsDashboardPage() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Sprint 2 — Revenue Conversion Engine: marking a visit "Completed" is the
+  // trigger PATCH /api/site-visits/[id] now watches for. Reuses that same
+  // route (no new endpoint) — it already runs the Visit -> Proposal Draft
+  // pipeline server-side and reports back whether a draft was created.
+  const markVisitCompleted = useCallback(async (visitId: string) => {
+    setUpdatingVisitId(visitId)
+    setConversionNotice(null)
+    try {
+      const res = await fetch(`/api/site-visits/${visitId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'completed' }),
+      })
+      if (!res.ok) throw new Error('Failed to update visit')
+      const body = await res.json()
+      setConversionNotice(
+        body.draftProposalId
+          ? 'Visit marked completed — a draft proposal was auto-created and is ready for review.'
+          : 'Visit marked completed.'
+      )
+      await load()
+    } catch {
+      setConversionNotice('Could not update this visit — please try again.')
+    } finally {
+      setUpdatingVisitId(null)
+    }
+  }, [load])
 
   return (
     <div className="space-y-6">
@@ -197,6 +227,14 @@ export default function OperationsDashboardPage() {
               <h2 className="text-sm font-semibold text-gray-700">Today&apos;s Site Visits</h2>
               <Link href="/visits/new" className="text-xs font-medium text-blue-600 hover:underline">+ Schedule</Link>
             </div>
+            {conversionNotice && (
+              <div className="flex items-center gap-2 bg-indigo-50 border-b border-indigo-100 px-6 py-2.5 text-xs text-indigo-700">
+                <Sparkles className="w-3.5 h-3.5 shrink-0" /> {conversionNotice}
+                {conversionNotice.includes('draft proposal') && (
+                  <Link href="/proposals" className="ml-auto font-medium hover:underline shrink-0">View Proposals →</Link>
+                )}
+              </div>
+            )}
             {data.todaysSiteVisits.length === 0 ? (
               <p className="text-sm text-gray-400 px-6 py-8 text-center">No site visits scheduled for today.</p>
             ) : (
@@ -210,7 +248,8 @@ export default function OperationsDashboardPage() {
                     <th className="px-3 py-2.5 font-medium">Purpose</th>
                     <th className="px-3 py-2.5 font-medium">Guests</th>
                     <th className="px-3 py-2.5 font-medium">Budget</th>
-                    <th className="px-6 py-2.5 font-medium text-right">Status</th>
+                    <th className="px-3 py-2.5 font-medium text-right">Status</th>
+                    <th className="px-6 py-2.5 font-medium text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -225,10 +264,24 @@ export default function OperationsDashboardPage() {
                       <td className="px-3 py-3 text-gray-500">{v.purpose ?? '—'}</td>
                       <td className="px-3 py-3 text-gray-600">{v.guestCount ?? '—'}</td>
                       <td className="px-3 py-3 text-gray-600">{v.budget ?? '—'}</td>
-                      <td className="px-6 py-3 text-right">
+                      <td className="px-3 py-3 text-right">
                         <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${VISIT_STATUS_STYLE[v.status] ?? 'bg-gray-100 text-gray-700'}`}>
                           {v.statusLabel}
                         </span>
+                      </td>
+                      <td className="px-6 py-3 text-right">
+                        {v.status === 'pending' ? (
+                          <button
+                            onClick={() => markVisitCompleted(v.id)}
+                            disabled={updatingVisitId === v.id}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            {updatingVisitId === v.id ? 'Updating…' : 'Mark Completed'}
+                          </button>
+                        ) : (
+                          <span className="text-xs text-gray-300">—</span>
+                        )}
                       </td>
                     </tr>
                   ))}

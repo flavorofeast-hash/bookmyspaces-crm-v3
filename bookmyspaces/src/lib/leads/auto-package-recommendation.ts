@@ -24,6 +24,18 @@
 // human-approval-required convention as every other AI drafting feature in
 // this app (proposal cover notes, upsell recommendations, etc.). Never
 // throws — a failure here must not break lead creation.
+//
+// Sprint 2 (Revenue Conversion Engine) hardening: the AI Event Sales
+// Advisor's package pick is guided by prompt text only (see
+// operator-assistant.ts's EVENT_ADVISOR_INSTRUCTION) — nothing upstream of
+// this function enforces docs/business/01_PROPERTY_INTELLIGENCE.md's hard
+// rules at the code level. Since this is the one place that turns an
+// advisor recommendation into a real proposal row (both the lead-
+// qualification trigger and Sprint 2's site-visit trigger call this same
+// function), the guard belongs here once, not duplicated at each call site:
+// never draft a Skyline package for an event lead (Skyline is
+// accommodation-only), and never draft a Monurama package above the
+// property's 100-guest hard cap.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { v4 as uuidv4 } from 'uuid'
@@ -85,6 +97,17 @@ export async function runAutoPackageRecommendation(
 
     const pkg = await getPackageById(recommendation.packageId)
     if (!pkg) return { ran: true, packageId: recommendation.packageId, draftProposalId: null }
+
+    // ── Property Intelligence hard guard (Sprint 2) — see file header ──────
+    const guestCountForGuard = lead.guest_count ?? pkg.maxGuests
+    if (pkg.venue && /skyline/i.test(pkg.venue)) {
+      logger.error('leads', `runAutoPackageRecommendation: refused — Skyline is accommodation-only, never events (lead ${leadId})`, { packageId: pkg.id, venue: pkg.venue })
+      return { ran: true, packageId: pkg.id, draftProposalId: null }
+    }
+    if (pkg.venue && /monurama/i.test(pkg.venue) && guestCountForGuard > 100) {
+      logger.error('leads', `runAutoPackageRecommendation: refused — Monurama's 100-guest cap would be exceeded (lead ${leadId})`, { packageId: pkg.id, guestCount: guestCountForGuard })
+      return { ran: true, packageId: pkg.id, draftProposalId: null }
+    }
 
     const { price: basePrice } = resolvePackagePrice(pkg, lead.event_date)
     const addons = pkg.addons.map((a) => ({ name: a.name, price: a.price }))
