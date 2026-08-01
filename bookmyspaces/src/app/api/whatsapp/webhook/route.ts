@@ -16,7 +16,20 @@ import { ConversationState }         from '@/constants/conversation-states'
 import { getSettingsSection }        from '@/lib/settings/settings-service'
 import { orchestrate }               from '@/lib/ai/orchestration-engine'
 import { executeOrchestration }      from '@/lib/ai/orchestration-executor'
-import { applyHandoff }              from '@/lib/ai/orchestrator'
+import { applyHandoff, checkAndApplyHandoff, estimateConfidence } from '@/lib/ai/orchestrator'
+// Version 3.1 (Unified Omnichannel AI Engine) — closes the gap where the
+// DEFAULT (orchestration.enabled=false) WhatsApp path used a hardcoded
+// keyword-matcher (buildAutoReply, now removed) instead of the ONE AI
+// Hospitality Sales Consultant every other channel (website chat, Facebook
+// Messenger, Instagram DM) already uses. Same reuse this mission requires:
+// chatWithAI()/cleanAIResponse() (src/lib/ai.ts, unchanged, no
+// WhatsApp-specific prompt) and captureLeadWithJourney() (src/lib/leads/
+// create-lead-with-journey.ts) — the SAME lead-capture function Facebook/
+// Instagram DM already uses via dm-capture-service.ts, closing the second
+// gap (WhatsApp's default path never auto-created a lead for a brand-new
+// contact; it only ever looked one up by phone).
+import { chatWithAI, cleanAIResponse, type Message } from '@/lib/ai'
+import { captureLeadWithJourney }    from '@/lib/leads/create-lead-with-journey'
 
 export const dynamic    = 'force-dynamic'
 export const runtime    = 'nodejs'
@@ -151,17 +164,41 @@ async function handleIncomingMessage(
   }
 }
 
-// ─── Legacy reply path -- Pipeline A, unchanged behavior ───────────────────
-// Extracted verbatim from what this function inlined before Step 6 (no
-// logic changed) so it can also serve as Step 6's fallback target if the
-// orchestration path throws, without duplicating these four lines.
+// ─── Legacy reply path -- Pipeline A, this mission's fallback target ───────
+// Serves as Step 6's fallback target if the orchestration path throws (see
+// handleIncomingMessage above), AND is the DEFAULT live path since
+// settings.orchestration.enabled is false out of the box. Version 3.1
+// replaced the previous buildAutoReply() keyword-matcher here with the
+// SAME AI engine and SAME lead-capture function every other channel uses
+// — see the import comment above for the full reuse disclosure.
 async function runLegacyReplyPath(
   from:       string,
   senderName: string,
   text:       string,
   messageId:  string
 ): Promise<void> {
-  const reply = await buildAutoReply(text, senderName)
+  // Resolve-or-create the CRM lead FIRST, same sequencing dm-capture-
+  // service.ts (Facebook/Instagram) already uses: identify the customer
+  // before generating a reply, never after. WhatsApp uniquely has the
+  // customer's phone number on message #1 (message.from), so — unlike
+  // website chat, which often can't identify a lead until the customer
+  // volunteers a phone/email mid-conversation — this can run unconditionally
+  // on every inbound message. `sendWelcome: false` because the AI reply
+  // generated below IS the response to this message; a separate WhatsApp
+  // welcome template would be redundant (mirrors the same sendWelcome
+  // exclusion already documented on CaptureLeadInput for exactly this case).
+  const captured = await captureLeadWithJourney({
+    phone:       from,
+    name:        senderName !== 'Unknown' ? senderName : null,
+    source:      'whatsapp',
+    qualifyText: text,
+    sendWelcome: false,
+  }).catch((err) => {
+    logger.error('whatsapp-webhook', 'captureLeadWithJourney threw (non-fatal, reply continues)', err, { phone: from })
+    return null
+  })
+
+  const reply = await buildAIReply(from, text)
 
   await sendWhatsAppText(from, reply)
 
@@ -174,9 +211,47 @@ async function runLegacyReplyPath(
   // isolated: a failure here (e.g. migration 012 not yet applied in
   // this environment) must never affect the WhatsApp reply already
   // sent, so it's caught here rather than by the outer try/catch.
-  syncToUnifiedConversationPlatform(from, text, reply, messageId).catch(err => {
+  syncToUnifiedConversationPlatform(from, text, reply, messageId, captured?.leadId ?? null).catch(err => {
     logger.error('whatsapp-webhook', 'Unified Conversation Platform sync failed (non-fatal)', err, { phone: from })
   })
+}
+
+const CHAT_HISTORY_LIMIT = 18 // matches chat/route.ts's own cap on conversation context
+
+// ─── AI reply generation -- Version 3.1 ────────────────────────────────────
+// Builds message history from the SAME `conversations` row persistConversation()
+// already reads/writes (session_id = `wa_${phone}`), then calls chatWithAI()
+// — the exact SYSTEM_PROMPT-driven AI Hospitality Sales Consultant website
+// chat and Facebook/Instagram DM already use. No WhatsApp-specific prompt,
+// no second AI. Falls back to a safe, non-AI holding reply only if
+// chatWithAI() itself throws (never leaves a customer with zero reply).
+async function buildAIReply(phone: string, text: string): Promise<string> {
+  try {
+    const db = getSupabaseAdmin()
+    const sessionId = `wa_${phone}`
+
+    const { data: existing } = await db
+      .from('conversations')
+      .select('messages')
+      .eq('session_id', sessionId)
+      .maybeSingle()
+
+    const priorMessages: Message[] = (Array.isArray(existing?.messages) ? existing!.messages : [])
+      .filter((m: { role?: string; content?: string }) => m?.role && m?.content)
+      .map((m: { role: string; content: string }) => ({
+        role: m.role === 'user' ? ('user' as const) : ('assistant' as const),
+        content: m.content,
+      }))
+      .slice(-CHAT_HISTORY_LIMIT)
+
+    const messagesForAI: Message[] = [...priorMessages, { role: 'user', content: text }]
+
+    const aiResponseRaw = await chatWithAI(messagesForAI, text, null)
+    return cleanAIResponse(aiResponseRaw)
+  } catch (err) {
+    logger.error('whatsapp-webhook', 'chatWithAI failed, using safe holding reply', err, { phone })
+    return "Thanks for reaching out to Book My Space! Our team will get back to you shortly. Call us at +91 90514 59463 or visit www.bookmyspaces.in"
+  }
 }
 
 // ─── Orchestration path -- Phase 1B, Step 6, flag-gated ────────────────────
@@ -360,7 +435,8 @@ async function syncToUnifiedConversationPlatform(
   phone:              string,
   inbound:            string,
   outbound:           string,
-  externalMessageId:  string
+  externalMessageId:  string,
+  leadId:             string | null
 ): Promise<void> {
   const result = await handleInboundMessage({
     channelType:        'whatsapp',
@@ -375,6 +451,18 @@ async function syncToUnifiedConversationPlatform(
     direction:      'outbound',
     senderType:     'ai',
     content:        outbound,
+    aiConfidence:   estimateConfidence(outbound),
+  })
+
+  // Version 3.1 — closes the third sub-gap: WhatsApp's legacy path never
+  // ran the escalation policy chat/route.ts and dm-responder.ts both
+  // already apply after every AI exchange. Same call, same policy, no new
+  // escalation engine.
+  await checkAndApplyHandoff({
+    conversationId: result.conversationId,
+    leadId:         leadId ?? result.identity?.leadId ?? null,
+    customerText:   inbound,
+    aiReply:        outbound,
   })
 }
 
@@ -443,55 +531,6 @@ async function persistConversation(
         updated_at:               now,
       })
       .eq('id', leadId)
-  }
-}
-
-async function buildAutoReply(text: string, name: string): Promise<string> {
-  const lower = text.toLowerCase()
-
-  if (lower.includes('book') || lower.includes('availability')) {
-    return `Hi ${name}! 🏡 Please share your check-in/out dates, number of guests, and property preference (Skyline Serenity or MonuRama) and we'll confirm availability right away!`
-  }
-  if (lower.includes('price') || lower.includes('rate')) {
-    return await buildPricingReply(name)
-  }
-  if (lower.includes('cancel')) {
-    return `Hi ${name}! For cancellations see https://www.bookmyspaces.in/cancellation.html or call +91 90514 59463.`
-  }
-  return `Hi ${name}! 🏡 Thanks for reaching out to Book My Space. Our team will respond shortly. Call us at +91 90514 59463 or visit www.bookmyspaces.in`
-}
-
-async function buildPricingReply(name: string): Promise<string> {
-  const fallback = `Hi ${name}! Rooms at Skyline Serenity start from ₹999/night, and our rooftop event packages at MonuRama start from ₹42,000. Share your dates and guest count for a precise quote!`
-
-  try {
-    const db = getSupabaseAdmin()
-    const { data: packages, error } = await db
-      .from('packages')
-      .select('name, base_price, is_popular, max_guests, duration_hours')
-      .eq('is_active', true)
-      .order('tier', { ascending: true })
-
-    if (error || !packages || packages.length === 0) {
-      return fallback
-    }
-
-    const lines = packages.map((p: { name: string; base_price: number; is_popular: boolean; max_guests: number; duration_hours: number }) => {
-      const price = Number(p.base_price || 0).toLocaleString('en-IN')
-      const popular = p.is_popular ? ' ⭐ Most Popular' : ''
-      return `• ${p.name} — ₹${price} (up to ${p.max_guests} guests, ${p.duration_hours}hrs)${popular}`
-    })
-
-    return [
-      `Hi ${name}! Here are our current rooftop event packages at MonuRama:`,
-      ...lines,
-      '',
-      `Rooms at Skyline Serenity start from ₹999/night.`,
-      `Share your event date and guest count for a precise quote!`,
-    ].join('\n')
-  } catch (err) {
-    logger.error('whatsapp-webhook', 'buildPricingReply failed, using fallback copy', err)
-    return fallback
   }
 }
 
