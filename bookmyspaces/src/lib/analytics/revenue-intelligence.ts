@@ -54,12 +54,14 @@ interface LeadRow {
   source: string | null
 }
 
-interface ProposalRow {
+export interface ProposalRow {
   id: string
   lead_id: string | null
+  client_name: string | null
   status: string | null
   total_price: number | null
   sent_at: string | null
+  first_viewed_at: string | null
   accepted_at: string | null
   created_at: string
   created_by: string | null
@@ -131,6 +133,11 @@ interface RawData {
   campaignNames: CampaignNameRow[]
   aiRecommendations: AIRecommendationLogRow[]
   aiRecommendationsDegraded: boolean
+  // Sprint 3A (Founder Dashboard) — site-visit count within the window,
+  // same "small fixed number of bulk queries" contract as everything else
+  // here. follow_ups wasn't previously read by this file; site visits are
+  // otherwise invisible to the funnel/pipeline view entirely.
+  siteVisitsInWindowCount: number
 }
 
 async function fetchRawData(sinceISO: string): Promise<RawData> {
@@ -139,15 +146,17 @@ async function fetchRawData(sinceISO: string): Promise<RawData> {
   const [
     leadsResult, proposalsResult, reservationsResult, stageTransitionsResult,
     inventoryResult, campaignSendsResult, campaignNamesResult, aiRecommendationsResult,
+    siteVisitsResult,
   ] = await Promise.all([
     db.from('leads').select('id, lead_stage, ai_score, estimated_revenue, assigned_to, created_at, last_contacted_at, follow_up_count, next_follow_up_at, event_type, source'),
-    db.from('proposals').select('id, lead_id, status, total_price, sent_at, accepted_at, created_at, created_by, event_type, venue, hall, package_id, package_name'),
+    db.from('proposals').select('id, lead_id, client_name, status, total_price, sent_at, first_viewed_at, accepted_at, created_at, created_by, event_type, venue, hall, package_id, package_name'),
     db.from('reservations').select('id, customer_id, proposal_id, status, final_room_rate, meal_plan_charge, room_count, check_in_date, check_out_date, created_at'),
     db.from('stage_transitions').select('lead_id, from_stage, to_stage, created_at').gte('created_at', sinceISO),
     db.from('inventory_items').select('id', { count: 'exact', head: true }).eq('is_active', true),
     db.from('message_queue').select('lead_id, metadata').eq('status', 'sent').not('lead_id', 'is', null),
     db.from('broadcast_campaigns').select('id, name'),
     db.from('ai_interaction_log').select('lead_id, summary').eq('interaction_type', 'event_sales_advisor').not('lead_id', 'is', null),
+    db.from('follow_ups').select('id', { count: 'exact', head: true }).eq('type', 'site_visit').gte('created_at', sinceISO),
   ])
 
   return {
@@ -163,6 +172,7 @@ async function fetchRawData(sinceISO: string): Promise<RawData> {
     campaignNames: campaignNamesResult.error ? [] : (campaignNamesResult.data ?? []) as unknown as CampaignNameRow[],
     aiRecommendations: aiRecommendationsResult.error ? [] : (aiRecommendationsResult.data ?? []) as unknown as AIRecommendationLogRow[],
     aiRecommendationsDegraded: aiRecommendationsResult.error !== null,
+    siteVisitsInWindowCount: siteVisitsResult.count ?? 0,
   }
 }
 
@@ -290,6 +300,90 @@ function computeFunnel(data: RawData): { stages: FunnelStage[]; degraded: boolea
 
   void leadStageOf // kept for readability/future use; avoids unused-var noise in strict lint
   return { stages, degraded: stageTransitionsDegraded }
+}
+
+// ─── 1b. Pipeline Breakdown (Sprint 3A — Founder Dashboard) ────────────────
+// The funnel above already counts Lead/Negotiation/Booked correctly — reused
+// verbatim here, not recomputed. It collapses everything proposal-related
+// into one "Proposal" bucket though, and has no visit concept at all. Both
+// gaps are closed here, inside this existing service, per Sprint 3A's
+// explicit instruction ("if a metric does not exist, calculate it inside
+// the existing revenue service — do not create another aggregation layer"),
+// using data this file already fetched (proposals) plus one new count
+// (site visits) added to fetchRawData above — no second aggregation layer,
+// no duplicate SQL for anything the funnel already answers.
+
+export interface PipelineBreakdown {
+  windowDays: number
+  leads: { count: number; revenue: number }
+  visits: { count: number }
+  draftProposals: { count: number; revenue: number }
+  sentProposals: { count: number; revenue: number }
+  negotiation: { count: number; revenue: number }
+  bookings: { count: number; revenue: number }
+}
+
+function computePipelineBreakdown(data: RawData, funnelStages: FunnelStage[], sinceISO: string, windowDays: number): PipelineBreakdown {
+  const findStage = (name: string): { count: number; revenue: number } =>
+    funnelStages.find((s) => s.stage === name) ?? { count: 0, revenue: 0 }
+
+  const recentProposals = data.proposals.filter((p) => p.created_at >= sinceISO)
+  const draft = recentProposals.filter((p) => p.status === 'draft')
+  const sent = recentProposals.filter((p) => p.status === 'sent' || p.status === 'viewed' || p.status === 'followed_up')
+  const sumPrice = (rows: ProposalRow[]) => rows.reduce((s, p) => s + (Number(p.total_price) || 0), 0)
+
+  return {
+    windowDays,
+    leads: findStage('Lead'),
+    visits: { count: data.siteVisitsInWindowCount },
+    draftProposals: { count: draft.length, revenue: sumPrice(draft) },
+    sentProposals: { count: sent.length, revenue: sumPrice(sent) },
+    negotiation: findStage('Negotiation'),
+    bookings: findStage('Booked'),
+  }
+}
+
+// ─── 1c. Lost Revenue Summary (Sprint 3A — Founder Dashboard) ──────────────
+// "If existing data exists, use it. If it does not exist, display
+// 'Insufficient data' instead of inventing metrics." lostLeadsValue/
+// lostProposalsValue/noFollowUp ARE real, existing data (leads.lead_stage=
+// 'LOST'.estimated_revenue, proposals.status rejected/expired.total_price,
+// leads.follow_up_count). No Response/Price/Capacity/Other are NOT
+// computed — no lost_reason/rejection_reason field exists on leads or
+// proposals anywhere in this codebase (this file's own ProposalAnalytics.
+// lostProposalReasonsAvailable already documented this same gap before this
+// sprint). reasonBreakdownAvailable: false is the caller's signal to render
+// "Insufficient data" for those four, not a zero.
+
+export interface LostRevenueSummary {
+  windowDays: number
+  lostLeadsValue: number
+  lostLeadsCount: number
+  lostProposalsValue: number
+  lostProposalsCount: number
+  noFollowUp: { count: number; value: number }
+  reasonBreakdownAvailable: false
+  gapNote: string
+}
+
+function computeLostRevenue(data: RawData, sinceISO: string, windowDays: number): LostRevenueSummary {
+  const lostLeads = data.leads.filter((l) => l.lead_stage === 'LOST' && l.created_at >= sinceISO)
+  const lostProposals = data.proposals.filter((p) => (p.status === 'rejected' || p.status === 'expired') && p.created_at >= sinceISO)
+  const noFollowUpLeads = lostLeads.filter((l) => (l.follow_up_count ?? 0) === 0)
+
+  return {
+    windowDays,
+    lostLeadsValue: lostLeads.reduce((s, l) => s + (Number(l.estimated_revenue) || 0), 0),
+    lostLeadsCount: lostLeads.length,
+    lostProposalsValue: lostProposals.reduce((s, p) => s + (Number(p.total_price) || 0), 0),
+    lostProposalsCount: lostProposals.length,
+    noFollowUp: {
+      count: noFollowUpLeads.length,
+      value: noFollowUpLeads.reduce((s, l) => s + (Number(l.estimated_revenue) || 0), 0),
+    },
+    reasonBreakdownAvailable: false,
+    gapNote: 'No lost_reason/rejection_reason field exists on leads or proposals anywhere in this codebase — No Response/Price/Capacity/Other cannot be computed and must display as "Insufficient data," not zero. Only "No Follow-up" is derived, from an existing column (follow_up_count === 0 on a LOST lead).',
+  }
 }
 
 // ─── 2. Revenue Forecast ────────────────────────────────────────────────────
@@ -762,21 +856,34 @@ export interface RevenueIntelligence {
   customerAnalytics: CustomerAnalytics
   salesProductivity: SalespersonStats[]
   eventSales: EventSalesDashboard
+  // Sprint 3A (Founder Dashboard) additions — additive only, every existing
+  // caller (dashboard/intelligence/route.ts) is unaffected.
+  pipelineBreakdown: PipelineBreakdown
+  lostRevenue: LostRevenueSummary
+  // Raw, window-filtered proposals — exposed so the Founder Dashboard route
+  // can derive its proposal-review list / recent-activity counts / expected-
+  // revenue lookups from THIS already-fetched array instead of running a
+  // second proposals query for the same underlying data.
+  recentProposals: ProposalRow[]
   windowDays: number
 }
 
 export async function buildRevenueIntelligence(windowDays = 180): Promise<RevenueIntelligence> {
   const sinceISO = new Date(Date.now() - windowDays * 86_400_000).toISOString()
   const data = await fetchRawData(sinceISO)
+  const funnel = computeFunnel(data)
 
   return {
-    funnel: computeFunnel(data),
+    funnel,
     forecast: computeForecast(data),
     proposalAnalytics: computeProposalAnalytics(data),
     bookingAnalytics: computeBookingAnalytics(data, sinceISO),
     customerAnalytics: computeCustomerAnalytics(data),
     salesProductivity: computeSalesProductivity(data),
     eventSales: computeEventSalesDashboard(data),
+    pipelineBreakdown: computePipelineBreakdown(data, funnel.stages, sinceISO, windowDays),
+    lostRevenue: computeLostRevenue(data, sinceISO, windowDays),
+    recentProposals: data.proposals.filter((p) => p.created_at >= sinceISO),
     windowDays,
   }
 }

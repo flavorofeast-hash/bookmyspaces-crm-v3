@@ -23,10 +23,19 @@ interface Opportunity {
   eventType: string | null
   eventDate: string | null
   guestCount: number | null
+  property: string | null
   revenueProbability: { score: number; band: 'HIGH' | 'MEDIUM' | 'LOW' }
   expectedRevenue: number | null
   expectedRevenueSource: 'proposal' | 'estimated' | 'none'
   nextAction: { action: string; label: string; color: string }
+}
+
+interface TimelineItem {
+  type: 'site_visit' | 'follow_up' | 'proposal_review'
+  time: string | null
+  title: string
+  subtitle: string
+  meta: Record<string, unknown>
 }
 
 interface FounderDashboard {
@@ -43,14 +52,16 @@ interface FounderDashboard {
     degraded: boolean
   }
   todaysSchedule: {
-    siteVisits: Array<{ id: string; time: string; customerName: string | null; customerPhone: string | null; property: string | null; purpose: string | null; status: string; statusLabel: string }>
-    followUps: Array<{ leadId: string; name: string | null; phone: string | null; dueAt: string | null; leadStage: string | null; aiScore: number | null }>
-    proposalReviews: Array<{ proposalId: string; clientName: string | null; status: string | null; totalPrice: number | null; createdAt: string }>
+    timeline: TimelineItem[]
+    counts: { siteVisits: number; followUps: number; proposalReviews: number }
     proposalReviewsNote: string
   }
   morningBrief: {
     date: string
+    narrative: string
     topOpportunities: Opportunity[]
+    potentialRevenue: number
+    immediateAttentionCount: number
     proposalActivity: { sentLast48h: number; viewedLast48h: number }
     visitRemindersCount: number
     recommendedActions: string[]
@@ -63,11 +74,12 @@ interface FounderDashboard {
     lostProposalsCount: number
     byReason: {
       noFollowUp: { count: number; value: number }
-      noResponse: null
-      price: null
-      capacity: null
-      other: null
+      noResponse: string
+      price: string
+      capacity: string
+      other: string
     }
+    reasonBreakdownAvailable: boolean
     gapNote: string
   }
 }
@@ -155,6 +167,7 @@ export default function FounderDashboardPage() {
               <Sparkles className="w-4 h-4" />
               <h2 className="text-sm font-semibold">Morning Brief — {data.morningBrief.date}</h2>
             </div>
+            <p className="text-sm text-indigo-50 leading-relaxed mb-4">{data.morningBrief.narrative}</p>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4 text-sm">
               <div><div className="text-2xl font-bold">{data.todaysOpportunities.length}</div><div className="text-indigo-200 text-xs">Open opportunities</div></div>
               <div><div className="text-2xl font-bold">{data.morningBrief.visitRemindersCount}</div><div className="text-indigo-200 text-xs">Site visits today</div></div>
@@ -203,6 +216,7 @@ export default function FounderDashboardPage() {
                   <tr className="text-left text-xs text-gray-400 uppercase tracking-wide border-b border-gray-100">
                     <th className="px-6 py-2.5 font-medium">Customer</th>
                     <th className="px-3 py-2.5 font-medium">Event</th>
+                    <th className="px-3 py-2.5 font-medium">Property</th>
                     <th className="px-3 py-2.5 font-medium">Revenue Probability</th>
                     <th className="px-3 py-2.5 font-medium">Expected Revenue</th>
                     <th className="px-6 py-2.5 font-medium text-right">Next Action</th>
@@ -215,6 +229,7 @@ export default function FounderDashboardPage() {
                         <Link href={`/customers/${o.leadId}`} className="text-gray-800 font-medium hover:underline">{o.customerName ?? 'Unnamed'}</Link>
                       </td>
                       <td className="px-3 py-3 text-gray-600">{o.eventType ?? '—'}{o.guestCount ? ` · ${o.guestCount} guests` : ''}</td>
+                      <td className="px-3 py-3 text-gray-600">{o.property ?? '—'}</td>
                       <td className="px-3 py-3">
                         <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${BAND_STYLE[o.revenueProbability.band]}`}>
                           {o.revenueProbability.score}/100
@@ -234,55 +249,34 @@ export default function FounderDashboardPage() {
             )}
           </div>
 
-          {/* ── Today's Schedule ─────────────────────────────────────────── */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="bg-white rounded-xl border border-gray-200 p-5">
-              <h2 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-1.5"><MapPin className="w-3.5 h-3.5 text-gray-400" /> Site Visits</h2>
-              {data.todaysSchedule.siteVisits.length === 0 ? (
-                <p className="text-xs text-gray-400">None scheduled today.</p>
-              ) : (
-                <ul className="space-y-2.5">
-                  {data.todaysSchedule.siteVisits.map((v) => (
-                    <li key={v.id} className="text-xs">
-                      <span className="text-gray-400 inline-flex items-center gap-1"><Clock className="w-3 h-3" />{fmtTime(v.time)}</span>
-                      <span className="text-gray-800 font-medium ml-2">{v.customerName ?? 'Unnamed'}</span>
-                      <div className="text-gray-400">{v.property ?? '—'}</div>
-                    </li>
-                  ))}
-                </ul>
-              )}
+          {/* ── Today's Schedule — one merged timeline ───────────────────── */}
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-sm font-semibold text-gray-700">Today&apos;s Schedule</h2>
+              <span className="text-xs text-gray-400">
+                {data.todaysSchedule.counts.siteVisits} visits · {data.todaysSchedule.counts.followUps} follow-ups · {data.todaysSchedule.counts.proposalReviews} proposal reviews
+              </span>
             </div>
-            <div className="bg-white rounded-xl border border-gray-200 p-5">
-              <h2 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-1.5"><PhoneCall className="w-3.5 h-3.5 text-gray-400" /> Follow-ups</h2>
-              {data.todaysSchedule.followUps.length === 0 ? (
-                <p className="text-xs text-gray-400">None due today.</p>
-              ) : (
-                <ul className="space-y-2.5">
-                  {data.todaysSchedule.followUps.map((f) => (
-                    <li key={f.leadId} className="text-xs">
-                      <span className="text-gray-800 font-medium">{f.name ?? 'Unnamed'}</span>
-                      <span className="text-gray-400 ml-2">{f.phone ?? '—'}</span>
+            <p className="text-[11px] text-gray-400 mb-3">{data.todaysSchedule.proposalReviewsNote}</p>
+            {data.todaysSchedule.timeline.length === 0 ? (
+              <p className="text-sm text-gray-400 py-6 text-center">Nothing on today&apos;s schedule.</p>
+            ) : (
+              <ul className="divide-y divide-gray-50">
+                {data.todaysSchedule.timeline.map((item, i) => {
+                  const Icon = item.type === 'site_visit' ? MapPin : item.type === 'follow_up' ? PhoneCall : FileText
+                  return (
+                    <li key={i} className="flex items-center gap-3 py-2.5">
+                      <span className="w-14 shrink-0 text-xs text-gray-400 inline-flex items-center gap-1">
+                        {item.time ? (<><Clock className="w-3 h-3" />{fmtTime(item.time)}</>) : 'Backlog'}
+                      </span>
+                      <Icon className="w-3.5 h-3.5 text-gray-300 shrink-0" />
+                      <span className="text-sm text-gray-800 font-medium">{item.title}</span>
+                      <span className="text-xs text-gray-400">{item.subtitle}</span>
                     </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-            <div className="bg-white rounded-xl border border-gray-200 p-5">
-              <h2 className="text-sm font-semibold text-gray-700 mb-1 flex items-center gap-1.5"><FileText className="w-3.5 h-3.5 text-gray-400" /> Proposal Reviews</h2>
-              <p className="text-[11px] text-gray-400 mb-2.5">Draft backlog — no scheduling exists for this yet.</p>
-              {data.todaysSchedule.proposalReviews.length === 0 ? (
-                <p className="text-xs text-gray-400">Nothing awaiting review.</p>
-              ) : (
-                <ul className="space-y-2.5">
-                  {data.todaysSchedule.proposalReviews.slice(0, 6).map((p) => (
-                    <li key={p.proposalId} className="text-xs flex items-center justify-between">
-                      <span className="text-gray-800 font-medium">{p.clientName ?? 'Unnamed'}</span>
-                      <span className="text-gray-400">{p.totalPrice != null ? fmtINR(p.totalPrice) : '—'}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+                  )
+                })}
+              </ul>
+            )}
           </div>
 
           {/* ── Lost Revenue Summary ─────────────────────────────────────── */}
@@ -292,7 +286,10 @@ export default function FounderDashboardPage() {
               <div><div className="text-lg font-bold text-red-600">{fmtINR(data.lostRevenue.lostLeadsValue)}</div><div className="text-xs text-gray-400">{data.lostRevenue.lostLeadsCount} lost leads</div></div>
               <div><div className="text-lg font-bold text-red-600">{fmtINR(data.lostRevenue.lostProposalsValue)}</div><div className="text-xs text-gray-400">{data.lostRevenue.lostProposalsCount} rejected/expired proposals</div></div>
               <div><div className="text-lg font-bold text-gray-700">{data.lostRevenue.byReason.noFollowUp.count}</div><div className="text-xs text-gray-400">No Follow-up ({fmtINR(data.lostRevenue.byReason.noFollowUp.value)})</div></div>
-              <div><div className="text-lg font-bold text-gray-300">—</div><div className="text-xs text-gray-400">Other reasons: not tracked</div></div>
+              <div className="col-span-2 sm:col-span-2">
+                <div className="text-sm font-medium text-gray-400 italic">{data.lostRevenue.byReason.noResponse}</div>
+                <div className="text-xs text-gray-400">No Response / Price / Capacity / Other</div>
+              </div>
             </div>
             <p className="text-[11px] text-gray-400 border-t border-gray-100 pt-2.5">{data.lostRevenue.gapNote}</p>
           </div>
