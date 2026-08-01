@@ -27,6 +27,7 @@ import { normalizePhone as normalizePhoneCanonical } from '@/lib/whatsapp/normal
 import { checkRateLimit, clientIpFrom } from '@/lib/rate-limit'
 import { chatCampaignContextSchema } from '@/lib/validation'
 import { scheduleSiteVisit, leadHasScheduledVisit } from '@/lib/visits/site-visit-service'
+import { runAutoPackageRecommendation } from '@/lib/leads/auto-package-recommendation'
 
 export async function POST(req: NextRequest) {
   const supabaseAdmin = getSupabaseAdmin()
@@ -199,6 +200,24 @@ export async function POST(req: NextRequest) {
       if (hasAnySignal) {
         leadId = await upsertLead(supabaseAdmin, extracted, null, null, currentConversationId, reqId)
       }
+    }
+
+    // RC2 readiness validation — Journey 6 ("customer wants a proposal
+    // immediately") gap: every OTHER lead-capture entry point (POST
+    // /api/leads, WhatsApp/social via captureLeadWithJourney) already calls
+    // this same self-gated function right after the lead is written, but
+    // the website AI chat widget never did — a chat-only lead only ever got
+    // a draft proposal via the Sprint 2 site-visit-completion trigger. Reuses
+    // the identical, already-proven call (no new module): no-ops without an
+    // event_type signal, no-ops if the lead already has a proposal, and
+    // enforces the same Property Intelligence guard (Skyline-never-events,
+    // Monurama-100-cap) documented in auto-package-recommendation.ts. Never
+    // blocks the chat response on failure, same fail-open posture as the
+    // site-visit scheduling side effect above.
+    if (leadId && extracted?.event_type) {
+      runAutoPackageRecommendation(leadId, currentConversationId).catch((err) => {
+        logger.error('chat', `[${reqId}] runAutoPackageRecommendation threw`, err)
+      })
     }
 
     if (leadId && !existingLeadId && currentConversationId) {
