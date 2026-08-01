@@ -18,6 +18,7 @@ const links = [
   { href: '/customers', label: 'Customers' },
   { href: '/inbox', label: 'Inbox' },
   { href: '/reservations', label: 'Reservations' },
+  { href: '/visits/new', label: 'Schedule Visit' },
   { href: '/whatsapp', label: 'WhatsApp' },
   { href: '/proposals', label: 'Proposals' },
   { href: '/campaigns', label: 'Campaigns' },

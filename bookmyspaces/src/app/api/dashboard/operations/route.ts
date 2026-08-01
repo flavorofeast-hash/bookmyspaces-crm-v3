@@ -21,6 +21,7 @@ import { NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
+import { listSiteVisitsForDate, siteVisitStatusLabel } from '@/lib/visits/site-visit-service'
 
 const BLOCKING_STATUSES = ['inquiry', 'tentative', 'confirmed', 'checked_in']
 
@@ -136,6 +137,22 @@ export async function GET() {
       occupancy = { degraded: true, date: today, totalInventory: 0, occupied: 0, occupancyPct: null, byProperty: [] }
     }
 
+    // ── Today's Site Visits (Sprint 1 — Revenue Capture Pipeline) ──────────
+    const todaysVisitsRaw = await listSiteVisitsForDate(today).catch((err) => {
+      logger.error('dashboard/operations', 'listSiteVisitsForDate failed', err)
+      return []
+    })
+    const todaysSiteVisits = todaysVisitsRaw.map((v) => ({
+      id          : v.id,
+      time        : v.scheduledAt,
+      customerName: v.customerName,
+      customerPhone: v.customerPhone,
+      property    : v.property,
+      purpose     : v.purpose,
+      status      : v.status,
+      statusLabel : siteVisitStatusLabel(v.status),
+    }))
+
     return NextResponse.json({
       pendingPayments: {
         count: pending.length,
@@ -153,6 +170,7 @@ export async function GET() {
         guests: repeatGuests.slice(0, 15),
       },
       occupancy,
+      todaysSiteVisits,
     })
   } catch (error) {
     logger.error('dashboard/operations', 'GET failed', error)

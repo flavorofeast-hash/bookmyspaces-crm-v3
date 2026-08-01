@@ -12,7 +12,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
-import { RefreshCw, AlertTriangle, IndianRupee, Repeat, BedDouble, ChevronRight } from 'lucide-react'
+import { RefreshCw, AlertTriangle, IndianRupee, Repeat, BedDouble, ChevronRight, MapPin, Clock } from 'lucide-react'
 
 interface PendingPayment {
   id: string
@@ -37,6 +37,17 @@ interface PropertyOccupancy {
   occupancyPct: number | null
 }
 
+interface SiteVisit {
+  id: string
+  time: string
+  customerName: string | null
+  customerPhone: string | null
+  property: string | null
+  purpose: string | null
+  status: string
+  statusLabel: string
+}
+
 interface OperationsSummary {
   pendingPayments: { count: number; totalOutstanding: number; proposals: PendingPayment[] }
   repeatGuests: { count: number; guests: RepeatGuest[] }
@@ -48,6 +59,22 @@ interface OperationsSummary {
     occupancyPct: number | null
     byProperty: PropertyOccupancy[]
   }
+  todaysSiteVisits: SiteVisit[]
+}
+
+function fmtVisitTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return iso
+  }
+}
+
+const VISIT_STATUS_STYLE: Record<string, string> = {
+  pending    : 'bg-blue-100 text-blue-700',
+  completed  : 'bg-emerald-100 text-emerald-700',
+  skipped    : 'bg-red-100 text-red-700',
+  rescheduled: 'bg-amber-100 text-amber-700',
 }
 
 function fmtINR(n: number): string {
@@ -103,9 +130,15 @@ export default function OperationsDashboardPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-900">Operations Dashboard</h1>
-          <p className="text-sm text-gray-500 mt-0.5">Pending payments, repeat guests, and today&apos;s occupancy.</p>
+          <p className="text-sm text-gray-500 mt-0.5">Today&apos;s site visits, pending payments, repeat guests, and occupancy.</p>
         </div>
         <div className="flex gap-2">
+          <Link
+            href="/visits/new"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium text-white bg-gray-900 hover:bg-gray-800"
+          >
+            <MapPin className="w-3.5 h-3.5" /> Schedule Visit
+          </Link>
           <Link
             href="/dashboard/revenue"
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 border border-gray-200"
@@ -155,6 +188,47 @@ export default function OperationsDashboardPage() {
               sub={data.occupancy.degraded ? undefined : `${data.occupancy.occupied} / ${data.occupancy.totalInventory} booked`}
               color="text-emerald-600"
             />
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <h2 className="text-sm font-semibold text-gray-700">Today&apos;s Site Visits</h2>
+              <Link href="/visits/new" className="text-xs font-medium text-blue-600 hover:underline">+ Schedule</Link>
+            </div>
+            {data.todaysSiteVisits.length === 0 ? (
+              <p className="text-sm text-gray-400 px-6 py-8 text-center">No site visits scheduled for today.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-gray-400 uppercase tracking-wide border-b border-gray-100">
+                    <th className="px-6 py-2.5 font-medium">Time</th>
+                    <th className="px-3 py-2.5 font-medium">Customer</th>
+                    <th className="px-3 py-2.5 font-medium">Mobile</th>
+                    <th className="px-3 py-2.5 font-medium">Property</th>
+                    <th className="px-3 py-2.5 font-medium">Purpose</th>
+                    <th className="px-6 py-2.5 font-medium text-right">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.todaysSiteVisits.map((v) => (
+                    <tr key={v.id} className="border-b border-gray-50 last:border-0 hover:bg-gray-50">
+                      <td className="px-6 py-3 text-gray-700 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1"><Clock className="w-3 h-3 text-gray-300" />{fmtVisitTime(v.time)}</span>
+                      </td>
+                      <td className="px-3 py-3 text-gray-800">{v.customerName ?? 'Unnamed'}</td>
+                      <td className="px-3 py-3 text-gray-600">{v.customerPhone ?? '—'}</td>
+                      <td className="px-3 py-3 text-gray-600">{v.property ?? '—'}</td>
+                      <td className="px-3 py-3 text-gray-500">{v.purpose ?? '—'}</td>
+                      <td className="px-6 py-3 text-right">
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${VISIT_STATUS_STYLE[v.status] ?? 'bg-gray-100 text-gray-700'}`}>
+                          {v.statusLabel}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
 
           {data.occupancy.degraded && (
