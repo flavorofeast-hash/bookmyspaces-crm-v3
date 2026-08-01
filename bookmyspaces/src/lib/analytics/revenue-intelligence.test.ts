@@ -31,12 +31,16 @@ function makeQueryResult(result: { data?: unknown; error?: unknown; count?: numb
   return handler
 }
 
+// Version 2.1 (Marketing Intelligence) — campaign/utm_source/utm_medium
+// added to each row. These are read by a SEPARATE mocked query (see the
+// 'leads' case below), matching how fetchRawData() actually fetches them,
+// so this also exercises the in-memory merge itself, not just the values.
 const mockLeads = [
-  { id: 'l1', lead_stage: 'NEW', ai_score: 50, estimated_revenue: 100_000, assigned_to: null, created_at: recentISO, last_contacted_at: null, follow_up_count: 0, next_follow_up_at: null, event_type: 'wedding', source: 'website' },
-  { id: 'l2', lead_stage: 'NEGOTIATING', ai_score: 70, estimated_revenue: 200_000, assigned_to: null, created_at: recentISO, last_contacted_at: null, follow_up_count: 1, next_follow_up_at: null, event_type: 'wedding', source: 'website' },
-  { id: 'l3', lead_stage: 'CONFIRMED', ai_score: 90, estimated_revenue: 300_000, assigned_to: null, created_at: recentISO, last_contacted_at: null, follow_up_count: 2, next_follow_up_at: null, event_type: 'wedding', source: 'referral' },
-  { id: 'l4', lead_stage: 'LOST', ai_score: 20, estimated_revenue: 50_000, assigned_to: null, created_at: recentISO, last_contacted_at: null, follow_up_count: 0, next_follow_up_at: null, event_type: 'birthday', source: 'website' },
-  { id: 'l5', lead_stage: 'LOST', ai_score: 20, estimated_revenue: 80_000, assigned_to: null, created_at: recentISO, last_contacted_at: null, follow_up_count: 3, next_follow_up_at: null, event_type: 'corporate', source: 'website' },
+  { id: 'l1', lead_stage: 'NEW', ai_score: 50, estimated_revenue: 100_000, assigned_to: null, created_at: recentISO, last_contacted_at: null, follow_up_count: 0, next_follow_up_at: null, event_type: 'wedding', source: 'website', campaign: 'summer-wedding-fb-ad', utm_source: 'facebook', utm_medium: 'cpc' },
+  { id: 'l2', lead_stage: 'NEGOTIATING', ai_score: 70, estimated_revenue: 200_000, assigned_to: null, created_at: recentISO, last_contacted_at: null, follow_up_count: 1, next_follow_up_at: null, event_type: 'wedding', source: 'website', campaign: 'summer-wedding-fb-ad', utm_source: 'facebook', utm_medium: 'cpc' },
+  { id: 'l3', lead_stage: 'CONFIRMED', ai_score: 90, estimated_revenue: 300_000, assigned_to: null, created_at: recentISO, last_contacted_at: null, follow_up_count: 2, next_follow_up_at: null, event_type: 'wedding', source: 'referral', campaign: null, utm_source: null, utm_medium: null },
+  { id: 'l4', lead_stage: 'LOST', ai_score: 20, estimated_revenue: 50_000, assigned_to: null, created_at: recentISO, last_contacted_at: null, follow_up_count: 0, next_follow_up_at: null, event_type: 'birthday', source: 'website', campaign: 'ig-story-promo', utm_source: 'instagram', utm_medium: 'cpc' },
+  { id: 'l5', lead_stage: 'LOST', ai_score: 20, estimated_revenue: 80_000, assigned_to: null, created_at: recentISO, last_contacted_at: null, follow_up_count: 3, next_follow_up_at: null, event_type: 'corporate', source: 'website', campaign: null, utm_source: null, utm_medium: null },
 ]
 
 const mockProposals = [
@@ -57,7 +61,24 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseAdmin: () => ({
     from: (table: string) => {
       switch (table) {
-        case 'leads': return tableResult({ data: mockLeads, error: null })
+        // Version 2.1 (Marketing Intelligence) — fetchRawData() issues TWO
+        // separate queries against 'leads': the core columns (no campaign
+        // fields), and a second, isolated query for campaign/utm_source/
+        // utm_medium only. Branching on the select string here mirrors that
+        // real split so this mock can also cover the degraded (migration
+        // 026 not live) path in a later test without touching the core
+        // leads mock at all.
+        case 'leads': return {
+          select: (cols?: string) => {
+            if (cols && cols.startsWith('id, campaign')) {
+              return makeQueryResult({
+                data: mockLeads.map((l) => ({ id: l.id, campaign: l.campaign, utm_source: l.utm_source, utm_medium: l.utm_medium })),
+                error: null,
+              })
+            }
+            return makeQueryResult({ data: mockLeads, error: null })
+          },
+        }
         case 'proposals': return tableResult({ data: mockProposals, error: null })
         case 'reservations': return tableResult({ data: [], error: null })
         case 'stage_transitions': return tableResult({ data: [], error: null })
@@ -141,5 +162,83 @@ describe('buildRevenueIntelligence — recentProposals (Sprint 3A)', () => {
     const result = await buildRevenueIntelligence(90)
     expect(result.recentProposals).toHaveLength(mockProposals.length)
     expect(result.recentProposals.map((p) => p.id).sort()).toEqual(['p1', 'p2', 'p3', 'p4', 'p5'])
+  })
+})
+
+describe('buildRevenueIntelligence — channelPerformance (Version 2.1, Marketing Intelligence)', () => {
+  it('counts ALL leads per channel (not just proposal-linked ones), unlike eventSales.revenueByLeadSource', async () => {
+    const result = await buildRevenueIntelligence(90)
+    const website = result.channelPerformance.find((c) => c.key === 'website')!
+    const referral = result.channelPerformance.find((c) => c.key === 'referral')!
+
+    // website: l1, l2, l4, l5 -> 4 leads, only l2 (NEGOTIATING) is qualified.
+    expect(website.leads).toBe(4)
+    expect(website.qualifiedLeads).toBe(1)
+    // p1(l1), p2(l2), p4(l4) all trace to website leads; none accepted.
+    expect(website.proposals).toBe(3)
+    expect(website.bookings).toBe(0)
+    expect(website.revenue).toBe(0)
+    expect(website.conversionPct).toBe(0)
+
+    // referral: l3 only -> 1 lead, qualified (CONFIRMED), p3 accepted (30000).
+    expect(referral.leads).toBe(1)
+    expect(referral.qualifiedLeads).toBe(1)
+    expect(referral.proposals).toBe(1)
+    expect(referral.bookings).toBe(1)
+    expect(referral.revenue).toBe(30_000)
+    expect(referral.conversionPct).toBe(100)
+    expect(referral.avgBookingValue).toBe(30_000)
+  })
+
+  it('sorts channels by revenue descending, same convention as eventSales revenue breakdowns', async () => {
+    const result = await buildRevenueIntelligence(90)
+    const revenues = result.channelPerformance.map((c) => c.revenue)
+    expect(revenues).toEqual([...revenues].sort((a, b) => b - a))
+  })
+})
+
+describe('buildRevenueIntelligence — campaignPerformance (Version 2.1, Marketing Intelligence)', () => {
+  it('groups by leads.campaign (migration 026), bucketing no-campaign leads as Organic / No Campaign', async () => {
+    const result = await buildRevenueIntelligence(90)
+    expect(result.campaignPerformance.degraded).toBe(false)
+
+    const summerAd = result.campaignPerformance.rows.find((r) => r.key === 'summer-wedding-fb-ad')!
+    const organic = result.campaignPerformance.rows.find((r) => r.key === 'Organic / No Campaign')!
+    const igPromo = result.campaignPerformance.rows.find((r) => r.key === 'ig-story-promo')!
+
+    expect(summerAd.leads).toBe(2)   // l1, l2
+    expect(summerAd.revenue).toBe(0)
+
+    expect(organic.leads).toBe(2)    // l3, l5
+    expect(organic.revenue).toBe(30_000) // l3's accepted proposal p3
+    expect(organic.bookings).toBe(1)
+
+    expect(igPromo.leads).toBe(1)    // l4
+    expect(igPromo.revenue).toBe(0)
+  })
+
+  it('does not affect the core leads/funnel/forecast sections — the campaign query is isolated (see fetchRawData header comment)', async () => {
+    const result = await buildRevenueIntelligence(90)
+    const funnelLead = result.funnel.stages.find((s) => s.stage === 'Lead')!
+    expect(funnelLead.count).toBe(mockLeads.length)
+  })
+})
+
+describe('buildRevenueIntelligence — marketingBrief (Version 2.1, Marketing Intelligence)', () => {
+  it('is deterministic and grounded in the real computed rankings, not a fabricated/random pick', async () => {
+    const result = await buildRevenueIntelligence(90)
+    const brief = result.marketingBrief
+
+    // Highest-revenue channel: referral (30000) beats website (0).
+    expect(brief.highestRevenueChannel).toBe('referral')
+    // Lowest-conversion channel among channels with meaningful volume
+    // (leads >= 3): only 'website' (4 leads) qualifies; referral (1 lead) is
+    // excluded as low-volume noise.
+    expect(brief.lowestConversionChannel).toBe('website')
+
+    expect(brief.budgetRecommendation).toEqual(expect.any(String))
+    expect(brief.businessRecommendation).toEqual(expect.any(String))
+    expect(brief.budgetRecommendation.length).toBeGreaterThan(0)
+    expect(brief.businessRecommendation.length).toBeGreaterThan(0)
   })
 })

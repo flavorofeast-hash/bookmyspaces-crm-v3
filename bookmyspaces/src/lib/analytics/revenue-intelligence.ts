@@ -37,6 +37,10 @@ import { normalizeToEventType, EVENT_TYPE_LABELS } from '@/lib/events/event-type
 
 const REVENUE_RECOGNIZED_STATUSES = new Set(['confirmed', 'checked_in', 'checked_out'])
 const CANCELLED_STATUSES = new Set(['cancelled', 'no_show'])
+// Hoisted out of computeFunnel() (Version 2.1, Marketing Intelligence) so
+// computeChannelPerformance()/computeCampaignPerformance() can reuse the
+// SAME "qualified" definition instead of a second, possibly-drifting copy.
+const QUALIFIED_OR_BEYOND = new Set(['QUALIFIED', 'NEGOTIATING', 'PROPOSAL_SENT', 'VISIT_SCHEDULED', 'CONFIRMED'])
 
 // ─── Row shapes (only the columns we select) ──────────────────────────────────
 
@@ -52,6 +56,28 @@ interface LeadRow {
   next_follow_up_at: string | null
   event_type: string | null
   source: string | null
+  // Version 2.1 (Marketing Intelligence) — migration 026's Campaign Landing
+  // Page attribution columns. Written by POST /api/campaigns/track;
+  // migration 026's own live status is unverified as of PRODUCTION_
+  // VERIFICATION_REPORT.md (ENG-034). Fetched via a SEPARATE query (see
+  // leadCampaignResult in fetchRawData()) and merged in-memory rather than
+  // added to the main leads select — the main leads query is a hard
+  // dependency of every existing section of this file (funnel, forecast,
+  // proposal analytics, etc.), so it must not fail if migration 026 isn't
+  // live yet. Null (not faked) when the columns are missing.
+  campaign: string | null
+  utm_source: string | null
+  utm_medium: string | null
+}
+
+// Version 2.1 (Marketing Intelligence) — fetched separately from the core
+// leads columns (see LeadRow comment above) so a missing migration 026
+// degrades ONLY campaign attribution, never the whole leads array.
+interface LeadCampaignRow {
+  id: string
+  campaign: string | null
+  utm_source: string | null
+  utm_medium: string | null
 }
 
 export interface ProposalRow {
@@ -138,6 +164,11 @@ interface RawData {
   // here. follow_ups wasn't previously read by this file; site visits are
   // otherwise invisible to the funnel/pipeline view entirely.
   siteVisitsInWindowCount: number
+  // Version 2.1 (Marketing Intelligence) — true if migration 026's
+  // campaign/utm_* columns aren't live; computeCampaignPerformance() falls
+  // back to a single "Attribution Unavailable" bucket rather than a fake
+  // per-campaign breakdown.
+  leadCampaignDegraded: boolean
 }
 
 async function fetchRawData(sinceISO: string): Promise<RawData> {
@@ -146,7 +177,7 @@ async function fetchRawData(sinceISO: string): Promise<RawData> {
   const [
     leadsResult, proposalsResult, reservationsResult, stageTransitionsResult,
     inventoryResult, campaignSendsResult, campaignNamesResult, aiRecommendationsResult,
-    siteVisitsResult,
+    siteVisitsResult, leadCampaignResult,
   ] = await Promise.all([
     db.from('leads').select('id, lead_stage, ai_score, estimated_revenue, assigned_to, created_at, last_contacted_at, follow_up_count, next_follow_up_at, event_type, source'),
     db.from('proposals').select('id, lead_id, client_name, status, total_price, sent_at, first_viewed_at, accepted_at, created_at, created_by, event_type, venue, hall, package_id, package_name'),
@@ -157,10 +188,23 @@ async function fetchRawData(sinceISO: string): Promise<RawData> {
     db.from('broadcast_campaigns').select('id, name'),
     db.from('ai_interaction_log').select('lead_id, summary').eq('interaction_type', 'event_sales_advisor').not('lead_id', 'is', null),
     db.from('follow_ups').select('id', { count: 'exact', head: true }).eq('type', 'site_visit').gte('created_at', sinceISO),
+    // Version 2.1 (Marketing Intelligence) — separate, isolated query for
+    // migration 026's columns. See LeadRow/RawData comments: must not be
+    // merged into the core leads select above.
+    db.from('leads').select('id, campaign, utm_source, utm_medium'),
   ])
 
+  const leadCampaignDegraded = leadCampaignResult.error !== null
+  const campaignByLeadId = new Map(
+    (leadCampaignDegraded ? [] : (leadCampaignResult.data ?? []) as unknown as LeadCampaignRow[]).map((r) => [r.id, r])
+  )
+  const leadsWithCampaign: LeadRow[] = ((leadsResult.data ?? []) as unknown as Omit<LeadRow, 'campaign' | 'utm_source' | 'utm_medium'>[]).map((l) => {
+    const c = campaignByLeadId.get(l.id)
+    return { ...l, campaign: c?.campaign ?? null, utm_source: c?.utm_source ?? null, utm_medium: c?.utm_medium ?? null }
+  })
+
   return {
-    leads: (leadsResult.data ?? []) as unknown as LeadRow[],
+    leads: leadsWithCampaign,
     proposals: (proposalsResult.data ?? []) as unknown as ProposalRow[],
     reservations: reservationsResult.error ? [] : (reservationsResult.data ?? []) as unknown as ReservationRow[],
     reservationsDegraded: reservationsResult.error !== null,
@@ -173,6 +217,7 @@ async function fetchRawData(sinceISO: string): Promise<RawData> {
     aiRecommendations: aiRecommendationsResult.error ? [] : (aiRecommendationsResult.data ?? []) as unknown as AIRecommendationLogRow[],
     aiRecommendationsDegraded: aiRecommendationsResult.error !== null,
     siteVisitsInWindowCount: siteVisitsResult.count ?? 0,
+    leadCampaignDegraded,
   }
 }
 
@@ -212,7 +257,9 @@ function computeFunnel(data: RawData): { stages: FunnelStage[]; degraded: boolea
     reservations.filter((r) => r.status === 'checked_out').map((r) => r.customer_id).filter((id): id is string => !!id)
   )
 
-  const QUALIFIED_OR_BEYOND = new Set(['QUALIFIED', 'NEGOTIATING', 'PROPOSAL_SENT', 'VISIT_SCHEDULED', 'CONFIRMED'])
+  // QUALIFIED_OR_BEYOND is hoisted to module scope (see above) so Version 2.1's
+  // computeChannelPerformance()/computeCampaignPerformance() reuse the same
+  // definition instead of a second, possibly-drifting copy.
   const NEGOTIATION_OR_BEYOND = new Set(['NEGOTIATING', 'PROPOSAL_SENT', 'VISIT_SCHEDULED', 'CONFIRMED'])
 
   const leadStageOf = new Map(leads.map((l) => [l.id, l.lead_stage]))
@@ -846,6 +893,157 @@ function computeEventSalesDashboard(data: RawData): EventSalesDashboard {
   }
 }
 
+// ─── Marketing Intelligence (Version 2.1) ─────────────────────────────────────
+// "Where did every lead come from, which campaign generated it, which
+// channel converted it, how much revenue did it produce." Deliberately
+// DISTINCT from computeEventSalesDashboard()'s revenueByLeadSource/
+// revenueByCampaign above: those are proposal-scoped (a channel with leads
+// but zero proposals yet is invisible there) and revenueByCampaign is
+// OUTBOUND broadcast-campaign attribution (message_queue/broadcast_
+// campaigns). This section is lead-scoped (every lead counts, proposal or
+// not) and, for campaigns, INBOUND ad/landing-page attribution (migration
+// 026's leads.campaign/utm_source/utm_medium, written by POST /api/
+// campaigns/track). Both concepts are real and kept separate rather than
+// conflated into one misleading number.
+
+export interface AcquisitionPerformanceRow {
+  key: string
+  leads: number
+  qualifiedLeads: number
+  proposals: number
+  bookings: number
+  revenue: number
+  conversionPct: number // bookings / leads
+  avgBookingValue: number // revenue / bookings
+}
+
+// Shared by computeChannelPerformance()/computeCampaignPerformance() — both
+// group the SAME leads/proposals arrays already fetched by fetchRawData(),
+// just keyed differently (source vs. campaign), so the counting/aggregation
+// logic lives in exactly one place instead of two near-identical copies.
+function groupAcquisitionPerformance(
+  leads: LeadRow[],
+  proposals: ProposalRow[],
+  keyFn: (l: LeadRow) => string
+): AcquisitionPerformanceRow[] {
+  const buckets = new Map<string, AcquisitionPerformanceRow>()
+  const keyByLeadId = new Map<string, string>()
+
+  for (const l of leads) {
+    const key = keyFn(l)
+    if (!buckets.has(key)) {
+      buckets.set(key, { key, leads: 0, qualifiedLeads: 0, proposals: 0, bookings: 0, revenue: 0, conversionPct: 0, avgBookingValue: 0 })
+    }
+    const b = buckets.get(key)!
+    b.leads += 1
+    if (l.lead_stage && QUALIFIED_OR_BEYOND.has(l.lead_stage)) b.qualifiedLeads += 1
+    keyByLeadId.set(l.id, key)
+  }
+
+  for (const p of proposals) {
+    if (!p.lead_id) continue
+    const key = keyByLeadId.get(p.lead_id)
+    if (!key) continue
+    const b = buckets.get(key)!
+    b.proposals += 1
+    if (p.accepted_at) {
+      b.bookings += 1
+      b.revenue += Number(p.total_price) || 0
+    }
+  }
+
+  for (const b of Array.from(buckets.values())) {
+    b.conversionPct = b.leads > 0 ? Math.round((b.bookings / b.leads) * 1000) / 10 : 0
+    b.avgBookingValue = b.bookings > 0 ? Math.round(b.revenue / b.bookings) : 0
+  }
+
+  return Array.from(buckets.values()).sort((a, b) => b.revenue - a.revenue)
+}
+
+// Per-channel breakdown (Facebook / Instagram / WhatsApp / Website / Google /
+// Email / Walk-in / etc.) — keyed off leads.source, the same field every
+// other channel-labeled view in this codebase (Founder Dashboard, Unified
+// Inbox) already reads. Channels this business hasn't wired a capture path
+// for yet (Google, inbound Email — MASTER_ROADMAP.md Phase 4, not started)
+// simply never appear here; never fabricated as a zero row.
+function computeChannelPerformance(data: RawData): AcquisitionPerformanceRow[] {
+  return groupAcquisitionPerformance(data.leads, data.proposals, (l) => l.source || 'Unknown')
+}
+
+export interface CampaignPerformance {
+  rows: AcquisitionPerformanceRow[]
+  // True if migration 026 (leads.campaign/utm_source/utm_medium) isn't live
+  // yet — every lead falls into a single "Attribution Unavailable" bucket
+  // instead of a fabricated per-campaign breakdown. See ENG-034.
+  degraded: boolean
+}
+
+// Inbound ad/landing-page campaign attribution (migration 026). A lead with
+// no campaign value (organic, direct, or the migration not live yet) is
+// bucketed as "Organic / No Campaign" — same convention
+// computeEventSalesDashboard()'s revenueByCampaign already uses for its own
+// (different) campaign concept, kept for UI consistency.
+function computeCampaignPerformance(data: RawData): CampaignPerformance {
+  if (data.leadCampaignDegraded) {
+    return {
+      rows: groupAcquisitionPerformance(data.leads, data.proposals, () => 'Attribution Unavailable (migration 026 not live)'),
+      degraded: true,
+    }
+  }
+  return {
+    rows: groupAcquisitionPerformance(data.leads, data.proposals, (l) => l.campaign || 'Organic / No Campaign'),
+    degraded: false,
+  }
+}
+
+// AI Marketing Brief (deterministic, template-grounded in the real computed
+// rankings — same "not a real LLM call" convention as the Founder
+// Dashboard's own AI Morning Brief precedent, not a new pattern). Consumed
+// by /api/dashboard/marketing/route.ts.
+export interface MarketingBrief {
+  topPerformingCampaign: string | null
+  worstPerformingCampaign: string | null
+  highestRevenueChannel: string | null
+  lowestConversionChannel: string | null
+  budgetRecommendation: string
+  businessRecommendation: string
+}
+
+function computeMarketingBrief(channels: AcquisitionPerformanceRow[], campaigns: AcquisitionPerformanceRow[], campaignsDegraded: boolean): MarketingBrief {
+  const namedCampaigns = campaigns.filter((c) => c.key !== 'Organic / No Campaign' && !c.key.startsWith('Attribution Unavailable'))
+  const byRevenue = [...namedCampaigns].sort((a, b) => b.revenue - a.revenue)
+  const byConversionWithVolume = namedCampaigns.filter((c) => c.leads >= 3) // ignore near-zero-volume noise
+  const worstByConversion = [...byConversionWithVolume].sort((a, b) => a.conversionPct - b.conversionPct)
+
+  const channelsWithVolume = channels.filter((c) => c.leads >= 3)
+  const byChannelRevenue = [...channels].sort((a, b) => b.revenue - a.revenue)
+  const worstChannelByConversion = [...channelsWithVolume].sort((a, b) => a.conversionPct - b.conversionPct)
+
+  const top = byRevenue[0] ?? null
+  const worst = worstByConversion[0] ?? null
+  const bestChannel = byChannelRevenue[0] ?? null
+  const worstChannel = worstChannelByConversion[0] ?? null
+
+  const budgetRecommendation = campaignsDegraded
+    ? 'Campaign-level attribution is not live yet (migration 026) — budget guidance below is channel-level only.'
+    : top
+      ? `Prioritize "${top.key}" (₹${top.revenue.toLocaleString('en-IN')} revenue, ${top.conversionPct}% conversion). ${worst && worst.key !== top.key ? `Consider pausing or reworking "${worst.key}" (${worst.conversionPct}% conversion on ${worst.leads} leads).` : ''}`.trim()
+      : 'Not enough campaign-attributed leads yet to make a budget call — confirm migration 026 is live and campaign tracking links are in use.'
+
+  const businessRecommendation = bestChannel
+    ? `"${bestChannel.key}" is the highest-revenue channel (₹${bestChannel.revenue.toLocaleString('en-IN')}). ${worstChannel && worstChannel.key !== bestChannel.key ? `"${worstChannel.key}" has the lowest conversion (${worstChannel.conversionPct}%) among channels with meaningful volume — review response speed and lead quality there.` : ''}`.trim()
+    : 'Not enough lead volume yet to identify a clear best-performing channel.'
+
+  return {
+    topPerformingCampaign: top?.key ?? null,
+    worstPerformingCampaign: worst?.key ?? null,
+    highestRevenueChannel: bestChannel?.key ?? null,
+    lowestConversionChannel: worstChannel?.key ?? null,
+    budgetRecommendation,
+    businessRecommendation,
+  }
+}
+
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
 export interface RevenueIntelligence {
@@ -866,12 +1064,19 @@ export interface RevenueIntelligence {
   // second proposals query for the same underlying data.
   recentProposals: ProposalRow[]
   windowDays: number
+  // Version 2.1 (Marketing Intelligence) additions — additive only, every
+  // existing caller (dashboard/intelligence/route.ts) is unaffected.
+  channelPerformance: AcquisitionPerformanceRow[]
+  campaignPerformance: CampaignPerformance
+  marketingBrief: MarketingBrief
 }
 
 export async function buildRevenueIntelligence(windowDays = 180): Promise<RevenueIntelligence> {
   const sinceISO = new Date(Date.now() - windowDays * 86_400_000).toISOString()
   const data = await fetchRawData(sinceISO)
   const funnel = computeFunnel(data)
+  const channelPerformance = computeChannelPerformance(data)
+  const campaignPerformance = computeCampaignPerformance(data)
 
   return {
     funnel,
@@ -885,5 +1090,8 @@ export async function buildRevenueIntelligence(windowDays = 180): Promise<Revenu
     lostRevenue: computeLostRevenue(data, sinceISO, windowDays),
     recentProposals: data.proposals.filter((p) => p.created_at >= sinceISO),
     windowDays,
+    channelPerformance,
+    campaignPerformance,
+    marketingBrief: computeMarketingBrief(channelPerformance, campaignPerformance.rows, campaignPerformance.degraded),
   }
 }

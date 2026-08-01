@@ -11,6 +11,10 @@ const links = [
   // applying the same fix here rather than letting a new dashboard page
   // repeat that discoverability gap.
   { href: '/dashboard/founder', label: 'Founder' },
+  // Version 2.1: Marketing Intelligence Platform — same "add it to the nav
+  // at build time" fix already applied above for Founder/Revenue/
+  // Intelligence/Operations, so this dashboard isn't URL-only on day one.
+  { href: '/dashboard/marketing', label: 'Marketing' },
   // Sprint 5 fix: Revenue Dashboard and Operations Dashboard were both
   // fully built (Sprint 2 and Sprint 4 respectively) but had no path to
   // them from the persistent nav — each only linked to the *other* one
