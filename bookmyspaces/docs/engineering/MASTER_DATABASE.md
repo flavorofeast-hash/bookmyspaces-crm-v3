@@ -6,7 +6,7 @@ Canonical database reference. Consolidates `DATABASE_ARCHITECTURE.md` plus this 
 
 ## The one rule that matters most in this document
 
-**The live database is the source of truth. A migration file describes intent, not necessarily reality.** This is not a theoretical caveat — during this repository's own RC1 testing, the live `packages` table's actual columns (`slug`, `property`, `type`, `price`, `price_note`, `duration`, `capacity_min`, `capacity_max`, `sort_order`, ...) did not match what migrations 007/023/024 describe (`venue`, `tier`, `base_price`, `max_guests`, `duration_hours`, `description`, `ai_description`). Every table map below is the best available description from migration files and prior audits — **re-verify against `information_schema.columns` on the live database before writing code against any table**, especially `packages`, `reservations`, `reviews`, and `analytics_events`.
+**The live database is the source of truth. A migration file describes intent, not necessarily reality.** This is not a theoretical caveat — during this repository's own RC1 testing, the live `packages` table's actual columns (`slug`, `property`, `type`, `price`, `price_note`, `duration`, `capacity_min`, `capacity_max`, `sort_order`, ...) did not match what migrations 007/023/024 describe (`venue`, `tier`, `base_price`, `max_guests`, `duration_hours`, `description`, `ai_description`). Every table map below is the best available description from migration files and prior audits — **re-verify against `information_schema.columns` on the live database before writing code against any table**, especially `packages`, `reservations`, `reviews`, and `analytics_events`. **Exact verification SQL for the `packages` drift specifically:** `scripts/verify-packages-columns.sql` (added 2026-08-01, RC2 Final pass, ENG-035) — checks both the application-expected names and the alternate names recorded above in one query.
 
 ## Migration inventory (`supabase/migrations/`, 25 files)
 
@@ -32,7 +32,9 @@ Canonical database reference. Consolidates `DATABASE_ARCHITECTURE.md` plus this 
 | 018–021 | Customer bulk import fields, stage_transitions, campaign type/scheduler extensions | Unverified |
 | 022 | Win-back automation seed | Unverified |
 | 023–024 | Event Package Management + Event Sales Expansion (packages extensions, ai_interaction_log CHECK fix) | Unverified, and 023/024's *migration-file* column additions to `packages` are exactly what's been found to not match the live table — see the drift note above |
-| 025 | `orchestration_decisions` (observability) | Newest; gated behind a disabled feature flag, not urgent |
+| 025 | `orchestration_decisions` (observability) | Newest as of the RC1 pass; gated behind a disabled feature flag, not urgent |
+| 026 | `leads.campaign/landing_page/utm_source/utm_medium/utm_campaign/referral` — Campaign Landing Page attribution | **Never verified against production** — postdates every audit in this repo until `PRODUCTION_VERIFICATION_REPORT.md` (2026-08-01), which is also the first document to record it at all. See ENG-034. |
+| 027 | `follow_ups.property/purpose/guest_count/budget` — Site Visit Scheduling (Sprint 1) | **Never verified against production, highest-severity unknown of the two newest migrations** — `scheduleSiteVisit()` INSERTs these columns by name, so a missing migration is a hard failure (not a graceful `SELECT *` degradation) on every site-visit request. See ENG-033, `PRODUCTION_VERIFICATION_REPORT.md` §1. |
 
 **Tooling gap, worth knowing**: `npm run db:migrate:v3` (`scripts/apply-v3-migrations.mjs`) only applies migrations 012 and 013 — not 014 through 024, despite documentation elsewhere describing it as covering the full V3 batch. Anyone applying migrations should apply 014–024 by hand, in order, and not assume the npm script covers them.
 
