@@ -5,6 +5,12 @@ import { usePathname } from 'next/navigation'
 import UserMenu from '@/components/auth/UserMenu'
 
 const links = [
+  // Version 3.0: AI Chief of Staff — placed first, per the mission's own
+  // "Owner Experience" goal: the Founder should never need to open five
+  // dashboards. This is the one orchestrated view; Dashboard/Founder/
+  // Revenue/Intelligence/Marketing remain unchanged below for anyone who
+  // wants to drill into a specific existing service directly.
+  { href: '/dashboard/chief-of-staff', label: 'Chief of Staff' },
   { href: '/dashboard', label: 'Dashboard' },
   // Sprint 3A: Founder Dashboard — same "no path from nav" gap the Sprint 5
   // fix below already fixed once for Revenue/Intelligence/Operations;

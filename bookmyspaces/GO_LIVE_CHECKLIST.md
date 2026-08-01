@@ -55,6 +55,12 @@ Confirm explicitly **unused** vars are not accidentally relied upon: `ADMIN_EMAI
 - [ ] Confirm that reply appears correctly in the Unified Inbox (`/inbox`) with the right channel icon and the CRM fields (Opportunity Score, Proposal Status, Next Action) populated.
 - [ ] Confirm pausing AI on a conversation (the Inbox's AI toggle) actually stops the DM auto-reply on the next inbound message — this is the `ai_active` safety gate; verify it live, not just by code review.
 
+## 4b. AI Chief of Staff Notifications (added 2026-08-01, Version 3.0)
+
+- [ ] **Run `scripts/verify-notifications-columns.sql`.** `notification-producer.ts` is the first-ever writer of the live `notifications` table, which is not defined in any migration file. Only `user_id`/`is_read`/`dismissed_at`/`read_at`/`created_at`/`priority` are confirmed by existing code; the producer additionally assumes `title`/`message` columns. If those are missing, every insert fails (logged, non-fatal to the Executive Brief itself, but no notifications get written) — run this script first to confirm or find the real column names.
+- [ ] Open `/dashboard/chief-of-staff` once with real data; confirm at least one `admin`/`manager`-role `user_profiles` row exists — the notification audience query returns nothing (silently, by design) if none do.
+- [ ] Confirm the notification spam cap (5 unread per user) behaves as expected — not assessed further by this checklist, low risk either way.
+
 ## 5. Email
 
 - [ ] `RESEND_API_KEY` set, and `EMAIL_FROM` is an address on a domain **verified in Resend** — an unverified domain will fail sends silently or bounce.
