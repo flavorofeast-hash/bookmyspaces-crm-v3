@@ -20,6 +20,11 @@ import {
 interface LeadInfo { id?: string; name: string | null; phone: string | null; email: string | null; status?: string | null }
 interface ChannelInfo { channelType: string; identity: string }
 interface LastMessage { content: string | null; direction: string; sender_type: string; created_at: string }
+// Version 2.0 — Omnichannel Communication Platform: the Unified Inbox's
+// required CRM fields, reusing getOpportunityScoreForLead/computeIntelligence
+// (same functions Founder Dashboard uses) rather than a second calculation.
+interface RevenueProbability { score: number; band: string }
+interface ProposalStatusInfo { status: string; totalPrice: number | null }
 interface Conversation {
   id: string
   status: 'open' | 'closed' | 'escalated'
@@ -28,6 +33,10 @@ interface Conversation {
   leads: LeadInfo | LeadInfo[] | null
   channels: ChannelInfo[]
   lastMessage: LastMessage | null
+  revenueProbability: RevenueProbability | null
+  proposalStatus: ProposalStatusInfo | null
+  nextAction: string | null
+  assignedOwner: string | null
 }
 interface Message {
   id: string
@@ -46,6 +55,10 @@ function ChannelIcon({ type, className }: { type: string; className?: string }) 
   if (type === 'whatsapp') return <Phone className={className} />
   if (type === 'website_chat') return <Globe className={className} />
   if (type === 'email') return <Mail className={className} />
+  // Version 2.0 — facebook/instagram DMs mirror into this same table
+  // (dm-capture-service.ts), same channel_type values it already writes.
+  if (type === 'facebook') return <MessageSquare className={className} />
+  if (type === 'instagram') return <Sparkles className={className} />
   return <MessageSquare className={className} />
 }
 
@@ -218,7 +231,7 @@ export default function InboxPage() {
             <div className="p-6 text-center text-sm text-gray-400">Loading…</div>
           ) : conversations.length === 0 ? (
             <div className="p-6 text-center text-sm text-gray-400">
-              No conversations yet. WhatsApp and website-chat messages appear here automatically.
+              No conversations yet. WhatsApp, website chat, Facebook Messenger, and Instagram DM messages all appear here automatically.
             </div>
           ) : (
             conversations.map((c) => {
@@ -251,6 +264,28 @@ export default function InboxPage() {
                       {c.lastMessage?.content ? c.lastMessage.content.slice(0, 48) : ''}
                     </span>
                   </div>
+                  {/* Version 2.0 — Unified Inbox CRM fields: Opportunity
+                      Score, Proposal Status, Next Action, Assigned Owner. */}
+                  {(c.revenueProbability || c.proposalStatus || c.nextAction || c.assignedOwner) && (
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                      {c.revenueProbability && (
+                        <span className="text-xs font-medium text-emerald-700 bg-emerald-50 rounded px-1.5 py-0.5">
+                          {c.revenueProbability.score}% · {c.revenueProbability.band}
+                        </span>
+                      )}
+                      {c.proposalStatus && (
+                        <span className="text-xs text-purple-700 bg-purple-50 rounded px-1.5 py-0.5 capitalize">
+                          {c.proposalStatus.status}
+                        </span>
+                      )}
+                      {c.nextAction && (
+                        <span className="text-xs text-gray-500">{c.nextAction.replace(/_/g, ' ')}</span>
+                      )}
+                      {c.assignedOwner && (
+                        <span className="text-xs text-gray-400 truncate">→ {c.assignedOwner}</span>
+                      )}
+                    </div>
+                  )}
                 </button>
               )
             })

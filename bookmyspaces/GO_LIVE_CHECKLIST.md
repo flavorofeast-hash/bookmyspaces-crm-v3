@@ -48,6 +48,13 @@ Confirm explicitly **unused** vars are not accidentally relied upon: `ADMIN_EMAI
 - [ ] Send one real test message through the webhook end-to-end (see §9 Smoke Tests).
 - [ ] Confirm the legacy Wati.io variables (`WATI_BASE_URL`/`WATI_API_TOKEN`) are either set correctly (if `/api/health` or voice transcription is used) or explicitly accepted as unset.
 
+## 4a. Facebook Messenger / Instagram DM (added 2026-08-01, Version 2.0)
+
+- [ ] `META_PAGE_ACCESS_TOKEN`, `META_APP_SECRET`, `META_VERIFY_TOKEN`, `META_PAGE_ID`, `META_IG_ID` all set (see §3 — the whole Social/DM module is credential-gated and safe to leave inactive if not launching this channel yet).
+- [ ] Send one real Messenger or Instagram DM to the connected account; confirm the AI replies (this exercises `dm-responder.ts`'s Meta Send API call, which has never been tested against a real account in any environment this code has run in — treat the first real send as the actual verification, not the code review).
+- [ ] Confirm that reply appears correctly in the Unified Inbox (`/inbox`) with the right channel icon and the CRM fields (Opportunity Score, Proposal Status, Next Action) populated.
+- [ ] Confirm pausing AI on a conversation (the Inbox's AI toggle) actually stops the DM auto-reply on the next inbound message — this is the `ai_active` safety gate; verify it live, not just by code review.
+
 ## 5. Email
 
 - [ ] `RESEND_API_KEY` set, and `EMAIL_FROM` is an address on a domain **verified in Resend** — an unverified domain will fail sends silently or bounce.

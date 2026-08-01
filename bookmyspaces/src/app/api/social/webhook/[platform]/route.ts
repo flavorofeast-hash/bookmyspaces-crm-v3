@@ -23,6 +23,7 @@ import { checkRateLimit, clientIpFrom } from '@/lib/rate-limit'
 import { parseLeadgenEvents, parseMessagingEvents, fetchLeadgenDetails } from '@/lib/social/meta-lead-capture'
 import { captureLeadWithJourney } from '@/lib/leads/create-lead-with-journey'
 import { captureSocialDirectMessage } from '@/lib/social/dm-capture-service'
+import { respondToSocialDirectMessage } from '@/lib/social/dm-responder'
 
 export async function GET(req: Request, { params }: { params: { platform: string } }) {
   const url = new URL(req.url)
@@ -92,6 +93,16 @@ export async function POST(req: Request, { params }: { params: { platform: strin
       for (const event of messagingEvents) {
         const result = await captureSocialDirectMessage(event)
         if (result?.isNewLead) leadsFromMessages++
+
+        // Version 2.0 — Omnichannel Communication Platform: generate and
+        // send the AI Hospitality Sales Consultant's reply, same as website
+        // chat/WhatsApp. Fire only once capture succeeded (a real
+        // conversation/channel id exists to reply into); never blocks the
+        // 200 response to Meta on failure — respondToSocialDirectMessage()
+        // never throws.
+        if (result) {
+          await respondToSocialDirectMessage(event, result.conversationId, result.channelId, result.leadId)
+        }
       }
     }
 

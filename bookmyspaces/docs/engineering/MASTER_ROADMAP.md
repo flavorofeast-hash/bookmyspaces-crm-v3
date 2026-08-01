@@ -11,6 +11,7 @@ This roadmap's Phase 0–7 structure predates a real, shipped body of work — r
 - **Founder Dashboard (Sprint 3A).** Today's Opportunities / Revenue Pipeline / Today's Schedule (merged timeline) / AI Morning Brief / Lost Revenue Summary — reuses `revenue-intelligence.ts`, `opportunity-score.ts`, `lead-intelligence.ts`; no new tables, no duplicate calculations.
 - **AI Hospitality Sales Consultant Policy.** Merged into the live `SYSTEM_PROMPT` (`src/lib/ai.ts`) and documented as the canonical policy in `docs/business/07_AI_BEHAVIOR_RULES.md` — single source of truth, no parallel prompt files.
 - **RC2 validation passes.** End-to-end journey validation (`RC2_READINESS_REPORT.md`) and production-database verification (`PRODUCTION_VERIFICATION_REPORT.md`) — the latter surfacing two previously-unchecked migrations (026, 027) and a previously under-weighted `packages` column-drift risk (ENG-035), all still open.
+- **Omnichannel Communication Platform, Version 2.0 (2026-08-01).** Closed the "ONE AI across every channel" gap: Facebook Messenger and Instagram DM (`dm-capture-service.ts`, already built) never generated an AI reply — new `dm-responder.ts`/`dm-send.ts` reuse `chatWithAI()`/`SYSTEM_PROMPT` verbatim (no channel-specific prompt), gated by the same `ai_active` human-handoff flag and `checkAndApplyHandoff()` escalation policy the WhatsApp orchestration path already uses. Unified Inbox (`/api/inbox`) extended with the required CRM fields (Opportunity Score, Proposal Status, Next Action, Assigned Owner) by reusing `getOpportunityScoreForLead()`/`computeIntelligence()` — the same functions Founder Dashboard already used, not a second implementation. Founder Dashboard required no changes — verified already channel-agnostic (reads `leads`/`proposals` with no source filter). Full detail: `docs/sprints/2026-08-01_omnichannel-dm-ai-response.md`.
 
 **This work sits logically inside Phase 0–1** (it's foundation-usability and verification-discipline work, not a new numbered phase) but was delivered as a separate, dated engagement — recorded here so a future reader doesn't conclude from the phase table alone that none of it has happened.
 
@@ -66,7 +67,7 @@ From the operational roadmap plus this session's own findings:
 
 **Business outcome**: Reaches guests where they already are (Instagram/Messenger DM, email, GBP) without adding operator workload, since every new channel reuses the Phase 2 unified timeline and the Integration/Plugin Architecture pattern in `MASTER_ARCHITECTURE.md` rather than becoming a new silo to monitor.
 
-Facebook Messenger + Instagram DM (reuses WhatsApp's Meta Graph/HMAC infrastructure) → email-in adapter → Google Business Profile (validate API availability first — historically unstable) → LinkedIn where APIs permit.
+Facebook Messenger + Instagram DM (reuses WhatsApp's Meta Graph/HMAC infrastructure) — **capture + AI response done as of 2026-08-01** (Version 2.0, Omnichannel Communication Platform; see "Shipped since freeze" above) — → email-in adapter (not started) → Google Business Profile (validate API availability first — historically unstable, not started) → LinkedIn where APIs permit (not started).
 
 ## Phase 5 — Social Media Command Center v1
 

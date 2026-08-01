@@ -32,6 +32,10 @@ import type { MessagingEvent } from '@/lib/social/meta-lead-capture'
 export interface CaptureDMResult {
   leadId: string | null
   conversationId: string
+  /** Version 2.0 — exposed so a caller (respondToSocialDirectMessage) can
+   *  record the AI's outbound reply via recordMessage() without a second,
+   *  redundant getOrCreateConversation() lookup. */
+  channelId: string
   isNewLead: boolean
 }
 
@@ -101,7 +105,7 @@ export async function captureSocialDirectMessage(event: MessagingEvent): Promise
       rawPayload: { psid: event.senderPsid, platform: event.platform },
     })
 
-    return { leadId, conversationId, isNewLead }
+    return { leadId, conversationId, channelId, isNewLead }
   } catch (err) {
     logger.error('social', `captureSocialDirectMessage failed for ${event.platform}`, err)
     return null
