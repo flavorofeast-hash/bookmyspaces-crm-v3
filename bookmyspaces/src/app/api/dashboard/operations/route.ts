@@ -149,6 +149,8 @@ export async function GET() {
       customerPhone: v.customerPhone,
       property    : v.property,
       purpose     : v.purpose,
+      guestCount  : v.guestCount,
+      budget      : v.budget,
       status      : v.status,
       statusLabel : siteVisitStatusLabel(v.status),
     }))

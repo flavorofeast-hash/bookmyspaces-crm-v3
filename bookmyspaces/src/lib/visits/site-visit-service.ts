@@ -199,6 +199,32 @@ export async function listSiteVisitsForDate(date: string): Promise<SiteVisitRow[
   return (data as any[]).map(mapVisitRow)
 }
 
+/**
+ * Sprint 1.5 — AI Sales Executive integration. The AI re-emits its extracted
+ * fields (including visit_date/visit_time) on every turn once known, so the
+ * caller (chat/route.ts) needs an idempotency guard before calling
+ * scheduleSiteVisit() again for the same lead — otherwise every subsequent
+ * message in the same conversation would create a duplicate follow_ups row.
+ * Deliberately simple (any pending visit blocks a new one): reschedule
+ * handling is out of scope for this pass, see sprint report.
+ */
+export async function leadHasScheduledVisit(leadId: string): Promise<boolean> {
+  const supabase = getSupabaseAdmin()
+  const { data, error } = await supabase
+    .from('follow_ups')
+    .select('id')
+    .eq('lead_id', leadId)
+    .eq('type', 'site_visit')
+    .eq('status', 'pending')
+    .limit(1)
+
+  if (error) {
+    logger.error('site-visit-service', 'leadHasScheduledVisit failed', error)
+    return false // fail open — better a rare duplicate than silently blocking a real request
+  }
+  return (data?.length ?? 0) > 0
+}
+
 /** Mark a scheduled visit as completed / no-show / rescheduled. */
 export async function updateSiteVisitStatus(
   id: string,

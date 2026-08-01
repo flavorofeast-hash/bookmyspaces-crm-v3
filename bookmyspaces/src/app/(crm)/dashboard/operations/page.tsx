@@ -44,6 +44,8 @@ interface SiteVisit {
   customerPhone: string | null
   property: string | null
   purpose: string | null
+  guestCount: number | null
+  budget: string | null
   status: string
   statusLabel: string
 }
@@ -206,6 +208,8 @@ export default function OperationsDashboardPage() {
                     <th className="px-3 py-2.5 font-medium">Mobile</th>
                     <th className="px-3 py-2.5 font-medium">Property</th>
                     <th className="px-3 py-2.5 font-medium">Purpose</th>
+                    <th className="px-3 py-2.5 font-medium">Guests</th>
+                    <th className="px-3 py-2.5 font-medium">Budget</th>
                     <th className="px-6 py-2.5 font-medium text-right">Status</th>
                   </tr>
                 </thead>
@@ -219,6 +223,8 @@ export default function OperationsDashboardPage() {
                       <td className="px-3 py-3 text-gray-600">{v.customerPhone ?? '—'}</td>
                       <td className="px-3 py-3 text-gray-600">{v.property ?? '—'}</td>
                       <td className="px-3 py-3 text-gray-500">{v.purpose ?? '—'}</td>
+                      <td className="px-3 py-3 text-gray-600">{v.guestCount ?? '—'}</td>
+                      <td className="px-3 py-3 text-gray-600">{v.budget ?? '—'}</td>
                       <td className="px-6 py-3 text-right">
                         <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${VISIT_STATUS_STYLE[v.status] ?? 'bg-gray-100 text-gray-700'}`}>
                           {v.statusLabel}

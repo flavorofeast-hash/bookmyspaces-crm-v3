@@ -25,6 +25,8 @@ import { handleInboundMessage, recordMessage } from '@/lib/conversations/unified
 import { checkAndApplyHandoff, estimateConfidence } from '@/lib/ai/orchestrator'
 import { normalizePhone as normalizePhoneCanonical } from '@/lib/whatsapp/normalize-phone'
 import { checkRateLimit, clientIpFrom } from '@/lib/rate-limit'
+import { chatCampaignContextSchema } from '@/lib/validation'
+import { scheduleSiteVisit, leadHasScheduledVisit } from '@/lib/visits/site-visit-service'
 
 export async function POST(req: NextRequest) {
   const supabaseAdmin = getSupabaseAdmin()
@@ -43,6 +45,13 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
     const { message, sessionId: incomingSessionId } = body
+
+    // Sprint 1 — Campaign Landing Page System: optional context from a
+    // landing page. Best-effort/non-blocking validation — a malformed or
+    // absent `context` must never fail an otherwise-valid chat message,
+    // since every existing caller (widget with no campaign) omits it.
+    const contextParse = chatCampaignContextSchema.safeParse(body.context)
+    const context = contextParse.success ? contextParse.data : null
 
     if (!message || typeof message !== 'string') {
       return NextResponse.json({ error: 'Message is required' }, { status: 400 })
@@ -82,7 +91,11 @@ export async function POST(req: NextRequest) {
       { role: 'user' as const, content: trimmedMessage },
     ]
 
-    const aiResponseRaw = await chatWithAI(messagesForAI, trimmedMessage)
+    const aiResponseRaw = await chatWithAI(
+      messagesForAI,
+      trimmedMessage,
+      context ? { intent: context.intent, property: context.property, campaign: context.campaign } : null
+    )
     const aiResponseClean = cleanAIResponse(aiResponseRaw)
 
     const fromTag = extractLeadFromTag(aiResponseRaw)
@@ -147,16 +160,41 @@ export async function POST(req: NextRequest) {
 
     let leadId: string | null = existingLeadId
 
+    // Sprint 1 — Campaign Landing Page System: a brand-new conversation
+    // carrying landing-page context gets its CRM lead attached/created
+    // immediately, before falling through to the existing text-extraction
+    // path below. `context.leadId` is set when the landing page already
+    // called POST /api/campaigns/track (the common case); the else branch
+    // is a fallback so /api/chat still satisfies "automatically create CRM
+    // lead" even if that call didn't happen.
+    if (!existingLeadId && !leadId && context) {
+      if (context.leadId) {
+        leadId = context.leadId
+      } else {
+        const contextSeed: ExtractedLeadData = {
+          name: extracted?.name ?? null,
+          phone: extracted?.phone ?? null,
+          email: extracted?.email ?? null,
+          event_type: extracted?.event_type ?? (context.leadEventType || context.intent || null),
+          event_date: extracted?.event_date ?? null,
+          guest_count: extracted?.guest_count ?? null,
+          budget: extracted?.budget ?? null,
+          venue: extracted?.venue ?? (context.property ?? null),
+        } as ExtractedLeadData
+        leadId = await upsertLead(supabaseAdmin, contextSeed, null, contextSeed.phone ?? null, currentConversationId, reqId)
+      }
+    }
+
     if (hasLead) {
       leadId = await upsertLead(
         supabaseAdmin,
         extracted!,
-        existingLeadId,
+        leadId,
         extracted?.phone || existingConv?.extracted_phone || null,
         currentConversationId,
         reqId
       )
-    } else if (!existingLeadId && !leadId && currentConversationId && extracted) {
+    } else if (!leadId && currentConversationId && extracted) {
       const hasAnySignal = !!(extracted.event_type || extracted.budget || extracted.guest_count || extracted.venue)
       if (hasAnySignal) {
         leadId = await upsertLead(supabaseAdmin, extracted, null, null, currentConversationId, reqId)
@@ -168,6 +206,50 @@ export async function POST(req: NextRequest) {
         .from('conversations')
         .update({ lead_id: leadId })
         .eq('id', currentConversationId)
+    }
+
+    // Sprint 1.5 — AI Sales Executive: the AI (ai.ts's SYSTEM_PROMPT) asks
+    // for a preferred visit date then time, and once it has both, confirms
+    // the visit in its reply and includes both in the <<LEAD:...>> tag.
+    // This is the deterministic half — reuses scheduleSiteVisit() exactly
+    // as CRM staff's /visits/new form does, so the visit created here shows
+    // up on the Operations Dashboard identically. leadHasScheduledVisit()
+    // guards against re-scheduling on every subsequent turn, since the tag
+    // keeps re-emitting visit_date/visit_time once known.
+    const visitDateResolved = extracted?.visit_date ? (parseEventDate(extracted.visit_date) || extracted.visit_date) : null
+    const visitDateValid = !!visitDateResolved && /^\d{4}-\d{2}-\d{2}$/.test(visitDateResolved)
+
+    if (leadId && visitDateValid && extracted?.visit_time) {
+      try {
+        const alreadyScheduled = await leadHasScheduledVisit(leadId)
+        if (!alreadyScheduled) {
+          const property =
+            context?.property ||
+            (extracted.venue === 'monurama' ? 'Monurama Homestay'
+              : extracted.venue === 'skyline' ? 'Skyline Serenity'
+              : 'Monurama Homestay') // default — Monurama is the events venue this AI sells
+
+          const scheduled = await scheduleSiteVisit({
+            leadId,
+            name      : extracted.name || '',
+            property,
+            visitDate : visitDateResolved,
+            visitTime : extracted.visit_time,
+            purpose   : extracted.event_type ? `${extracted.event_type} site visit` : 'Site visit',
+            guestCount: parseGuestCount(extracted.guest_count),
+            budget    : extracted.budget || null,
+          })
+
+          if (!scheduled) {
+            logger.error('chat', `[${reqId}] AI-triggered scheduleSiteVisit failed`, { leadId })
+          }
+        }
+      } catch (err) {
+        // Never let a scheduling failure break the chat response the
+        // customer is already about to receive — same fail-open posture as
+        // every other best-effort side effect in this route.
+        logger.error('chat', `[${reqId}] site visit scheduling threw`, err)
+      }
     }
 
     if (updatedMessages.length > 0 && updatedMessages.length % 10 === 0 && currentConversationId) {

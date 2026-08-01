@@ -46,20 +46,34 @@ ROOFTOP EVENT PACKAGES:
 
 STYLE: Warm, professional, Indian English, use emojis naturally, never robotic
 GOALS: Understand needs, collect details conversationally, suggest right package, handle objections
-COLLECT: name, phone (say "so I can share catalog"), event type, date, guest count, budget
+COLLECT: name, phone (say "so I can share catalog"), email (optional), event type, date, guest count, budget, preferred property — naturally over the course of the conversation, never all at once as a checklist
 TRUST: Mention Google reviews, Justdial, website if asked. Manager: 9051459463
 PRICING: Never reduce without authorization. Price objection: explain value, offer lower package.
 ESCALATE: "Let me connect you with our manager. WhatsApp: 9051459463"
 
+VENUE RULES — HARD RULES, NEVER OVERRIDE:
+- Wedding, Birthday, and Corporate Event enquiries: recommend ONLY Monurama Homestay. Never recommend Skyline Serenity for any of these — it is accommodation-only.
+- Guest count over 100: politely explain Monurama's property-wide capacity is 100 guests and ask if the count is flexible, or offer to discuss what fits.
+- Guest count 40–50: recommend the Rooftop.
+- Guest count 15 or fewer: recommend a Hall (Hall 1 or Hall 2).
+
+SITE VISIT SCHEDULING:
+When the customer expresses interest in visiting the property (e.g. "I want to visit", "can I see the venue", "when can I come", "can we inspect the property"):
+1. Ask for their preferred visit date.
+2. Once you have a date, ask for their preferred time.
+3. Once you have BOTH a specific date and time, confirm it naturally in your reply (e.g. "Great! I've scheduled your visit to Monurama on Saturday at 4:00 PM. We look forward to meeting you.") and include both in the tag below (visit_date, visit_time) — the actual booking is created from this tag, so only write a confirmation sentence once you actually have both values from the customer.
+- Do not confirm a visit before you have both a date and a time.
+
 DATA EXTRACTION — MANDATORY — DO THIS EVERY SINGLE RESPONSE:
 After your natural reply, append this EXACTLY (one line, valid JSON):
-<<LEAD:{"name":"","phone":"","email":"","event_type":"","event_date":"","guest_count":"","budget":"","venue":""}>>
+<<LEAD:{"name":"","phone":"","email":"","event_type":"","event_date":"","guest_count":"","budget":"","venue":"","visit_date":"","visit_time":""}>>
 
 RULES FOR THE TAG:
-- Include ALL 8 fields every single time, even if empty string
+- Include ALL 10 fields every single time, even if empty string
 - phone: 10-digit Indian mobile only (e.g. "9051459463") — empty string if uncertain
 - guest_count: digits only as string (e.g. "50") — empty string if uncertain
 - venue: "skyline" or "monurama" or empty string
+- visit_date / visit_time: only once the customer has given you both, in the same turn you confirm the visit in your reply — empty string otherwise
 - Only put what customer EXPLICITLY said — never guess
 - This tag is INVISIBLE to the customer — it is backend metadata only`
 
@@ -114,6 +128,11 @@ export interface ExtractedLeadData {
   guest_count: string | null
   budget: string | null
   venue: string | null
+  // Sprint 1.5 — AI Sales Executive. Populated once the customer has given
+  // both a preferred visit date and time in conversation; chat/route.ts
+  // uses these two together as the trigger to call scheduleSiteVisit().
+  visit_date: string | null
+  visit_time: string | null
 }
 
 export function extractLeadFromTag(aiResponse: string): ExtractedLeadData | null {
@@ -130,6 +149,8 @@ export function extractLeadFromTag(aiResponse: string): ExtractedLeadData | null
       guest_count: sanitizeString(raw.guest_count),
       budget: sanitizeString(raw.budget),
       venue: sanitizeString(raw.venue),
+      visit_date: sanitizeString(raw.visit_date),
+      visit_time: sanitizeString(raw.visit_time),
     }
   } catch {
     return null
@@ -143,7 +164,7 @@ export async function extractLeadViaAI(conversationText: string): Promise<Extrac
       max_tokens: 200,
       messages: [{
         role: 'user',
-        content: `Extract info from this conversation. Return ONLY JSON, no explanation.\n\nConversation:\n${conversationText.slice(-2000)}\n\nJSON structure (null for unknown):\n{"name":null,"phone":null,"email":null,"event_type":null,"event_date":null,"guest_count":null,"budget":null,"venue":null}\n\nRules: phone=10-digit Indian only or null, guest_count=number string or null, venue="skyline"/"monurama"/null, only explicit info`,
+        content: `Extract info from this conversation. Return ONLY JSON, no explanation.\n\nConversation:\n${conversationText.slice(-2000)}\n\nJSON structure (null for unknown):\n{"name":null,"phone":null,"email":null,"event_type":null,"event_date":null,"guest_count":null,"budget":null,"venue":null,"visit_date":null,"visit_time":null}\n\nRules: phone=10-digit Indian only or null, guest_count=number string or null, venue="skyline"/"monurama"/null, visit_date/visit_time=only if the customer discussed scheduling a site visit, only explicit info`,
       }],
     })
     const text = response.content[0].type === 'text' ? response.content[0].text : ''
@@ -159,6 +180,8 @@ export async function extractLeadViaAI(conversationText: string): Promise<Extrac
       guest_count: sanitizeString(raw.guest_count),
       budget: sanitizeString(raw.budget),
       venue: sanitizeString(raw.venue),
+      visit_date: sanitizeString(raw.visit_date),
+      visit_time: sanitizeString(raw.visit_time),
     }
   } catch {
     return null
@@ -179,6 +202,8 @@ export function mergeExtracted(
     guest_count: fromTag?.guest_count || fromAI?.guest_count || null,
     budget: fromTag?.budget || fromAI?.budget || null,
     venue: fromTag?.venue || fromAI?.venue || null,
+    visit_date: fromTag?.visit_date || fromAI?.visit_date || null,
+    visit_time: fromTag?.visit_time || fromAI?.visit_time || null,
   }
   return Object.values(m).some(v => v !== null) ? m : null
 }
@@ -291,7 +316,21 @@ export interface Message {
 const FALLBACK_MESSAGE =
   "I'm having a brief connectivity issue 🙏 Please WhatsApp us at *9051459463* and we'll respond immediately!"
 
-export async function chatWithAI(messages: Message[], userQuery: string): Promise<string> {
+/** Sprint 1 — Campaign Landing Page System: context passed from a landing
+ *  page BEFORE the conversation begins, so the AI already knows why the
+ *  visitor is here. Purely additive — omitted entirely by every existing
+ *  caller (WhatsApp inbound, etc.), which keeps their behavior unchanged. */
+export interface CampaignContext {
+  intent?: string | null
+  property?: string | null
+  campaign?: string | null
+}
+
+export async function chatWithAI(
+  messages: Message[],
+  userQuery: string,
+  campaignContext?: CampaignContext | null
+): Promise<string> {
   const cappedMessages = messages.slice(-20)
 
   // V3 Phase 4 — DB-driven prompt + model settings. Both degrade to the
@@ -304,15 +343,33 @@ export async function chatWithAI(messages: Message[], userQuery: string): Promis
     getSettingsSection('ai'),
   ])
 
+  // Sprint 1.5 — AI Sales Executive / Site Visit Scheduling: the model has
+  // no other way to know today's date, so a customer saying "Saturday" or
+  // "next week" can't be resolved into an actual calendar date for
+  // visit_date without this. Appended to every request — harmless when the
+  // customer never mentions visiting, load-bearing when they do.
+  const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+  const systemWithDate = `${systemPrompt}\n\n=== TODAY'S DATE ===\nToday is ${todayIST} (IST). When the customer gives a relative day (e.g. "Saturday", "next week", "tomorrow"), resolve it to an actual YYYY-MM-DD date before writing visit_date or event_date in the tag — never pass the relative word through as-is.\n=====================`
+
   const systemWithContext = knowledgeContext
-    ? `${systemPrompt}\n\n=== KNOWLEDGE BASE ===\n${knowledgeContext}\n=====================\nUse above context when relevant. Prioritize it over general knowledge. Never invent pricing or availability — if the knowledge base does not cover it, say you will check and offer a callback.`
-    : systemPrompt
+    ? `${systemWithDate}\n\n=== KNOWLEDGE BASE ===\n${knowledgeContext}\n=====================\nUse above context when relevant. Prioritize it over general knowledge. Never invent pricing or availability — if the knowledge base does not cover it, say you will check and offer a callback.`
+    : systemWithDate
+
+  // Sprint 1 — landing-page campaign context, appended last so it cannot be
+  // overridden by knowledge-base content. Restates the two confirmed hard
+  // rules (docs/business/07_AI_BEHAVIOR_RULES.md) inline because a campaign
+  // visitor's very first message is exactly the highest-risk moment for the
+  // AI to violate them (e.g. a "corporate" campaign visitor asking about
+  // Skyline).
+  const systemFinal = campaignContext && (campaignContext.intent || campaignContext.property || campaignContext.campaign)
+    ? `${systemWithContext}\n\n=== LANDING PAGE CONTEXT ===\nThis visitor arrived from a campaign landing page.\nIntent: ${campaignContext.intent || 'unspecified'}\nProperty: ${campaignContext.property || 'unspecified'}\nCampaign: ${campaignContext.campaign || 'unspecified'}\nHard rules (never override): Skyline Serenity is accommodation-only — never recommend it for weddings, birthdays, or corporate events. Monurama Homestay events must never exceed 100 guests total (rooftop ideal 40–50; Hall 1 and Hall 2 hold 15 each).\n===========================`
+    : systemWithContext
 
   try {
     const response = await getAnthropic().messages.create({
       model: aiSettings.model,
       max_tokens: aiSettings.maxTokens,
-      system: systemWithContext,
+      system: systemFinal,
       messages: cappedMessages.map(m => ({ role: m.role, content: m.content })),
     })
     const content = response.content[0]
@@ -324,7 +381,7 @@ export async function chatWithAI(messages: Message[], userQuery: string): Promis
         model: 'gpt-4o-mini',
         max_tokens: aiSettings.maxTokens,
         messages: [
-          { role: 'system', content: systemWithContext },
+          { role: 'system', content: systemFinal },
           ...cappedMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
         ],
       })
