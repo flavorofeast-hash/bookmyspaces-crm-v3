@@ -97,6 +97,38 @@ export const updateLeadSchema = z.object({
   source: true, status: true, assigned_to: true, notes: true,
 })
 
+// ─── Campaign Landing Pages (Sprint 1 — Revenue Capture Engine) ────────────
+// Public route input (no auth) — same "validate before touching the
+// database" discipline as leads/reservations above, applied to the new
+// landing-page attribution capture endpoint.
+
+export const campaignTrackSchema = z.object({
+  sessionId  : z.string().trim().min(1).max(100),
+  campaign   : z.string().trim().min(1).max(50),
+  intent     : z.string().trim().max(100).nullish(),
+  property   : z.string().trim().max(50).nullish(),
+  leadEventType: z.string().trim().max(50).nullish(),
+  utmSource  : z.string().trim().max(200).nullish(),
+  utmMedium  : z.string().trim().max(200).nullish(),
+  utmCampaign: z.string().trim().max(200).nullish(),
+  referral   : z.string().trim().max(200).nullish(),
+  landingPage: z.string().trim().max(300).nullish(),
+})
+
+/** Optional campaign context passed into POST /api/chat from a landing page. */
+export const chatCampaignContextSchema = z.object({
+  leadId     : z.string().uuid().nullish(),
+  campaign   : z.string().trim().max(50).nullish(),
+  intent     : z.string().trim().max(100).nullish(),
+  property   : z.string().trim().max(50).nullish(),
+  leadEventType: z.string().trim().max(50).nullish(),
+  utmSource  : z.string().trim().max(200).nullish(),
+  utmMedium  : z.string().trim().max(200).nullish(),
+  utmCampaign: z.string().trim().max(200).nullish(),
+  referral   : z.string().trim().max(200).nullish(),
+  landingPage: z.string().trim().max(300).nullish(),
+}).nullish()
+
 export const leadStageBodySchema = z.object({
   stage : z.enum(['NEW', 'CONTACTED', 'QUALIFIED', 'NEGOTIATING', 'PROPOSAL_SENT', 'VISIT_SCHEDULED', 'CONFIRMED', 'LOST']),
   reason: z.string().trim().max(500).optional(),

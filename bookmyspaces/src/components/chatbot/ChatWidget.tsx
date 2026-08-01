@@ -20,8 +20,32 @@ function formatTime(date: Date): string {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function ChatWidget() {
-  const [isOpen, setIsOpen] = useState(false)
+/** Sprint 1 — Campaign Landing Page System: optional context a campaign
+ *  landing page passes in so the AI knows why the visitor is here before the
+ *  conversation starts. Omitted by every other existing usage of this widget
+ *  (there are none today — see Known limitations in the sprint report) —
+ *  fully backward compatible. */
+export interface ChatWidgetCampaignContext {
+  leadId?: string | null
+  campaign?: string | null
+  intent?: string | null
+  property?: string | null
+  leadEventType?: string | null
+  utmSource?: string | null
+  utmMedium?: string | null
+  utmCampaign?: string | null
+  referral?: string | null
+  landingPage?: string | null
+}
+
+export default function ChatWidget({
+  campaignContext,
+  initialOpen = false,
+}: {
+  campaignContext?: ChatWidgetCampaignContext
+  initialOpen?: boolean
+} = {}) {
+  const [isOpen, setIsOpen] = useState(initialOpen)
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '0',
@@ -52,6 +76,17 @@ export default function ChatWidget() {
     }
   }, [isOpen])
 
+  // Sprint 1 — Campaign Landing Page System: lets an external "Chat with AI"
+  // CTA button open this widget without lifting its open/closed state out of
+  // the component (keeps ChatWidget self-contained everywhere else it's used).
+  useEffect(() => {
+    function handleExternalOpen() {
+      setIsOpen(true)
+    }
+    window.addEventListener('bms:open-chat', handleExternalOpen)
+    return () => window.removeEventListener('bms:open-chat', handleExternalOpen)
+  }, [])
+
   const sendMessage = useCallback(async () => {
     const text = input.trim()
     if (!text || loading) return
@@ -78,6 +113,7 @@ export default function ChatWidget() {
             role: m.role,
             content: m.content,
           })),
+          ...(campaignContext ? { context: campaignContext } : {}),
         }),
       })
 
@@ -103,7 +139,7 @@ export default function ChatWidget() {
     } finally {
       setLoading(false)
     }
-  }, [input, loading, sessionId, messages])
+  }, [input, loading, sessionId, messages, campaignContext])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
