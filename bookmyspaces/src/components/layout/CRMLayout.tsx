@@ -6,6 +6,11 @@ import UserMenu from '@/components/auth/UserMenu'
 
 const links = [
   { href: '/dashboard', label: 'Dashboard' },
+  // Sprint 3A: Founder Dashboard — same "no path from nav" gap the Sprint 5
+  // fix below already fixed once for Revenue/Intelligence/Operations;
+  // applying the same fix here rather than letting a new dashboard page
+  // repeat that discoverability gap.
+  { href: '/dashboard/founder', label: 'Founder' },
   // Sprint 5 fix: Revenue Dashboard and Operations Dashboard were both
   // fully built (Sprint 2 and Sprint 4 respectively) but had no path to
   // them from the persistent nav — each only linked to the *other* one
