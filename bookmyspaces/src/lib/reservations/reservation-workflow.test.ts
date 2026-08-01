@@ -6,6 +6,11 @@ const mocks = vi.hoisted(() => ({
   transitionReservationStatus: vi.fn(),
   getInventoryItemRate: vi.fn(),
   getMealPlanById: vi.fn(),
+  // P0 fix (reservation amount becomes ₹0) — createReservationWithQuote()
+  // now looks up the linked proposal's status/total_price/base_price when
+  // input.proposalId is set. Defaults to "no proposal found" so every
+  // existing test (which never sets proposalId) is unaffected.
+  proposalLookup: vi.fn(),
 }))
 
 vi.mock('./availability-service', () => ({
@@ -29,12 +34,28 @@ vi.mock('./property-service', () => ({
 const activityInserts: Record<string, unknown>[] = []
 vi.mock('@/lib/supabase', () => ({
   getSupabaseAdmin: () => ({
-    from: () => ({
-      insert: (row: Record<string, unknown>) => {
-        activityInserts.push(row)
-        return Promise.resolve({ data: null, error: null })
-      },
-    }),
+    from: (table: string) => {
+      // P0 fix — the proposals lookup uses .select().eq().maybeSingle(),
+      // a different chain shape than the activity_logs .insert() every
+      // other test in this file already exercises. Keeping both on one
+      // mocked client, switched on table name, so no existing test needs
+      // to change.
+      if (table === 'proposals') {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: () => Promise.resolve(mocks.proposalLookup()),
+            }),
+          }),
+        }
+      }
+      return {
+        insert: (row: Record<string, unknown>) => {
+          activityInserts.push(row)
+          return Promise.resolve({ data: null, error: null })
+        },
+      }
+    },
   }),
 }))
 
@@ -129,6 +150,7 @@ describe('createReservationWithQuote', () => {
     mocks.createReservation.mockReset()
     mocks.getInventoryItemRate.mockReset().mockResolvedValue(5000)
     mocks.getMealPlanById.mockReset()
+    mocks.proposalLookup.mockReset().mockReturnValue({ data: null, error: null })
     activityInserts.length = 0
   })
 
@@ -186,6 +208,97 @@ describe('createReservationWithQuote', () => {
         mealPlanId: 'mp-1',
         mealPlanCharge: 1000,
       })
+    )
+  })
+
+  // ── P0 fix — reservation amount becomes ₹0 ──────────────────────────────
+  // Flow A (walk-in, no proposalId) vs Flow B (Accepted Proposal ->
+  // Reservation, proposalId set) verification, per the approved fix scope:
+  // only an ACCEPTED proposal with total_price > 0 overrides the rate_plans
+  // quote; everything else (no proposalId, proposal not accepted, proposal
+  // has no positive total_price, proposal not found) keeps today's
+  // rate_plans-derived pricing exactly as before.
+
+  it('Flow A — walk-in (no proposalId): prices from rate_plans and tags pricingSource "rate_plan", never looking up a proposal', async () => {
+    mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-1', customerId: 'lead-1' } })
+
+    await createReservationWithQuote({ ...baseInput, customerId: 'lead-1' }) // baseInput has no proposalId
+
+    expect(mocks.proposalLookup).not.toHaveBeenCalled()
+    expect(mocks.createReservation).toHaveBeenCalledWith(
+      expect.objectContaining({ baseRoomRate: 10000, finalRoomRate: 10000 })
+    )
+    expect(activityInserts[0]).toMatchObject({ metadata: expect.objectContaining({ pricingSource: 'rate_plan' }) })
+  })
+
+  it('Flow B — proposal accepted with a real total_price: finalRoomRate comes from the proposal, not rate_plans, tagged pricingSource "proposal"', async () => {
+    mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-1', customerId: 'lead-1' } })
+    mocks.proposalLookup.mockReturnValue({ data: { status: 'accepted', total_price: 50000, base_price: 45000 }, error: null })
+
+    const result = await createReservationWithQuote({ ...baseInput, customerId: 'lead-1', proposalId: 'prop-abc' })
+
+    // The rate_plans quote is still computed (still returned to the caller
+    // for the "how does this compare" audit trail) but is NOT what gets
+    // persisted onto the reservation.
+    expect(result.quote?.grandTotal).toBe(10000)
+    expect(mocks.createReservation).toHaveBeenCalledWith(
+      expect.objectContaining({ baseRoomRate: 45000, finalRoomRate: 50000, proposalId: 'prop-abc' })
+    )
+    expect(activityInserts[0]).toMatchObject({
+      metadata: expect.objectContaining({ pricingSource: 'proposal', finalRoomRate: 50000 }),
+    })
+  })
+
+  it('does NOT inherit pricing from a proposal that is not yet accepted (e.g. "sent") — falls back to the rate_plans quote', async () => {
+    mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-1', customerId: 'lead-1' } })
+    mocks.proposalLookup.mockReturnValue({ data: { status: 'sent', total_price: 50000, base_price: 45000 }, error: null })
+
+    await createReservationWithQuote({ ...baseInput, customerId: 'lead-1', proposalId: 'prop-abc' })
+
+    expect(mocks.createReservation).toHaveBeenCalledWith(
+      expect.objectContaining({ baseRoomRate: 10000, finalRoomRate: 10000 })
+    )
+    expect(activityInserts[0]).toMatchObject({ metadata: expect.objectContaining({ pricingSource: 'rate_plan' }) })
+  })
+
+  it('does NOT inherit pricing from an accepted proposal whose total_price is 0 (never trust a zero override) — falls back to the rate_plans quote', async () => {
+    mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-1', customerId: 'lead-1' } })
+    mocks.proposalLookup.mockReturnValue({ data: { status: 'accepted', total_price: 0, base_price: 0 }, error: null })
+
+    await createReservationWithQuote({ ...baseInput, customerId: 'lead-1', proposalId: 'prop-abc' })
+
+    expect(mocks.createReservation).toHaveBeenCalledWith(
+      expect.objectContaining({ baseRoomRate: 10000, finalRoomRate: 10000 })
+    )
+    expect(activityInserts[0]).toMatchObject({ metadata: expect.objectContaining({ pricingSource: 'rate_plan' }) })
+  })
+
+  it('does NOT inherit pricing when the linked proposal cannot be found — falls back to the rate_plans quote', async () => {
+    mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-1', customerId: 'lead-1' } })
+    mocks.proposalLookup.mockReturnValue({ data: null, error: null })
+
+    await createReservationWithQuote({ ...baseInput, customerId: 'lead-1', proposalId: 'prop-does-not-exist' })
+
+    expect(mocks.createReservation).toHaveBeenCalledWith(
+      expect.objectContaining({ baseRoomRate: 10000, finalRoomRate: 10000 })
+    )
+    expect(activityInserts[0]).toMatchObject({ metadata: expect.objectContaining({ pricingSource: 'rate_plan' }) })
+  })
+
+  it('falls back to proposal.total_price for baseRoomRate when base_price is 0/absent', async () => {
+    mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-1' } })
+    mocks.proposalLookup.mockReturnValue({ data: { status: 'accepted', total_price: 42000, base_price: 0 }, error: null })
+
+    await createReservationWithQuote({ ...baseInput, proposalId: 'prop-abc' })
+
+    expect(mocks.createReservation).toHaveBeenCalledWith(
+      expect.objectContaining({ baseRoomRate: 42000, finalRoomRate: 42000 })
     )
   })
 })

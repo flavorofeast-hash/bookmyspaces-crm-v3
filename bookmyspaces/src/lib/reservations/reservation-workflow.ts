@@ -226,14 +226,59 @@ export async function createReservationWithQuote(
   }
 
   const quote = await calculatePrice(input.inventoryItemId, input.checkInDate, input.checkOutDate, input.roomCount ?? 1, input.mealPlanId, input.addons)
+
+  // P0 FIX — reservation amount becomes ₹0 (root cause confirmed via full
+  // flow-mapping investigation, see docs/sprints for the report). rate_plans
+  // (migration 012, per-inventory-item/per-night pricing) is never
+  // auto-seeded from `packages` — most inventory items have zero rows in
+  // it, so calculatePrice() legitimately quotes 0 for any date with no
+  // configured rate plan. When this reservation originates from an
+  // ACCEPTED proposal, that proposal's own total_price (priced from the
+  // live, always-populated `packages` table via resolvePackagePrice() —
+  // see src/app/api/proposals/route.ts) is the customer-facing, already
+  // agreed commercial number and is used in place of the rate_plans quote.
+  //
+  // Scoped narrowly on purpose, per investigation + approval:
+  //   - Only when input.proposalId is set (Flow B: Accepted Proposal ->
+  //     Reservation). Flow A (walk-in, reservations/page.tsx's New
+  //     Reservation modal with no fromProposalId) never sends a
+  //     proposalId — that UI has no field for it — so this branch never
+  //     runs for a walk-in and rate_plans pricing is untouched.
+  //   - Flow C (createManualBlock(), src/app/api/reservations/block/route.ts)
+  //     never calls this function at all — its ₹0 is intentional (no
+  //     guest, no sale) and is completely unaffected.
+  //   - Only inherits when the linked proposal actually exists, is
+  //     status='accepted' (not draft/sent/rejected — an unaccepted
+  //     proposal's number isn't a confirmed commercial commitment yet),
+  //     and total_price > 0 (never trust a zero/negative value as an
+  //     override — falls back to the rate_plans quote instead).
+  let baseRoomRate = quote.subtotal
+  let finalRoomRate = quote.grandTotal
+  let pricingSource: 'proposal' | 'rate_plan' = 'rate_plan'
+
+  if (input.proposalId) {
+    const supabase = getSupabaseAdmin()
+    const { data: proposal } = await supabase
+      .from('proposals')
+      .select('status, total_price, base_price')
+      .eq('id', input.proposalId)
+      .maybeSingle()
+
+    if (proposal && proposal.status === 'accepted' && Number(proposal.total_price) > 0) {
+      baseRoomRate = Number(proposal.base_price) || Number(proposal.total_price)
+      finalRoomRate = Number(proposal.total_price)
+      pricingSource = 'proposal'
+    }
+  }
+
   // Meal Plan / Add-on Services booking-flow integration (Reservation
   // Platform activation, Phases 3-4): the quote's pricing (room subtotal +
   // meal plan charge + priced add-on lines) is now persisted onto the
   // reservation itself, not just returned to the caller.
   const reservationResult = await createReservation({
     ...input,
-    baseRoomRate: quote.subtotal,
-    finalRoomRate: quote.grandTotal,
+    baseRoomRate,
+    finalRoomRate,
     mealPlanId: quote.mealPlanId,
     mealPlanCharge: quote.mealPlanCharge,
     addonLines: quote.addonLines,
@@ -244,7 +289,7 @@ export async function createReservationWithQuote(
       input.crmLeadId ?? input.customerId ?? null,
       'reservation_created',
       `Reservation created for ${input.checkInDate} -> ${input.checkOutDate}`,
-      { reservationId: reservationResult.reservation.id, subtotal: quote.subtotal, mealPlanCharge: quote.mealPlanCharge, addonsCharge: quote.addonsCharge, isComplete: quote.isComplete }
+      { reservationId: reservationResult.reservation.id, subtotal: quote.subtotal, finalRoomRate, pricingSource, mealPlanCharge: quote.mealPlanCharge, addonsCharge: quote.addonsCharge, isComplete: quote.isComplete }
     )
   }
 
