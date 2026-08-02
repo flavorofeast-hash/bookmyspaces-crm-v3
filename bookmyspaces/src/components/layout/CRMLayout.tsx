@@ -30,6 +30,13 @@ const links = [
   { href: '/dashboard/revenue', label: 'Revenue' },
   { href: '/dashboard/intelligence', label: 'Intelligence' },
   { href: '/dashboard/operations', label: 'Operations' },
+  // RC2 manual validation fix: Lead Management (search/sort/paginate all
+  // leads, plus the bulk CSV/Excel Import entry point) was fully built
+  // but had no nav entry — same "orphaned page" gap the Sprint 5 fix above
+  // already fixed once for Revenue/Intelligence/Operations. Page logic
+  // unchanged; this is the missing link only. See
+  // LEAD_CREATION_UI_GAP_INVESTIGATION.md.
+  { href: '/dashboard/leads', label: 'Leads' },
   { href: '/customers', label: 'Customers' },
   { href: '/inbox', label: 'Inbox' },
   { href: '/reservations', label: 'Reservations' },
