@@ -8,7 +8,9 @@ Canonical database reference. Consolidates `DATABASE_ARCHITECTURE.md` plus this 
 
 **The live database is the source of truth. A migration file describes intent, not necessarily reality.** This is not a theoretical caveat — during this repository's own RC1 testing, the live `packages` table's actual columns (`slug`, `property`, `type`, `price`, `price_note`, `duration`, `capacity_min`, `capacity_max`, `sort_order`, ...) did not match what migrations 007/023/024 describe (`venue`, `tier`, `base_price`, `max_guests`, `duration_hours`, `description`, `ai_description`). Every table map below is the best available description from migration files and prior audits — **re-verify against `information_schema.columns` on the live database before writing code against any table**, especially `packages`, `reservations`, `reviews`, and `analytics_events`. **Exact verification SQL for the `packages` drift specifically:** `scripts/verify-packages-columns.sql` (added 2026-08-01, RC2 Final pass, ENG-035) — checks both the application-expected names and the alternate names recorded above in one query.
 
-## Migration inventory (`supabase/migrations/`, 25 files)
+**Strategy B reconciliation (2026-08-02):** migration `028_reconcile_packages_schema_drift.sql` (+ paired `_ROLLBACK.sql`) has been written to rename the live table's 3 confirmed-drifted columns (`property`→`venue`, `price`→`base_price`, `capacity_max`→`max_guests`) via `ALTER TABLE ... RENAME COLUMN`, so the live table matches migrations 007/023/024 and every application read/write instead of the other way round. **Apply status: written, NOT YET applied to production** — per the Database Evolution Policy below, this migration is not part of the system's real state until independently confirmed applied. Until it is applied and confirmed, treat the drift described in the paragraph above as still current. The migration is intentionally scoped to only the 3 columns the verification report confirmed drifted — the additional live-only columns this RC1 finding also recorded (`slug`, `type`, `price_note`, `duration`, `capacity_min`, `sort_order`) are NOT touched by it; see the migration file's header for why, and re-run `scripts/verify-packages-columns.sql` (plus a full `information_schema.columns` check) after applying 028 to confirm both that the rename succeeded and whether any of those other live-only columns still warrant attention.
+
+## Migration inventory (`supabase/migrations/`, 28 files)
 
 | # | Purpose | Apply status (last known) |
 |---|---|---|
@@ -18,7 +20,7 @@ Canonical database reference. Consolidates `DATABASE_ARCHITECTURE.md` plus this 
 | 004 | Campaigns, broadcast_campaigns, staff_performance | **Unverified — possible not-live risk flagged in prior audits** |
 | 005 | Stability patch (`match_knowledge_chunks` RPC) | Presumed live |
 | 006 | Final verification | Presumed live |
-| 007 | `packages`, `analytics_events` + `track_event` RPC | Presumed live — **but live schema for `packages` has drifted from this file, confirmed** |
+| 007 | `packages`, `analytics_events` + `track_event` RPC | Presumed live — **but live schema for `packages` has drifted from this file, confirmed — see migration 028 below for the reconciliation fix** |
 | 008 | Lead scoring | Presumed live |
 | 009 | Documents undocumented production objects | Presumed live |
 | 010 | Proposal intelligence | Presumed live |
@@ -31,10 +33,11 @@ Canonical database reference. Consolidates `DATABASE_ARCHITECTURE.md` plus this 
 | 017 | Extends `leads.source` with `excel_import` — rewritten this session to build directly on the original 6-value list (001), independent of 016 | Unverified — not yet applied |
 | 018–021 | Customer bulk import fields, stage_transitions, campaign type/scheduler extensions | Unverified |
 | 022 | Win-back automation seed | Unverified |
-| 023–024 | Event Package Management + Event Sales Expansion (packages extensions, ai_interaction_log CHECK fix) | Unverified, and 023/024's *migration-file* column additions to `packages` are exactly what's been found to not match the live table — see the drift note above |
+| 023–024 | Event Package Management + Event Sales Expansion (packages extensions, ai_interaction_log CHECK fix) | Unverified, and 023/024's *migration-file* column additions to `packages` are exactly what's been found to not match the live table — see the drift note above and migration 028's reconciliation |
 | 025 | `orchestration_decisions` (observability) | Newest as of the RC1 pass; gated behind a disabled feature flag, not urgent |
 | 026 | `leads.campaign/landing_page/utm_source/utm_medium/utm_campaign/referral` — Campaign Landing Page attribution | **Never verified against production** — postdates every audit in this repo until `PRODUCTION_VERIFICATION_REPORT.md` (2026-08-01), which is also the first document to record it at all. See ENG-034. |
 | 027 | `follow_ups.property/purpose/guest_count/budget` — Site Visit Scheduling (Sprint 1) | **Never verified against production, highest-severity unknown of the two newest migrations** — `scheduleSiteVisit()` INSERTs these columns by name, so a missing migration is a hard failure (not a graceful `SELECT *` degradation) on every site-visit request. See ENG-033, `PRODUCTION_VERIFICATION_REPORT.md` §1. |
+| 028 | Reconciles `packages` schema drift (Strategy B) — `RENAME COLUMN property→venue, price→base_price, capacity_max→max_guests` | **Written 2026-08-02, NOT YET applied.** Reversible via paired `_ROLLBACK.sql`. Does not touch the other live-only columns (`slug`/`type`/`price_note`/`duration`/`capacity_min`/`sort_order`) reported alongside the original drift finding — out of scope, see file header. |
 
 **Tooling gap, worth knowing**: `npm run db:migrate:v3` (`scripts/apply-v3-migrations.mjs`) only applies migrations 012 and 013 — not 014 through 024, despite documentation elsewhere describing it as covering the full V3 batch. Anyone applying migrations should apply 014–024 by hand, in order, and not assume the npm script covers them.
 
