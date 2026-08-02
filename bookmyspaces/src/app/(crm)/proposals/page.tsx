@@ -28,6 +28,7 @@ type FilterTab      = 'all'|'action_needed'|'hot'|'viewed'|'sent'|'accepted'
 interface ProposalWithLead {
   id                  : string
   proposal_number     : string|null
+  share_token         : string|null
   lead_id             : string|null
   client_name         : string|null
   client_phone        : string|null
@@ -888,7 +889,7 @@ function ProposalCard({proposal,onAction,onStatusUpdate,onPayment,onReceipts,onF
           className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-purple-50 text-purple-700 border border-purple-200 rounded-lg text-xs font-semibold hover:bg-purple-100 transition-colors">
           <Download className="w-3 h-3"/> PDF
         </button>
-        <button onClick={()=>{navigator.clipboard.writeText(`${window.location.origin}/proposals/share/${proposal.id}`);alert('Share link copied!')}}
+        <button onClick={()=>{navigator.clipboard.writeText(`${window.location.origin}/proposals/share/${proposal.share_token}`);alert('Share link copied!')}}
           className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-gray-100 text-gray-600 border border-gray-200 rounded-lg text-xs font-semibold hover:bg-gray-200 transition-colors">
           <Copy className="w-3 h-3"/> Copy Link
         </button>
@@ -1039,7 +1040,7 @@ export default function ProposalsPage() {
   function handleAction(action:string,proposalId:string) {
     const proposal=proposals.find(p=>p.id===proposalId); if (!proposal) return
     if (action==='send_via_whatsapp'&&proposal.client_phone) {
-      const msg=encodeURIComponent(`Dear ${proposal.client_name??'Sir/Ma\'am'}, please find your proposal: ${window.location.origin}/proposals/share/${proposalId}`)
+      const msg=encodeURIComponent(`Dear ${proposal.client_name??'Sir/Ma\'am'}, please find your proposal: ${window.location.origin}/proposals/share/${proposal.share_token}`)
       window.open(`https://wa.me/${proposal.client_phone.replace(/\D/g,'')}?text=${msg}`,'_blank')
       handleStatusUpdate(proposalId,'sent')
     } else if (action==='send_via_email') {
