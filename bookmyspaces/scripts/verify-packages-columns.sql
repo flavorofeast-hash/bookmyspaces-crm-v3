@@ -22,6 +22,20 @@
 -- every AI-drafted proposal prices at ~₹0. This is the single highest-
 -- priority check in this entire verification suite.
 --
+-- 2026-08-02 FIX (post-migration-028 TL;DR bug): the original TL;DR logic
+-- lumped `slug`/`type` in with `property`/`price`/`capacity_max` under one
+-- "RC1 live-schema finding" bucket and flagged drift if ANY of the five
+-- existed. That's wrong: `slug` and `type` are legitimate additional
+-- columns on the live table (not part of any migration file, but also not
+-- a replacement name for venue/base_price/max_guests) — their presence is
+-- informational, not a drift signal. After migration 028 renamed
+-- property→venue, price→base_price, capacity_max→max_guests, `slug`/`type`
+-- were untouched and still exist, which made the old logic keep reporting
+-- "CONFIRMED: drift" even though the actual replacement columns were gone.
+-- The TL;DR now checks ONLY property/price/capacity_max for the drift
+-- verdict; `slug`/`type` (and `tier`/`duration_hours`) are still checked
+-- and shown in the detail rows below, but do not affect the TL;DR result.
+--
 -- GUARANTEES: read-only, information_schema only, no application data read,
 -- safe to run any number of times.
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -32,29 +46,49 @@ WITH checks(check_name, expected_by, passed) AS (
   ('packages.venue exists',       'application code (Property Intelligence guard depends on this)', EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='venue')),
   ('packages.base_price exists',  'application code (proposal pricing depends on this)',             EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='base_price')),
   ('packages.max_guests exists',  'application code (capacity guard depends on this)',                EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='max_guests')),
-  ('packages.tier exists',        'migration 007',  EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='tier')),
-  ('packages.duration_hours exists', 'migration 007', EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='duration_hours')),
 
-  -- The columns MASTER_DATABASE.md's RC1 finding says exist live INSTEAD (a
-  -- different, disjoint naming scheme) -- if these are TRUE and the block
-  -- above is FALSE, that confirms the documented drift is still current.
-  ('packages.property exists (possible live-only name for venue)',    'RC1 live-schema finding', EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='property')),
-  ('packages.price exists (possible live-only name for base_price)',  'RC1 live-schema finding', EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='price')),
-  ('packages.capacity_max exists (possible live-only name for max_guests)', 'RC1 live-schema finding', EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='capacity_max')),
-  ('packages.slug exists (RC1 finding, not in any migration)',   'RC1 live-schema finding', EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='slug')),
-  ('packages.type exists (RC1 finding, not in any migration)',   'RC1 live-schema finding', EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='type'))
+  -- Informational only, migration 007 — NOT part of the venue/base_price/
+  -- max_guests rename this script's TL;DR is scoped to. Shown for
+  -- completeness; does not gate the TL;DR verdict.
+  ('packages.tier exists',        'migration 007 (informational only)',  EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='tier')),
+  ('packages.duration_hours exists', 'migration 007 (informational only)', EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='duration_hours')),
+
+  -- The 3 columns MASTER_DATABASE.md's RC1 finding says existed live INSTEAD
+  -- of venue/base_price/max_guests (a disjoint naming scheme covering the
+  -- SAME concept under a different name). These are the only columns that
+  -- should ever flip the TL;DR to "drift confirmed" — their presence means
+  -- the live table is still using the pre-migration-028 names.
+  ('packages.property exists (replacement name for venue — drift indicator)',           'RC1 live-schema finding (replacement column)', EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='property')),
+  ('packages.price exists (replacement name for base_price — drift indicator)',         'RC1 live-schema finding (replacement column)', EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='price')),
+  ('packages.capacity_max exists (replacement name for max_guests — drift indicator)',  'RC1 live-schema finding (replacement column)', EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='capacity_max')),
+
+  -- Legitimate ADDITIONAL columns on the live table — not a replacement for
+  -- any application-expected name, so their presence is informational only
+  -- and must NOT trigger a drift verdict on its own.
+  ('packages.slug exists (additional column, not a replacement — informational only)',  'RC1 live-schema finding (additional column)', EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='slug')),
+  ('packages.type exists (additional column, not a replacement — informational only)',  'RC1 live-schema finding (additional column)', EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='packages' AND column_name='type'))
 ),
 rollup AS (
   SELECT
-    bool_and(passed) FILTER (WHERE expected_by LIKE 'application code%' OR expected_by = 'migration 007') AS app_columns_present,
-    bool_or(passed) FILTER (WHERE expected_by = 'RC1 live-schema finding') AS drift_columns_present
+    -- Only the 3 columns the application actually reads by name gate the
+    -- "matches application code" verdict. tier/duration_hours are checked
+    -- above for visibility but intentionally excluded here — they aren't
+    -- part of the venue/base_price/max_guests rename this script verifies.
+    -- (CASE-based conditional aggregation, not the FILTER (WHERE ...)
+    -- clause, for maximum portability — same semantics: bool_and/bool_or
+    -- ignore NULLs, so a non-matching row contributes nothing either way.)
+    bool_and(CASE WHEN expected_by LIKE 'application code%' THEN passed END) AS app_columns_present,
+    -- Only the 3 true replacement columns gate the "drift confirmed"
+    -- verdict. slug/type are deliberately excluded — see the 2026-08-02
+    -- header note above.
+    bool_or(CASE WHEN expected_by = 'RC1 live-schema finding (replacement column)' THEN passed END) AS replacement_columns_present
   FROM checks
 )
 SELECT 'TL;DR' AS section, '' AS check_name, '' AS expected_by,
   CASE
-    WHEN app_columns_present THEN 'packages table matches application code -- venue/base_price/max_guests all present. Property Intelligence guards and proposal pricing are safe.'
-    WHEN drift_columns_present THEN 'CONFIRMED: packages table still uses the RC1-documented alternate column names. Property Intelligence guards silently no-op and proposal pricing computes as ~0 until code or schema is reconciled. DO NOT LAUNCH until this is resolved.'
-    ELSE 'Neither expected nor RC1-documented columns fully present -- packages schema has changed again since the last check. Re-run full information_schema inspection before launch.'
+    WHEN replacement_columns_present THEN 'CONFIRMED: packages table still uses at least one RC1-documented replacement column name (property/price/capacity_max) instead of venue/base_price/max_guests. Property Intelligence guards silently no-op and proposal pricing computes as ~0 until code or schema is reconciled. DO NOT LAUNCH until this is resolved.'
+    WHEN app_columns_present THEN 'packages table matches application code -- venue/base_price/max_guests all present and none of the old replacement names (property/price/capacity_max) remain. Property Intelligence guards and proposal pricing are safe. (tier/duration_hours/slug/type are reported below for information only and do not affect this result.)'
+    ELSE 'INCONCLUSIVE: neither venue/base_price/max_guests (all three) nor any RC1-documented replacement column is fully/currently present -- packages schema does not match either expected shape. Re-run a full information_schema inspection before launch.'
   END AS result,
   0 AS sort_key
 FROM rollup
