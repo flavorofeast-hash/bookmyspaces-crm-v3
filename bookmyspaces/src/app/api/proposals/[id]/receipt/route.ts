@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
+import { resolveReservationSource, type ReservationInvoiceSource } from '@/lib/reservations/commercial-source'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -64,14 +65,24 @@ function amountInWords(amount: number): string {
 
 // ─── HTML builder ─────────────────────────────────────────────────────────────
 
-function buildReceiptHTML(proposal: any, payment: any): string {
+function buildReceiptHTML(proposal: any, payment: any, reservationSource: ReservationInvoiceSource | null, totalPaid: number): string {
   const today      = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
   const amt        = Number(payment.amount)
-  const totalPrice = Number(proposal.total_price || 0)
-  const advancePaid = Number(proposal.advance_paid || amt)
+  // Option A: once a Reservation exists for this proposal, "Booking Value" /
+  // "Balance Due" must match the Invoice — read from the Reservation, not
+  // the (possibly stale) Proposal. See src/lib/reservations/commercial-source.ts.
+  const totalPrice = reservationSource ? reservationSource.grandTotal : Number(proposal.total_price || 0)
+  // Issue 1 fix: SUM(all recorded payments), same as Invoice/Payment
+  // Reminder — not proposal.advance_paid (never written to by anything) and
+  // not just this one payment's amount.
+  const advancePaid = totalPaid
   const balanceDue  = Math.max(0, totalPrice - advancePaid)
   const words       = amountInWords(amt)
   const payType     = (payment.payment_type || 'advance').replace('_', ' ')
+  // Issue 2: Package/Venue must read from the Reservation once one exists,
+  // never fall back to the Proposal in that case. See commercial-source.ts.
+  const packageName = reservationSource ? reservationSource.packageName : proposal.package_name
+  const venueName    = reservationSource ? reservationSource.venue : proposal.venue
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -222,6 +233,14 @@ body{font-family:'DM Sans',system-ui,sans-serif;color:#1a1a1a;background:#fff;fo
     <div class="d-val">${proposal.event_type || '—'}</div>
   </div>
   <div class="d-item">
+    <div class="d-lbl">Package</div>
+    <div class="d-val">${packageName || '—'}</div>
+  </div>
+  <div class="d-item">
+    <div class="d-lbl">Venue</div>
+    <div class="d-val">${venueName || '—'}</div>
+  </div>
+  <div class="d-item">
     <div class="d-lbl">Payment Date</div>
     <div class="d-val">${fmtDate(payment.payment_date)}</div>
   </div>
@@ -347,6 +366,20 @@ export async function GET(
       return new NextResponse('Proposal not found', { status: 404 })
     }
 
+    // Option A — read-only, never writes to `proposals`. See commercial-source.ts.
+    const reservationSource = await resolveReservationSource(proposal)
+
+    // Issue 1 (production-hardening pass): "Paid"/"Balance Due" must be
+    // computed from SUM(all recorded payments), exactly like Invoice and
+    // Payment Reminder already do — not from proposal.advance_paid (a field
+    // nothing in this codebase ever writes to) or from just the single
+    // payment this receipt happens to be for.
+    const { data: allPaymentsForTotal } = await supabase
+      .from('payments')
+      .select('amount')
+      .eq('proposal_id', params.id)
+    const totalPaid = (allPaymentsForTotal || []).reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0)
+
     const { data: payments, error: payErr } = paymentId
       ? await supabase.from('payments').select('*').eq('id', paymentId).single()
           .then(r => ({ data: r.data ? [r.data] : null, error: r.error }))
@@ -360,7 +393,7 @@ export async function GET(
     }
 
     const payment  = payments[0]
-    const html     = buildReceiptHTML(proposal, payment)
+    const html     = buildReceiptHTML(proposal, payment, reservationSource, totalPaid)
     const filename = `BookMySpaces-Receipt-${payment.receipt_number}.pdf`
 
     return new NextResponse(html, {

@@ -19,6 +19,12 @@ import {
   type FollowUpStatus,
   type LeadIntelligence,
 } from '@/lib/leads/lead-intelligence'
+// RC2 pipeline pass — additive only. New derived-stage dashboard stats,
+// fetched from the new GET /api/dashboard/pipeline-stats endpoint (separate
+// from the existing GET /api/dashboard/stats used above — that route/shape
+// is untouched). Type-only import, so this never pulls
+// pipeline-service.ts's server-only Supabase code into this client bundle.
+import type { PipelineDashboardStats } from '@/lib/leads/pipeline-service'
 
 // ─── Types (inline — no external module dependency) ───────────────────────────
 
@@ -481,6 +487,7 @@ function SortTh({ label, field, current, dir, onSort, align = 'left' }: {
 export default function SalesOperationsDashboard() {
   const [summary, setSummary]         = useState<DashboardSummary | null>(null)
   const [leads, setLeads]             = useState<Lead[]>([])
+  const [pipelineStats, setPipelineStats] = useState<PipelineDashboardStats | null>(null)
   const [loading, setLoading]         = useState(true)
   const [filter, setFilter]           = useState<FilterType>('all')
   const [stageFilter, setStageFilter] = useState<LeadStage | 'ALL'>('ALL')
@@ -508,9 +515,10 @@ export default function SalesOperationsDashboard() {
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
-      const [statsRes, leadsRes] = await Promise.all([
+      const [statsRes, leadsRes, pipelineStatsRes] = await Promise.all([
         fetch('/api/dashboard/stats'),
         fetch('/api/leads/hot'),
+        fetch('/api/dashboard/pipeline-stats'),
       ])
       if (statsRes.ok) setSummary(await statsRes.json() as DashboardSummary)
       else console.error('[Dashboard] Stats error:', statsRes.status)
@@ -522,6 +530,12 @@ export default function SalesOperationsDashboard() {
       } else {
         console.error('[Dashboard] Leads error:', leadsRes.status)
       }
+
+      // Additive — a failure here never blocks the existing stats/leads
+      // above from rendering; the new pipeline stat row just stays hidden.
+      if (pipelineStatsRes.ok) setPipelineStats(await pipelineStatsRes.json() as PipelineDashboardStats)
+      else console.error('[Dashboard] Pipeline stats error:', pipelineStatsRes.status)
+
       setLastRefresh(new Date())
     } catch (err) {
       console.error('[Dashboard] fetchData error:', err)
@@ -655,6 +669,30 @@ export default function SalesOperationsDashboard() {
           <StatCard label="Pipeline Value" value={formatINR(totalRevenue)} sub="estimated"                                                                                                                    icon={TrendingUp}  accent="bg-blue-100 text-blue-600" />
           <StatCard label="Conversion"     value={`${convRate}%`}   sub={`${confirmedCount} confirmed`}                                                                                                       icon={CheckCircle2} accent="bg-emerald-100 text-emerald-600" />
         </div>
+
+        {/* Business-pipeline stats — derived from actual proposals/visits/
+            reservations (GET /api/dashboard/pipeline-stats), not just
+            lead_stage/status. Purely additive: the KPI row above is
+            untouched, and this row simply doesn't render until the new
+            endpoint responds. */}
+        {pipelineStats && (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <StatCard label="New Leads"       value={pipelineStats.new_leads}       sub="no pipeline activity yet" icon={Users}       accent="bg-gray-100 text-gray-600" />
+            <StatCard label="Proposal Draft"  value={pipelineStats.proposal_draft}  sub="drafted, not sent"        icon={FileText}    accent="bg-amber-100 text-amber-600" />
+            <StatCard label="Proposal Sent"   value={pipelineStats.proposal_sent}   sub="awaiting response"        icon={SendHorizonal} accent="bg-violet-100 text-violet-600" />
+            <StatCard label="Visits Scheduled" value={pipelineStats.visits_scheduled} sub="site visits pending"    icon={Calendar}    accent="bg-orange-100 text-orange-600" />
+            <StatCard label="Reservations"    value={pipelineStats.confirmed}       sub="confirmed bookings"       icon={CheckCircle2} accent="bg-emerald-100 text-emerald-600" />
+            <StatCard label="Pipeline Value"  value={formatINR(pipelineStats.pipeline_value)} sub={`${pipelineStats.conversion_rate}% conversion`} icon={DollarSign} accent="bg-blue-100 text-blue-600" />
+            <StatCard label="Avg. Proposal Value" value={formatINR(pipelineStats.average_proposal_value)} sub="per proposal" icon={Target} accent="bg-indigo-100 text-indigo-600" />
+            <StatCard
+              label="Avg. Time to Proposal"
+              value={pipelineStats.average_time_to_proposal_days != null ? `${pipelineStats.average_time_to_proposal_days}d` : '—'}
+              sub="lead created → first proposal"
+              icon={Clock}
+              accent="bg-teal-100 text-teal-600"
+            />
+          </div>
+        )}
 
         {/* Priority queues — Phase 4 */}
         {(overdueLeads.length > 0 || staleLeads.length > 0 || needsProposal.length > 0 || highIntentLeads.length > 0) && (

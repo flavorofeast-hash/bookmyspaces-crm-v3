@@ -98,6 +98,18 @@ export type CreateProposalResult =
  * pricing logic here) and writing it with the same column shape
  * src/app/api/proposals/route.ts's POST handler already uses, plus
  * migration 013's new links.
+ *
+ * NOTE (Option A architecture decision): this function is only reachable for
+ * a reservation that had NO proposal to begin with (the walk-in path) — see
+ * ensureProposalId() in reservations/[id]/page.tsx, which short-circuits to
+ * the reservation's own linked proposal whenever one already exists. An
+ * earlier attempt to fix meal-plan/add-on propagation here was reverted:
+ * this function's output is a disposable, invoice-shim proposal, and
+ * GET /api/proposals/[id]/invoice now reads commercial data from the linked
+ * Reservation directly whenever one exists (see that route), making this
+ * function's own pricing accuracy irrelevant to the invoice. Left as
+ * originally written — recalculates via calculatePrice(), no reservation
+ * pricing passthrough.
  */
 export async function createProposalFromReservation(
   input: CreateProposalFromReservationInput

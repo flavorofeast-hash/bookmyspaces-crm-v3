@@ -248,4 +248,8 @@ export interface Reservation {
 
   proposalId: string | null
   invoiceId: string | null
+
+  /** Reservation commercial snapshot (migration 029) — copied from the originating proposal at creation time, when there is one. Reservation is the display/commercial source of truth once it exists; see src/lib/reservations/commercial-source.ts. NULL for walk-in reservations with no originating proposal. */
+  packageName: string | null
+  venue: string | null
 }

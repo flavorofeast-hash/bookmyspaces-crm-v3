@@ -9,6 +9,21 @@ import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
 import { splitInclusiveTax } from '@/lib/tax'
+import { resolveReservationSource, type ReservationInvoiceSource, type ReservationInvoiceAddon } from '@/lib/reservations/commercial-source'
+
+// ─── Option A architecture pass — Reservation becomes the commercial source
+// of truth ───────────────────────────────────────────────────────────────────
+// Accepted proposals are immutable historical documents (never written to
+// below, or anywhere else as a result of this route running). But once a
+// Reservation exists for a proposal, the operator may have changed the
+// room, picked a meal plan, or added services the original proposal never
+// knew about — so from that point on, the Invoice must read commercial
+// figures from the Reservation instead of the (by-then possibly stale)
+// Proposal. resolveReservationSource() (src/lib/reservations/commercial-source.ts)
+// is the one place that decision is made — shared by this route plus Receipt,
+// Payment Reminder, and Invoice Email, so every customer-facing document
+// resolves the identical figure. buildInvoiceHTML() just renders whichever
+// source it's given.
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -75,21 +90,40 @@ function amountInWords(amount: number): string {
 
 // ─── HTML builder ─────────────────────────────────────────────────────────────
 
-function buildInvoiceHTML(proposal: any, invoice: any, payments: any[]): string {
+function buildInvoiceHTML(proposal: any, invoice: any, payments: any[], reservationSource: ReservationInvoiceSource | null): string {
   const today       = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
-  const basePrice   = Number(proposal.base_price   || 0)
+  // Option A: once a Reservation exists for this proposal, every money
+  // figure below prefers reservationSource over the proposal's own fields.
+  // proposal.base_price/addons/total_price/discount_amount are read only as
+  // the fallback for a proposal that has no reservation yet (per
+  // requirement: "Proposal remains the source of truth ONLY until a
+  // Reservation exists").
+  const accommodationCharges = reservationSource ? reservationSource.accommodationCharges : Number(proposal.base_price || 0)
   const roomItems   = Array.isArray(proposal.room_items) ? proposal.room_items : []
-  const addons      = Array.isArray(proposal.addons)     ? proposal.addons     : []
-  const discountAmt = Number(proposal.discount_amount    || 0)
-  const totalPrice  = Number(proposal.total_price        || 0)
+  const addonLines: ReservationInvoiceAddon[] = reservationSource
+    ? reservationSource.addonLines
+    : (Array.isArray(proposal.addons) ? proposal.addons : []).map((a: any) => ({
+        name: a.name, quantity: 1, unitPrice: Number(a.price || 0), totalPrice: Number(a.price || 0),
+      }))
+  const mealPlanCharge = reservationSource?.mealPlanCharge ?? 0
+  const mealPlanName   = reservationSource?.mealPlanName ?? null
+  const discountAmt = reservationSource ? reservationSource.discountAmount : Number(proposal.discount_amount || 0)
+  const totalPrice  = reservationSource ? reservationSource.grandTotal : Number(proposal.total_price || 0)
   // Always sum from the payments array — never read the stale proposal.advance_paid snapshot.
   // This matches FinanceModal's logic exactly.
   const advancePaid = payments.reduce((s: number, p: any) => s + Number(p.amount || 0), 0)
   const balanceDue  = Math.max(0, totalPrice - advancePaid)
   const roomsTotal  = roomItems.reduce((s: number, r: any) =>
     s + (Number(r.quantity||0) * Number(r.rate||0) * Number(r.nights||0)), 0)
-  const addonsTotal = addons.reduce((s: number, a: any) => s + Number(a.price||0), 0)
-  const hasEvent    = basePrice > 0
+  const addonsTotal = addonLines.reduce((s, a) => s + a.totalPrice, 0)
+  // Unchanged (`accommodationCharges > 0`, same as the original
+  // `basePrice > 0`) for a plain proposal with no reservation — zero
+  // behavior change there. Broadened only when a Reservation is linked, so
+  // the section still shows when accommodation is free/zero but a meal plan
+  // or add-ons exist (e.g. a complimentary-room booking with paid add-ons).
+  const hasEvent    = reservationSource
+    ? (accommodationCharges > 0 || mealPlanCharge > 0 || addonsTotal > 0)
+    : accommodationCharges > 0
   const hasRooms    = roomItems.length > 0
   const totalWords  = amountInWords(totalPrice)
   const paidTotal   = advancePaid  // same value — reuse, no second reduce
@@ -104,11 +138,20 @@ function buildInvoiceHTML(proposal: any, invoice: any, payments: any[]): string 
   const clientName  = escapeHtml(proposal.client_name)
   const clientPhone = escapeHtml(proposal.client_phone)
   const clientEmail = escapeHtml(proposal.client_email)
-  const packageName = escapeHtml(proposal.package_name)
-  const venueName   = escapeHtml(proposal.venue)
+  // Reservation commercial snapshot (migration 029): once a Reservation is
+  // linked, Package/Venue must read from IT, not the Proposal — same "Do NOT
+  // read from Proposal once Reservation exists" rule already applied to
+  // every pricing field. reservationSource.packageName/venue already carries
+  // its own fallback to the proposal's fields for pre-migration reservations
+  // (see commercial-source.ts) — proposal.package_name/proposal.venue below
+  // are only reached when there's no reservation at all (Proposal-only case).
+  const packageName = escapeHtml(reservationSource ? reservationSource.packageName : proposal.package_name)
+  const venueName   = escapeHtml(reservationSource ? reservationSource.venue : proposal.venue)
   const eventType   = escapeHtml(proposal.event_type)
   const proposalNumber = escapeHtml(proposal.proposal_number)
   const invoiceNumber  = escapeHtml(invoice.invoice_number)
+  const propertyName   = reservationSource ? escapeHtml(reservationSource.propertyName) : null
+  const roomHallName   = reservationSource ? escapeHtml(reservationSource.inventoryName) : null
 
   const roomRowsHtml = roomItems.map((r: any) => `
     <tr>
@@ -118,12 +161,24 @@ function buildInvoiceHTML(proposal: any, invoice: any, payments: any[]): string 
       <td class="td r b">${inr(r.quantity*r.rate*r.nights)}</td>
     </tr>`).join('')
 
-  const addonRowsHtml = addons.map((a: any) => `
+  // Meal Plan is deliberately its own row/summary line, not folded into
+  // add-ons — matches the checklist treating "Meal Plan / Meal Charges" as
+  // distinct from "Decoration / Photography / Airport Pickup / Extra Bed /
+  // other add-ons".
+  const mealPlanRowHtml = mealPlanCharge > 0 ? `
     <tr>
-      <td class="td">+ ${escapeHtml(a.name)}</td>
+      <td class="td">🍽 Meal Plan — ${escapeHtml(mealPlanName ?? 'Selected plan')}</td>
       <td class="td c">—</td>
       <td class="td r">—</td>
-      <td class="td r b">${inr(Number(a.price||0))}</td>
+      <td class="td r b">${inr(mealPlanCharge)}</td>
+    </tr>` : ''
+
+  const addonRowsHtml = addonLines.map((a) => `
+    <tr>
+      <td class="td">+ ${escapeHtml(a.name)}</td>
+      <td class="td c">${a.quantity > 1 ? `× ${a.quantity}` : '—'}</td>
+      <td class="td r">${a.quantity > 1 ? inr(a.unitPrice) : '—'}</td>
+      <td class="td r b">${inr(a.totalPrice)}</td>
     </tr>`).join('')
 
   const paymentRowsHtml = payments.map((p: any) => `
@@ -134,6 +189,24 @@ function buildInvoiceHTML(proposal: any, invoice: any, payments: any[]): string 
       ${p.transaction_ref ? `<td class="td mono small">${escapeHtml(p.transaction_ref)}</td>` : '<td class="td" style="color:#aaa">—</td>'}
       <td class="td r b">${inr(Number(p.amount))}</td>
     </tr>`).join('')
+
+  // Booking Reference grid: Property/Room-Hall only shown when a
+  // Reservation is linked — the container's fixed 3-column grid template
+  // auto-wraps a 4th/5th cell onto a second row with no CSS changes.
+  const bookingRefCells: { label: string; value: string }[] = [
+    { label: 'Proposal #', value: proposalNumber },
+    { label: 'Event', value: eventType || '—' },
+    { label: 'Event Date', value: fmtDate(proposal.event_date) },
+    ...(reservationSource ? [
+      { label: 'Property', value: propertyName || '—' },
+      { label: 'Room / Hall', value: roomHallName || '—' },
+    ] : []),
+  ]
+  const bookingRefHtml = bookingRefCells.map((c) => `
+    <div style="background:#f8f5f0;border-radius:7px;padding:7px 10px;border-left:2px solid #c9a84c">
+      <div style="font-size:8px;text-transform:uppercase;letter-spacing:.12em;color:#8a8a9a;margin-bottom:2px">${c.label}</div>
+      <div style="font-size:11px;font-weight:600">${c.value}</div>
+    </div>`).join('')
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -287,18 +360,7 @@ table{width:100%;border-collapse:collapse}
 <div class="section" style="padding-bottom:8px">
   <div class="section-label">Booking Reference</div>
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px">
-    <div style="background:#f8f5f0;border-radius:7px;padding:7px 10px;border-left:2px solid #c9a84c">
-      <div style="font-size:8px;text-transform:uppercase;letter-spacing:.12em;color:#8a8a9a;margin-bottom:2px">Proposal #</div>
-      <div style="font-size:11px;font-weight:600">${proposalNumber}</div>
-    </div>
-    <div style="background:#f8f5f0;border-radius:7px;padding:7px 10px;border-left:2px solid #c9a84c">
-      <div style="font-size:8px;text-transform:uppercase;letter-spacing:.12em;color:#8a8a9a;margin-bottom:2px">Event</div>
-      <div style="font-size:11px;font-weight:600">${eventType || '—'}</div>
-    </div>
-    <div style="background:#f8f5f0;border-radius:7px;padding:7px 10px;border-left:2px solid #c9a84c">
-      <div style="font-size:8px;text-transform:uppercase;letter-spacing:.12em;color:#8a8a9a;margin-bottom:2px">Event Date</div>
-      <div style="font-size:11px;font-weight:600">${fmtDate(proposal.event_date)}</div>
-    </div>
+    ${bookingRefHtml}
   </div>
 </div>
 
@@ -316,10 +378,11 @@ ${hasEvent ? `
     </thead>
     <tbody>
       <tr>
-        <td class="td">${packageName || 'Event Package'}</td>
+        <td class="td">${packageName || 'Event Package'}${roomHallName ? ` — ${roomHallName}` : ''}</td>
         <td class="td c">${venueName || '—'}</td>
-        <td class="td r b">${inr(basePrice)}</td>
+        <td class="td r b">${inr(accommodationCharges)}</td>
       </tr>
+      ${mealPlanRowHtml}
       ${addonRowsHtml}
     </tbody>
   </table>
@@ -346,8 +409,10 @@ ${hasRooms ? `
 <div class="fin-summary">
 
   <div class="fin-breakdown">
-    ${hasEvent && basePrice>0 ? `
-    <div class="fin-row"><span class="fin-lbl">Package Charges</span><span class="fin-val">${inr(basePrice)}</span></div>` : ''}
+    ${accommodationCharges>0 ? `
+    <div class="fin-row"><span class="fin-lbl">Accommodation Charges</span><span class="fin-val">${inr(accommodationCharges)}</span></div>` : ''}
+    ${mealPlanCharge>0 ? `
+    <div class="fin-row"><span class="fin-lbl">Meal Plan</span><span class="fin-val">${inr(mealPlanCharge)}</span></div>` : ''}
     ${addonsTotal>0 ? `
     <div class="fin-row"><span class="fin-lbl">Add-ons</span><span class="fin-val">${inr(addonsTotal)}</span></div>` : ''}
     ${hasRooms ? `
@@ -481,6 +546,11 @@ export async function GET(
       return new NextResponse('Proposal not found', { status: 404 })
     }
 
+    // Option A architecture pass — "Reservation becomes the commercial
+    // source of truth". Read-only: `proposals` is never written to, here or
+    // anywhere downstream. See resolveReservationSource()'s own comment.
+    const reservationSource = await resolveReservationSource(proposal)
+
     const { data: payments } = await supabase
       .from('payments')
       .select('*')
@@ -489,7 +559,12 @@ export async function GET(
 
     const allPayments = payments ?? []
     const totalPaid   = allPayments.reduce((s: number, p: any) => s + Number(p.amount || 0), 0)
-    const balanceDue  = Math.max(0, Number(proposal.total_price || 0) - totalPaid)
+    // Prefer the Reservation's total once one exists — this is the whole
+    // point of this fix; the Proposal's own total_price is only used as a
+    // fallback for a proposal with no reservation yet.
+    const effectiveTotal    = reservationSource ? reservationSource.grandTotal : Number(proposal.total_price || 0)
+    const effectiveDiscount = reservationSource ? reservationSource.discountAmount : Number(proposal.discount_amount || 0)
+    const balanceDue  = Math.max(0, effectiveTotal - totalPaid)
 
     // Idempotent upsert — unchanged from previous version
     const { data: existingInv } = await supabase
@@ -506,17 +581,24 @@ export async function GET(
       // Computed once, at invoice creation, same as invoice_number — a
       // rate change afterward should not retroactively alter an already-
       // issued invoice's tax split, matching how invoice_number is stable
-      // once assigned (trg_invoice_number, migration 009).
-      const tax = splitInclusiveTax(Number(proposal.total_price || 0))
+      // once assigned (trg_invoice_number, migration 009). Same stability
+      // is kept here deliberately: an ALREADY-existing invoice row's
+      // subtotal/discount_amount/tax_amount/total_amount are intentionally
+      // left untouched below (the `else` branch only refreshes payment-
+      // driven fields, exactly as before) — only a first-time invoice for a
+      // reservation-linked proposal gets the corrected numbers. Existing
+      // invoice rows generated before this fix are not retroactively
+      // rewritten; regenerate them manually if needed.
+      const tax = splitInclusiveTax(effectiveTotal)
 
       const { data: newInv, error: invErr } = await supabase
         .from('invoices')
         .insert({
           proposal_id     : params.id,
-          subtotal        : Number(proposal.total_price || 0) + Number(proposal.discount_amount || 0),
-          discount_amount : Number(proposal.discount_amount || 0),
+          subtotal        : effectiveTotal + effectiveDiscount,
+          discount_amount : effectiveDiscount,
           tax_amount      : tax.taxAmount,
-          total_amount    : Number(proposal.total_price || 0),
+          total_amount    : effectiveTotal,
           advance_received: totalPaid,
           balance_due     : balanceDue,
           status          : balanceDue <= 0 ? 'paid' : 'sent',
@@ -554,9 +636,22 @@ export async function GET(
       } catch {
         // Not fatal — see comment above.
       }
+    } else if (reservationSource) {
+      // Option A addition: covers the other direction (accepted proposal ->
+      // reservation, reservations.proposal_id set, proposal.reservation_id
+      // never was) — same best-effort link-back, onto the reservation
+      // resolveReservationSource() already found.
+      try {
+        await supabase
+          .from('reservations')
+          .update({ invoice_id: invoice.id })
+          .eq('id', reservationSource.reservationId)
+      } catch {
+        // Not fatal — see comment above.
+      }
     }
 
-    const html     = buildInvoiceHTML(proposal, invoice, allPayments)
+    const html     = buildInvoiceHTML(proposal, invoice, allPayments, reservationSource)
     const filename = `BookMySpaces-Invoice-${invoice.invoice_number}.pdf`
 
     return new NextResponse(html, {

@@ -251,6 +251,39 @@ describe('createReservationWithQuote', () => {
     })
   })
 
+  // Internal-consistency fix (Reservation -> Invoice architecture pass,
+  // Option A) — the exact seam the reported bug lived in: a reservation
+  // converted from an accepted proposal, where the operator ALSO picks a
+  // meal plan the original proposal never knew about. finalRoomRate must
+  // count both the proposal's already-accepted total AND the newly-selected
+  // meal plan charge — never silently drop either. (Add-on pricing is
+  // exercised by the pre-existing 'persists the quoted room rate and meal
+  // plan charge...' test above; this file's property-service mock only
+  // stubs getMealPlanById, not getAddonServicesByIds, so add-ons aren't
+  // exercised in this particular test.)
+  it('Flow B + a new meal plan chosen in the reservation form: finalRoomRate adds it on top of the proposal total, not in place of it', async () => {
+    mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-1', customerId: 'lead-1' } })
+    mocks.proposalLookup.mockReturnValue({ data: { status: 'accepted', total_price: 50000, base_price: 45000 }, error: null })
+    mocks.getMealPlanById.mockResolvedValue({ id: 'mp-1', propertyId: 'prop-1', code: 'breakfast', name: 'Breakfast', description: null, price: 500, isActive: true })
+
+    const result = await createReservationWithQuote({
+      ...baseInput,
+      customerId: 'lead-1',
+      proposalId: 'prop-abc',
+      mealPlanId: 'mp-1',
+    })
+
+    expect(result.reservationResult.ok).toBe(true)
+    // 50000 (proposal's already-accepted total) + 1000 (500 x 2 nights meal
+    // plan) = 51000. Before this fix, finalRoomRate would have been hard-set
+    // to 50000, silently dropping the meal plan charge even though
+    // meal_plan_charge (1000) was correctly persisted right next to it.
+    expect(mocks.createReservation).toHaveBeenCalledWith(
+      expect.objectContaining({ baseRoomRate: 45000, finalRoomRate: 51000, mealPlanCharge: 1000, discountAmount: 0 })
+    )
+  })
+
   it('does NOT inherit pricing from a proposal that is not yet accepted (e.g. "sent") — falls back to the rate_plans quote', async () => {
     mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
     mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-1', customerId: 'lead-1' } })

@@ -67,6 +67,14 @@ export const createLeadSchema = z.object({
   status              : z.string().trim().max(50).nullish(),
   assigned_to         : z.string().trim().max(200).nullish(),
   notes               : z.string().trim().max(2000).nullish(),
+  // Manual Lead Creation (RC2) — these columns already exist on `leads`
+  // (migration 018, Customer Bulk Import — see modules/leads/types.ts's
+  // Lead interface) but POST /api/leads never exposed them. No schema
+  // change, purely additive to this create-only schema.
+  company             : z.string().trim().max(200).nullish(),
+  city                : z.string().trim().max(100).nullish(),
+  state               : z.string().trim().max(100).nullish(),
+  preferred_channel   : z.string().trim().max(50).nullish(),
 })
 
 // PATCH /api/leads allow-list — deliberately excludes columns that have their

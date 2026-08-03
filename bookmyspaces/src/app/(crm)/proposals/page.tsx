@@ -204,6 +204,26 @@ function PaymentModal({
   const [saving, setSaving] = useState(false)
   const [error,  setError]  = useState<string|null>(null)
 
+  // Production-hardening pass: once a Reservation is linked, its commercial
+  // figures (same resolver Invoice/Receipt/Payment Reminder use) must drive
+  // this balance preview instead of proposal.total_price/advance_paid — see
+  // GET /api/proposals/[id]/payment. Falls back to the existing Proposal-
+  // based calculation below (unchanged) when `commercial` hasn't loaded yet
+  // or no Reservation is linked (source === 'proposal').
+  const [commercial, setCommercial] = useState<{ source:'reservation'|'proposal'; total:number; paid:number; balanceDue:number } | null>(null)
+  useEffect(()=>{
+    let cancelled = false
+    fetch(`/api/proposals/${proposal.id}/payment`)
+      .then(r=>r.json())
+      .then(d=>{ if(!cancelled && d?.commercial) setCommercial(d.commercial) })
+      .catch(()=>{})
+    return ()=>{ cancelled = true }
+  }, [proposal.id])
+
+  const usingReservation = commercial?.source === 'reservation'
+  const previewTotal = usingReservation ? commercial!.total : (proposal.total_price ?? 0)
+  const previewPaid  = usingReservation ? commercial!.paid  : (proposal.advance_paid ?? 0)
+
   async function submit(e:React.FormEvent) {
     e.preventDefault()
     if (!amount||parseFloat(amount)<=0){setError('Enter a valid amount');return}
@@ -271,20 +291,20 @@ function PaymentModal({
             <textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={2} placeholder="Optional notes…"
               className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"/>
           </div>
-          {proposal.total_price&&(
+          {previewTotal>0&&(
             <div className="bg-gray-50 rounded-xl px-4 py-3 text-xs space-y-1">
               <div className="flex justify-between text-gray-500">
-                <span>Proposal Total</span><span className="font-medium text-gray-700">{formatINR(proposal.total_price)}</span>
+                <span>{usingReservation?'Reservation Total':'Proposal Total'}</span><span className="font-medium text-gray-700">{formatINR(previewTotal)}</span>
               </div>
-              {(proposal.advance_paid??0)>0&&(
+              {previewPaid>0&&(
                 <div className="flex justify-between text-blue-600">
-                  <span>Already Paid</span><span className="font-medium">− {formatINR(proposal.advance_paid??0)}</span>
+                  <span>Already Paid</span><span className="font-medium">− {formatINR(previewPaid)}</span>
                 </div>
               )}
               {amount&&parseFloat(amount)>0&&(
                 <div className="flex justify-between text-green-600 border-t border-gray-200 pt-1 mt-1">
                   <span>Balance After This</span>
-                  <span className="font-bold">{formatINR(Math.max(0,(proposal.total_price??0)-(proposal.advance_paid??0)-parseFloat(amount)))}</span>
+                  <span className="font-bold">{formatINR(Math.max(0,previewTotal-previewPaid-parseFloat(amount)))}</span>
                 </div>
               )}
             </div>

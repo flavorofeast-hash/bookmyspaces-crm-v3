@@ -225,7 +225,12 @@ export default function ReservationDetailsPage({ params }: { params: { id: strin
     )
   }
 
-  const total = reservation.finalRoomRate + reservation.mealPlanCharge
+  // Production-readiness fix: finalRoomRate already includes mealPlanCharge
+  // (reservation-workflow.ts's createReservationWithQuote() builds it as
+  // inheritedTotal + mealPlanCharge + addonsCharge − discountAmount) — adding
+  // mealPlanCharge again here double-counted it whenever a meal plan was
+  // selected. Total must equal finalRoomRate exactly, nothing added on top.
+  const total = reservation.finalRoomRate
   const actions = AVAILABLE_ACTIONS[reservation.status]
 
   return (

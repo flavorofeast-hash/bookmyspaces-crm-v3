@@ -32,6 +32,17 @@ describe('createLeadSchema', () => {
     const result = createLeadSchema.safeParse({ guest_count: 'a lot of people' })
     expect(result.success).toBe(false)
   })
+
+  // Manual Lead Creation (RC2) — company/city/state/preferred_channel added
+  // to this schema so POST /api/leads can accept them (columns already
+  // existed on `leads`, migration 018).
+  it('accepts the Manual Lead Creation fields (company/city/state/preferred_channel)', () => {
+    const result = createLeadSchema.safeParse({
+      name: 'Priya Sharma', phone: '9876543210', company: 'Acme Events',
+      city: 'Kolkata', state: 'West Bengal', preferred_channel: 'Call after 6pm',
+    })
+    expect(result.success).toBe(true)
+  })
 })
 
 describe('updateLeadSchema', () => {

@@ -56,6 +56,9 @@ export interface CreateReservationInput {
   finalRoomRate?: number
   /** Add-on Services booking-flow integration (Reservation Platform activation, Phase 4). Already-priced by the caller — see PricedAddonLine. */
   addonLines?: PricedAddonLine[]
+  /** Reservation commercial snapshot (migration 029). Copied from the originating proposal's package_name/venue by reservation-workflow.ts's createReservationWithQuote() when proposalId resolves to an accepted proposal — createReservation() itself just persists whatever it's given, same as every other field here. */
+  packageName?: string | null
+  venue?: string | null
 }
 
 export type CreateReservationResult =
@@ -110,6 +113,9 @@ export async function createReservation(input: CreateReservationInput): Promise<
       final_room_rate: input.finalRoomRate ?? 0,
       meal_plan_id: input.mealPlanId ?? null,
       meal_plan_charge: input.mealPlanCharge ?? 0,
+      // Reservation commercial snapshot (migration 029) — see CreateReservationInput comment above.
+      package_name: input.packageName ?? null,
+      venue: input.venue ?? null,
     })
     .select('*')
     .single()
@@ -245,6 +251,41 @@ export async function listReservations(filters: ListReservationsFilters = {}): P
   return data.map(mapRowWithJoins)
 }
 
+/**
+ * Reservation -> Invoice pricing fix (Option A architecture pass).
+ * `createReservation()` above already writes `reservation_addons` rows on
+ * create — but nothing in this file ever read them back, so every consumer
+ * of a reservation only ever saw its total (final_room_rate/
+ * meal_plan_charge), never which individual add-ons made it up. Used by
+ * GET /api/proposals/[id]/invoice to itemize Decoration/Photography/Airport
+ * Pickup/etc. when the invoice is being generated for a reservation. Purely
+ * additive: no existing function's query or return shape changes.
+ */
+export interface ReservationAddonLine {
+  addonServiceId: string
+  name: string
+  quantity: number
+  unitPrice: number
+  totalPrice: number
+}
+
+export async function getReservationAddons(reservationId: string): Promise<ReservationAddonLine[]> {
+  const supabase = getSupabaseAdmin()
+  const { data, error } = await supabase
+    .from('reservation_addons')
+    .select('addon_service_id, quantity, unit_price, total_price, addon_services(name)')
+    .eq('reservation_id', reservationId)
+
+  if (error || !data) return []
+  return data.map((row: any) => ({
+    addonServiceId: row.addon_service_id,
+    name: (Array.isArray(row.addon_services) ? row.addon_services[0]?.name : row.addon_services?.name) ?? 'Add-on',
+    quantity: row.quantity,
+    unitPrice: Number(row.unit_price) || 0,
+    totalPrice: Number(row.total_price) || 0,
+  }))
+}
+
 /** Single reservation with the same property/inventory joins, for the Reservation Details screen. */
 export async function getReservationById(id: string): Promise<ReservationWithJoins | null> {
   const supabase = getSupabaseAdmin()
@@ -253,6 +294,33 @@ export async function getReservationById(id: string): Promise<ReservationWithJoi
     .from('reservations')
     .select('*, properties(name), inventory_items(name, inventory_type)')
     .eq('id', id)
+    .maybeSingle()
+
+  if (error || !data) return null
+  return mapRowWithJoins(data)
+}
+
+/**
+ * Reverse lookup: is there a reservation created FROM this proposal?
+ * (Option A architecture pass.) Covers the "Lead -> Proposal -> Accepted ->
+ * Reservation" flow, where `reservations.proposal_id` is set at reservation-
+ * creation time (createReservation() above) but — deliberately, per that
+ * decision — nothing is ever written back onto the proposal itself; accepted
+ * proposals stay immutable. GET /api/proposals/[id]/invoice uses this to
+ * find "the reservation this proposal became," so it can treat that
+ * reservation as the commercial source of truth instead of the proposal's
+ * own (by-then-possibly-stale) fields. `.limit(1)` + most-recent-first is
+ * defensive — in normal usage a proposal converts to at most one reservation.
+ */
+export async function getReservationByProposalId(proposalId: string): Promise<ReservationWithJoins | null> {
+  const supabase = getSupabaseAdmin()
+
+  const { data, error } = await supabase
+    .from('reservations')
+    .select('*, properties(name), inventory_items(name, inventory_type)')
+    .eq('proposal_id', proposalId)
+    .order('created_at', { ascending: false })
+    .limit(1)
     .maybeSingle()
 
   if (error || !data) return null
@@ -287,5 +355,7 @@ function mapRow(row: Record<string, any>): Reservation {
     specialRequests: row.special_requests,
     proposalId: row.proposal_id,
     invoiceId: row.invoice_id,
+    packageName: row.package_name ?? null,
+    venue: row.venue ?? null,
   }
 }

@@ -253,23 +253,66 @@ export async function createReservationWithQuote(
   //     and total_price > 0 (never trust a zero/negative value as an
   //     override — falls back to the rate_plans quote instead).
   let baseRoomRate = quote.subtotal
-  let finalRoomRate = quote.grandTotal
+  // Base to add meal plan/add-on charges on top of when finalRoomRate is
+  // computed below — quote.subtotal for the rate_plan path (unchanged), or
+  // the proposal's own already-accepted total_price for the proposal path
+  // (see the internal-consistency fix comment below for why this must be
+  // total_price, not base_price).
+  let inheritedTotal = quote.subtotal
   let pricingSource: 'proposal' | 'rate_plan' = 'rate_plan'
+  // Reservation commercial snapshot (migration 029, production-hardening
+  // pass): Reservation must become a complete, standalone booking record —
+  // Package Name/Venue are copied from the originating proposal HERE, once,
+  // at creation time, same as baseRoomRate/inheritedTotal above. From then
+  // on every customer-facing document reads them off the Reservation (see
+  // src/lib/reservations/commercial-source.ts), never the Proposal, which
+  // stays immutable. NULL for a walk-in reservation with no proposalId.
+  let packageName = input.packageName ?? null
+  let venue = input.venue ?? null
 
   if (input.proposalId) {
     const supabase = getSupabaseAdmin()
     const { data: proposal } = await supabase
       .from('proposals')
-      .select('status, total_price, base_price')
+      .select('status, total_price, base_price, package_name, venue')
       .eq('id', input.proposalId)
       .maybeSingle()
 
     if (proposal && proposal.status === 'accepted' && Number(proposal.total_price) > 0) {
       baseRoomRate = Number(proposal.base_price) || Number(proposal.total_price)
-      finalRoomRate = Number(proposal.total_price)
+      inheritedTotal = Number(proposal.total_price)
       pricingSource = 'proposal'
     }
+    if (proposal) {
+      packageName = proposal.package_name ?? packageName
+      venue = proposal.venue ?? venue
+    }
   }
+
+  // Internal-consistency fix (Reservation -> Invoice architecture pass):
+  // finalRoomRate used to be set to the inherited proposal's total_price
+  // directly when pricingSource === 'proposal', which silently ignored
+  // quote.mealPlanCharge/addonsCharge — a meal plan or add-on picked in the
+  // reservation form (after the proposal had already been accepted, so the
+  // proposal's own total_price predates it) was priced correctly and
+  // persisted onto meal_plan_charge/reservation_addons, but never counted
+  // into the reservation's own total. That let the SAME reservation carry
+  // two mutually-inconsistent totals.
+  //
+  // Fix builds on `inheritedTotal`, NOT `baseRoomRate`: an accepted
+  // proposal's total_price can already include things base_price alone
+  // doesn't capture (its own addons, a discount, tax) — e.g. base_price
+  // 45000 / total_price 50000 with no reservation-time meal plan or
+  // add-ons must still finalize at 50000, not silently drop to 45000.
+  // Building on the proposal's already-accepted total and adding only the
+  // genuinely-NEW charges (this reservation's own meal plan/add-ons) on top
+  // preserves that total exactly when nothing new was added, and correctly
+  // extends it when it was. discountAmount is 0 today (no caller sets it
+  // yet), so for the existing rate_plan path this is exactly equal to the
+  // old quote.grandTotal — no behavior change there, only the proposal-
+  // inherited path is affected, and only when new charges are added.
+  const discountAmount = input.discountAmount ?? 0
+  const finalRoomRate = inheritedTotal + quote.mealPlanCharge + quote.addonsCharge - discountAmount
 
   // Meal Plan / Add-on Services booking-flow integration (Reservation
   // Platform activation, Phases 3-4): the quote's pricing (room subtotal +
@@ -279,9 +322,12 @@ export async function createReservationWithQuote(
     ...input,
     baseRoomRate,
     finalRoomRate,
+    discountAmount,
     mealPlanId: quote.mealPlanId,
     mealPlanCharge: quote.mealPlanCharge,
     addonLines: quote.addonLines,
+    packageName,
+    venue,
   })
 
   if (reservationResult.ok) {

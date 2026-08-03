@@ -1,7 +1,9 @@
 // src/app/api/proposals/[id]/payment-reminder/route.ts
 // Staff-triggered "send a payment reminder" action. Computes the outstanding
-// balance from the proposal's total price minus payments received so far —
-// this works whether or not an invoice row exists yet for this proposal.
+// balance from the effective total (Reservation's final_room_rate once one
+// exists, else the proposal's total price — see commercial-source.ts) minus
+// payments received so far — this works whether or not an invoice row
+// exists yet for this proposal.
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
@@ -10,6 +12,7 @@ import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
 import { sendPaymentReminderEmail } from '@/lib/email/send'
+import { resolveReservationSource } from '@/lib/reservations/commercial-source'
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const auth = await requireAuth()
@@ -27,13 +30,19 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       .single()
     if (propErr || !proposal) return NextResponse.json({ error: 'Proposal not found' }, { status: 404 })
 
+    // Option A — read-only, never writes to `proposals`. See commercial-source.ts.
+    const reservationSource = await resolveReservationSource(proposal)
+
     const { data: payments } = await db
       .from('payments')
       .select('amount')
       .eq('proposal_id', params.id)
 
     const totalPaid = (payments || []).reduce((sum, p) => sum + Number(p.amount || 0), 0)
-    const balanceDue = Math.max(0, Number(proposal.total_price || 0) - totalPaid)
+    const effectiveTotal = reservationSource ? reservationSource.grandTotal : Number(proposal.total_price || 0)
+    const balanceDue = Math.max(0, effectiveTotal - totalPaid)
+    const packageName = reservationSource ? reservationSource.packageName : proposal.package_name
+    const venue = reservationSource ? reservationSource.venue : proposal.venue
 
     const toEmail = recipientEmail || proposal.client_email || (proposal.leads as any)?.email || ''
     const clientName = proposal.client_name || (proposal.leads as any)?.name || 'Valued Client'
@@ -51,6 +60,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         balanceDue,
         eventType: proposal.event_type,
         eventDate: proposal.event_date,
+        packageName,
+        venue,
       },
       { to: toEmail, relatedEntityType: 'proposal', relatedEntityId: params.id }
     )

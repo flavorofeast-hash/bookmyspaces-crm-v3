@@ -7,6 +7,7 @@ import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
 import { auditLog } from '@/lib/audit-log'
+import { resolveReservationSource } from '@/lib/reservations/commercial-source'
 
 // ─── POST — record a payment ──────────────────────────────────────────────────
 
@@ -106,6 +107,13 @@ export async function POST(
 }
 
 // ─── GET — list payments for a proposal ──────────────────────────────────────
+//
+// Also returns `commercial`: the same effective total/balance the Invoice,
+// Receipt, and Payment Reminder documents use (production-hardening pass,
+// checklist item 2 — CRM Proposal page's "Record Payment" balance preview
+// must not compute independently from Proposal once a Reservation exists).
+// Read-only, reuses the existing shared resolver — never writes to
+// `proposals`, no new commercial logic introduced here.
 
 export async function GET(
   _req: NextRequest,
@@ -122,7 +130,25 @@ export async function GET(
       .order('payment_date', { ascending: false })
 
     if (error) throw error
-    return NextResponse.json({ payments: data })
+
+    const totalPaid = (data ?? []).reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0)
+
+    const { data: proposal } = await supabase
+      .from('proposals')
+      .select('*')
+      .eq('id', params.id)
+      .maybeSingle()
+
+    const reservationSource = proposal ? await resolveReservationSource(proposal) : null
+    const effectiveTotal = reservationSource ? reservationSource.grandTotal : Number(proposal?.total_price || 0)
+    const commercial = {
+      source: reservationSource ? 'reservation' as const : 'proposal' as const,
+      total: effectiveTotal,
+      paid: totalPaid,
+      balanceDue: Math.max(0, effectiveTotal - totalPaid),
+    }
+
+    return NextResponse.json({ payments: data, commercial })
   } catch (err) {
     logger.error('payment', 'GET failed', err)
     return NextResponse.json({ error: 'Failed to fetch payments' }, { status: 500 })

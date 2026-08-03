@@ -87,13 +87,27 @@ export async function POST(req: NextRequest) {
 
     const possibleDuplicateLeadId = identity && identity.matchedOn === 'email' ? identity.leadId : null
 
+    // PGRST204 fix: 'special_requirements' is declared in
+    // 001_initial_schema.sql and in modules/leads/types.ts's Lead interface,
+    // but PostgREST's live schema cache confirms it does not actually exist
+    // on the production `leads` table (same class of migration-file-vs-
+    // production drift already documented for leads.source — see
+    // audit/DATABASE_ARCHITECTURE.md's migration-016 note). Removed from
+    // the insert only — not from createLeadSchema/validation (still a
+    // harmless optional field there) and not from the Lead type, per "do
+    // not modify validation unless absolutely required."
     const { data: lead, error } = await supabaseAdmin.from('leads').insert({
       name: body.name || null, phone: body.phone || null, email: body.email || null,
       event_type: body.event_type || null, event_date: body.event_date || null,
       guest_count: body.guest_count ? parseInt(String(body.guest_count)) : null,
-      budget: body.budget || null, special_requirements: body.special_requirements || null,
+      budget: body.budget || null,
       venue: body.venue || null, source: body.source || 'website',
       status: body.status || 'new_inquiry', assigned_to: body.assigned_to || null, notes: body.notes || null,
+      // Manual Lead Creation (RC2) — additive fields, columns already exist
+      // (migration 018). Falls back to null exactly like every other
+      // optional field above.
+      company: body.company || null, city: body.city || null, state: body.state || null,
+      preferred_channel: body.preferred_channel || null,
     }).select('*').single()
 
     if (error) throw error

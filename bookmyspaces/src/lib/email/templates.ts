@@ -103,6 +103,9 @@ export interface InvoiceEmailData {
   balanceDue: number
   eventType: string
   eventDate: string | null
+  /** Reservation commercial snapshot (migration 029) — sourced from the Reservation once one exists, else the Proposal. Optional/additive: existing callers that don't pass these keep working unchanged (rows simply don't render). */
+  packageName?: string | null
+  venue?: string | null
 }
 
 export function invoiceEmail(data: InvoiceEmailData): EmailTemplate {
@@ -115,6 +118,8 @@ export function invoiceEmail(data: InvoiceEmailData): EmailTemplate {
       <tr><td style="color:#6b7280;">Invoice</td><td><b>${data.invoiceNumber}</b></td></tr>
       <tr><td style="color:#6b7280;">Proposal</td><td>${data.proposalNumber}</td></tr>
       <tr><td style="color:#6b7280;">Event</td><td>${data.eventType || '—'}</td></tr>
+      ${data.packageName ? `<tr><td style="color:#6b7280;">Package</td><td>${data.packageName}</td></tr>` : ''}
+      ${data.venue ? `<tr><td style="color:#6b7280;">Venue</td><td>${data.venue}</td></tr>` : ''}
       <tr><td style="color:#6b7280;">Total Amount</td><td><b>${inr(data.totalAmount)}</b></td></tr>
       <tr><td style="color:#6b7280;">Balance Due</td><td><b>${inr(data.balanceDue)}</b></td></tr>
     </table>
@@ -128,6 +133,8 @@ export function invoiceEmail(data: InvoiceEmailData): EmailTemplate {
     `Invoice: ${data.invoiceNumber}`,
     `Proposal: ${data.proposalNumber}`,
     `Event: ${data.eventType || '—'}`,
+    ...(data.packageName ? [`Package: ${data.packageName}`] : []),
+    ...(data.venue ? [`Venue: ${data.venue}`] : []),
     `Total Amount: ${inr(data.totalAmount)}`,
     `Balance Due: ${inr(data.balanceDue)}`, '',
     `If you have any questions, please reply to this email or WhatsApp us at +91 ${BUSINESS_PHONE}.`, '',
@@ -145,6 +152,9 @@ export interface PaymentReminderEmailData {
   balanceDue: number
   eventType: string
   eventDate: string | null
+  /** Reservation commercial snapshot (migration 029) — sourced from the Reservation once one exists, else the Proposal. Optional/additive. */
+  packageName?: string | null
+  venue?: string | null
 }
 
 export function paymentReminderEmail(data: PaymentReminderEmailData): EmailTemplate {
@@ -159,6 +169,8 @@ export function paymentReminderEmail(data: PaymentReminderEmailData): EmailTempl
     <table role="presentation" width="100%" cellpadding="6" style="margin:16px 0;">
       <tr><td style="color:#6b7280;">Proposal</td><td><b>${data.proposalNumber}</b></td></tr>
       <tr><td style="color:#6b7280;">Event</td><td>${data.eventType || '—'} on ${eventDateLabel}</td></tr>
+      ${data.packageName ? `<tr><td style="color:#6b7280;">Package</td><td>${data.packageName}</td></tr>` : ''}
+      ${data.venue ? `<tr><td style="color:#6b7280;">Venue</td><td>${data.venue}</td></tr>` : ''}
       <tr><td style="color:#6b7280;">Balance Due</td><td><b>${inr(data.balanceDue)}</b></td></tr>
     </table>
     <p>Please arrange payment at your earliest convenience, or reply to this email / WhatsApp us at +91 ${BUSINESS_PHONE} if you have questions.</p>
@@ -170,6 +182,8 @@ export function paymentReminderEmail(data: PaymentReminderEmailData): EmailTempl
     `This is a friendly reminder about the pending balance for your upcoming event.`, '',
     `Proposal: ${data.proposalNumber}`,
     `Event: ${data.eventType || '—'} on ${eventDateLabel}`,
+    ...(data.packageName ? [`Package: ${data.packageName}`] : []),
+    ...(data.venue ? [`Venue: ${data.venue}`] : []),
     `Balance Due: ${inr(data.balanceDue)}`, '',
     `Please arrange payment at your earliest convenience, or reply / WhatsApp +91 ${BUSINESS_PHONE}.`, '',
     `Warm regards,`, `${BUSINESS_NAME} Team`,
