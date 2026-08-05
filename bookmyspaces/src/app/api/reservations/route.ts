@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
   const body = parsed.data
 
   try {
-    const { reservationResult, quote } = await createReservationWithQuote({
+    const { reservationResult, quote, proposalLinkError } = await createReservationWithQuote({
       customerId: body.customerId ?? null,
       guestName: body.guestName,
       guestMobile: body.guestMobile ?? null,
@@ -104,7 +104,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Could not create reservation', detail: reservationResult.message }, { status: 502 })
     }
 
-    return NextResponse.json({ reservation: reservationResult.reservation, quote }, { status: 201 })
+    // Production fix (proposal<->reservation link-back): the reservation is
+    // real and already committed even if this failed — never surfaced as a
+    // non-2xx (that would risk a client retry creating a duplicate
+    // reservation). Logged for visibility; returned in the body so the UI
+    // can show a non-blocking warning if it chooses to.
+    if (proposalLinkError) {
+      logger.error('reservations', 'POST proposal link-back failed', proposalLinkError, { reservationId: reservationResult.reservation.id, proposalId: body.proposalId })
+    }
+
+    return NextResponse.json(
+      { reservation: reservationResult.reservation, quote, ...(proposalLinkError ? { proposalLinkError } : {}) },
+      { status: 201 }
+    )
   } catch (error) {
     logger.error('reservations', 'POST failed', error)
     return NextResponse.json({ error: 'Failed to create reservation' }, { status: 500 })

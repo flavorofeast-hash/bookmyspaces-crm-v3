@@ -205,6 +205,17 @@ export interface CreateReservationWithQuoteInput extends CreateReservationInput 
 export interface CreateReservationWithQuoteResult {
   reservationResult: CreateReservationResult
   quote: PriceQuote | null
+  /**
+   * Production fix (proposal<->reservation link-back): set when this
+   * reservation was created from a proposal (input.proposalId) but the
+   * best-effort UPDATE proposals.reservation_id afterward failed. The
+   * reservation itself is still valid and already committed — this is
+   * surfaced separately so a failed link-back is never mistaken for a
+   * failed reservation (which would risk a caller retrying and creating a
+   * duplicate reservation). Undefined for every other case (no proposalId,
+   * or the link-back succeeded).
+   */
+  proposalLinkError?: string
 }
 
 /**
@@ -330,6 +341,8 @@ export async function createReservationWithQuote(
     venue,
   })
 
+  let proposalLinkError: string | undefined
+
   if (reservationResult.ok) {
     await logActivity(
       input.crmLeadId ?? input.customerId ?? null,
@@ -337,9 +350,70 @@ export async function createReservationWithQuote(
       `Reservation created for ${input.checkInDate} -> ${input.checkOutDate}`,
       { reservationId: reservationResult.reservation.id, subtotal: quote.subtotal, finalRoomRate, pricingSource, mealPlanCharge: quote.mealPlanCharge, addonsCharge: quote.addonsCharge, isComplete: quote.isComplete }
     )
+
+    // Production fix: proposals.reservation_id link-back. Root cause — the
+    // accepted-proposal -> reservation flow has only ever set
+    // reservations.proposal_id (above); nothing ever wrote the reverse FK,
+    // proposals.reservation_id, which migration 013 added for exactly this
+    // link. Invoice/Receipt/Payment Reminder/Invoice Email all still work
+    // without it (commercial-source.ts's resolveReservationSource() falls
+    // back to a reverse lookup via getReservationByProposalId() when
+    // proposal.reservation_id is null) — this fix only completes the direct
+    // link for any future/other consumer that queries it directly, and does
+    // NOT touch commercial-source.ts, pricing, or any of the four documents.
+    //
+    // Only for proposal-based reservations (input.proposalId set) — never
+    // runs for a walk-in reservation. Guarded with
+    // .is('reservation_id', null) so it never overwrites an already-linked
+    // proposal (defense against double-linking if this ever ran twice for
+    // the same proposal — no duplicate reservations are created by this
+    // write either way, it's a single UPDATE, not an insert).
+    //
+    // Best-effort in the sense that a failure here does NOT undo or
+    // invalidate the reservation that was already committed above — the
+    // reservation is real and already exists. The failure is instead
+    // surfaced via `proposalLinkError` so callers can alert an operator
+    // without risking a retry that would create a second reservation for
+    // the same booking.
+    //
+    // TODO(transactional-link): createReservation() and this UPDATE are two
+    // separate statements, not one atomic unit — if this UPDATE fails (or
+    // the process dies between the two), the reservation exists but the
+    // link-back doesn't, and nothing here retries it. That's an accepted,
+    // surfaced (not silent) inconsistency for now. If/when reservation
+    // creation and this link-back move into a single DB transaction or a
+    // Postgres RPC (both writes committed or rolled back together), this
+    // try/catch and the whole "best-effort, surfaced via proposalLinkError"
+    // posture should be replaced by a hard failure of the entire operation.
+    if (input.proposalId) {
+      const reservationId = reservationResult.reservation.id
+      // Included directly in the returned/logged message (not just as
+      // structured metadata at the caller) so `proposalLinkError` is
+      // self-describing wherever it ends up — a log line, a stored field, a
+      // UI toast — enough on its own to find and manually re-link the
+      // specific proposal/reservation pair.
+      const context = `proposalId=${input.proposalId} reservationId=${reservationId}`
+      try {
+        const supabase = getSupabaseAdmin()
+        const { error: linkError } = await supabase
+          .from('proposals')
+          .update({ reservation_id: reservationId })
+          .eq('id', input.proposalId)
+          .is('reservation_id', null)
+
+        if (linkError) {
+          proposalLinkError = `Failed to link proposal to reservation (${context}): ${linkError.message}`
+        }
+      } catch (err) {
+        // Never let this take down a reservation that already succeeded —
+        // same posture as logActivity() above. Surfaced via proposalLinkError.
+        const message = err instanceof Error ? err.message : 'Unknown error'
+        proposalLinkError = `Failed to link proposal to reservation (${context}): ${message}`
+      }
+    }
   }
 
-  return { reservationResult, quote }
+  return { reservationResult, quote, proposalLinkError }
 }
 
 // ─── Manual availability override (Sprint 1, Priority 1) ───────────────────

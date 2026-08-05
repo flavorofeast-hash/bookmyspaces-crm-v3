@@ -11,7 +11,13 @@ const mocks = vi.hoisted(() => ({
   // input.proposalId is set. Defaults to "no proposal found" so every
   // existing test (which never sets proposalId) is unaffected.
   proposalLookup: vi.fn(),
+  // Production fix (proposal<->reservation link-back) — controls the
+  // .update(...).eq(...).is(...) call's result. Defaults to success
+  // (error: null) so every existing test is unaffected.
+  proposalLinkUpdate: vi.fn(),
 }))
+
+const proposalUpdates: Array<{ id: unknown; patch: Record<string, unknown> }> = []
 
 vi.mock('./availability-service', () => ({
   checkAvailability: mocks.checkAvailability,
@@ -45,6 +51,17 @@ vi.mock('@/lib/supabase', () => ({
           select: () => ({
             eq: () => ({
               maybeSingle: () => Promise.resolve(mocks.proposalLookup()),
+            }),
+          }),
+          // Production fix (proposal<->reservation link-back) — a different
+          // chain shape again (.update().eq().is()), same "switch on table
+          // name, one mocked client" approach as the select-branch above.
+          update: (patch: Record<string, unknown>) => ({
+            eq: (_col: string, id: unknown) => ({
+              is: () => {
+                proposalUpdates.push({ id, patch })
+                return Promise.resolve(mocks.proposalLinkUpdate())
+              },
             }),
           }),
         }
@@ -151,7 +168,9 @@ describe('createReservationWithQuote', () => {
     mocks.getInventoryItemRate.mockReset().mockResolvedValue(5000)
     mocks.getMealPlanById.mockReset()
     mocks.proposalLookup.mockReset().mockReturnValue({ data: null, error: null })
+    mocks.proposalLinkUpdate.mockReset().mockReturnValue({ error: null })
     activityInserts.length = 0
+    proposalUpdates.length = 0
   })
 
   it('returns unavailable without creating a reservation when the dates conflict', async () => {
@@ -249,6 +268,61 @@ describe('createReservationWithQuote', () => {
     expect(activityInserts[0]).toMatchObject({
       metadata: expect.objectContaining({ pricingSource: 'proposal', finalRoomRate: 50000 }),
     })
+  })
+
+  // Production fix — proposals.reservation_id link-back. Root cause: the
+  // accepted-proposal -> reservation flow only ever set
+  // reservations.proposal_id, never the reverse FK. Invoice/Receipt/etc.
+  // still worked via commercial-source.ts's reverse lookup, but any other
+  // consumer querying proposals.reservation_id directly saw NULL forever.
+  it('links proposals.reservation_id back to the new reservation when proposalId is set', async () => {
+    mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-1', customerId: 'lead-1' } })
+    mocks.proposalLookup.mockReturnValue({ data: { status: 'accepted', total_price: 50000, base_price: 45000 }, error: null })
+
+    const result = await createReservationWithQuote({ ...baseInput, customerId: 'lead-1', proposalId: 'prop-abc' })
+
+    expect(result.reservationResult.ok).toBe(true)
+    expect(result.proposalLinkError).toBeUndefined()
+    expect(proposalUpdates).toEqual([{ id: 'prop-abc', patch: { reservation_id: 'res-1' } }])
+  })
+
+  it('never touches proposals when the reservation is a walk-in (no proposalId)', async () => {
+    mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-1', customerId: 'lead-1' } })
+
+    const result = await createReservationWithQuote({ ...baseInput, customerId: 'lead-1' })
+
+    expect(result.proposalLinkError).toBeUndefined()
+    expect(proposalUpdates).toEqual([])
+  })
+
+  it('surfaces a failed link-back via proposalLinkError WITHOUT failing the reservation itself (no retry -> no duplicate reservation)', async () => {
+    mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-1', customerId: 'lead-1' } })
+    mocks.proposalLookup.mockReturnValue({ data: { status: 'accepted', total_price: 50000, base_price: 45000 }, error: null })
+    mocks.proposalLinkUpdate.mockReturnValue({ error: { message: 'constraint violation' } })
+
+    const result = await createReservationWithQuote({ ...baseInput, customerId: 'lead-1', proposalId: 'prop-abc' })
+
+    expect(result.reservationResult.ok).toBe(true) // reservation still succeeded
+    // Enriched error handling — the message is self-describing (contains
+    // both ids) rather than a bare DB error, so it's identifiable wherever
+    // it ends up (log line, API response, stored field) without needing the
+    // structured metadata alongside it.
+    expect(result.proposalLinkError).toBe('Failed to link proposal to reservation (proposalId=prop-abc reservationId=res-1): constraint violation')
+  })
+
+  it('does not attempt the link-back when reservation creation itself failed', async () => {
+    mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
+    mocks.createReservation.mockResolvedValue({ ok: false, error: 'db_error', message: 'insert failed' })
+    mocks.proposalLookup.mockReturnValue({ data: { status: 'accepted', total_price: 50000, base_price: 45000 }, error: null })
+
+    const result = await createReservationWithQuote({ ...baseInput, customerId: 'lead-1', proposalId: 'prop-abc' })
+
+    expect(result.reservationResult.ok).toBe(false)
+    expect(result.proposalLinkError).toBeUndefined()
+    expect(proposalUpdates).toEqual([])
   })
 
   // Internal-consistency fix (Reservation -> Invoice architecture pass,
