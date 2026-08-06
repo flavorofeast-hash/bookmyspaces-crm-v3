@@ -28,7 +28,7 @@ export async function GET(): Promise<NextResponse> {
       .select(
         'id, proposal_number, share_token, lead_id, client_name, client_phone, ' +
         'event_type, event_date, guest_count, package_name, total_price, ' +
-        'status, urgency_score, risk_level, next_action, escalation_required, ' +
+        'status, reservation_id, urgency_score, risk_level, next_action, escalation_required, ' +
         'engagement_score, viewed_count, sent_at, first_viewed_at, ' +
         'last_viewed_at, followed_up_at, created_at, updated_at, ' +
         'ai_summary, recommended_package, venue_fit_reasoning, ' +

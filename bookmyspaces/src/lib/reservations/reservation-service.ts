@@ -65,6 +65,12 @@ export type CreateReservationResult =
   | { ok: true; reservation: Reservation }
   | { ok: false; error: 'unavailable'; conflictingReservationIds: string[] }
   | { ok: false; error: 'db_error'; message: string }
+  /** Duplicate-conversion guard (Proposal -> Reservation UI sync fix) — this
+   * proposal already has a linked reservation; never produced by
+   * createReservation() itself, only by createReservationWithQuote()'s
+   * early check in reservation-workflow.ts before createReservation() is
+   * ever called, so no second reservation row is created. */
+  | { ok: false; error: 'already_converted'; reservationId: string }
 
 /**
  * Creates a reservation after checking availability — never creates an

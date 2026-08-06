@@ -32,7 +32,7 @@
 import { getSupabaseAdmin } from '@/lib/supabase'
 import type { Reservation } from '@/types/reservation'
 import { checkAvailability, type AvailabilityCheckResult } from './availability-service'
-import { createReservation, transitionReservationStatus, type CreateReservationInput, type CreateReservationResult, type TransitionResult, type PricedAddonLine } from './reservation-service'
+import { createReservation, transitionReservationStatus, getReservationByProposalId, type CreateReservationInput, type CreateReservationResult, type TransitionResult, type PricedAddonLine } from './reservation-service'
 import { getInventoryItemRate } from '@/lib/pricing/pricing-service'
 import { getMealPlanById, getAddonServicesByIds } from './property-service'
 
@@ -228,6 +228,41 @@ export interface CreateReservationWithQuoteResult {
 export async function createReservationWithQuote(
   input: CreateReservationWithQuoteInput
 ): Promise<CreateReservationWithQuoteResult> {
+  // Duplicate-conversion guard (Proposal -> Reservation UI sync fix). Runs
+  // first, before availability/pricing — no point doing either if this
+  // proposal was already converted. Checks BOTH directions so it can't be
+  // bypassed by a stale row from before the link-back fix landed:
+  //   1. proposals.reservation_id (the common, now-reliable case)
+  //   2. reservations.proposal_id reverse lookup (covers a historical row
+  //      where the link-back UPDATE never ran/failed and was never retried)
+  // This is the actual guarantee against a duplicate reservation — the UI
+  // hiding "Convert to Reservation" is a courtesy, not the enforcement
+  // point; a stale tab, browser back/forward, or direct API call must still
+  // be blocked here.
+  if (input.proposalId) {
+    const supabase = getSupabaseAdmin()
+    const { data: existingLink } = await supabase
+      .from('proposals')
+      .select('reservation_id')
+      .eq('id', input.proposalId)
+      .maybeSingle()
+
+    if (existingLink?.reservation_id) {
+      return {
+        reservationResult: { ok: false, error: 'already_converted', reservationId: existingLink.reservation_id },
+        quote: null,
+      }
+    }
+
+    const existingReservation = await getReservationByProposalId(input.proposalId)
+    if (existingReservation) {
+      return {
+        reservationResult: { ok: false, error: 'already_converted', reservationId: existingReservation.id },
+        quote: null,
+      }
+    }
+  }
+
   const availability = await checkAvailability(input.inventoryItemId, input.checkInDate, input.checkOutDate)
   if (!availability.available) {
     return {

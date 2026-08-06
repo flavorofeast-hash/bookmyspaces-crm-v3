@@ -22,6 +22,12 @@ import {
   MapPin, FileText, Receipt, CheckCircle2, XCircle, LogIn, LogOut,
   RefreshCw, AlertTriangle, ExternalLink, Sparkles,
 } from 'lucide-react'
+// Payment module dedup — single source of truth shared with the Proposals
+// page (src/app/(crm)/proposals/page.tsx). Payments stay proposal-scoped in
+// the DB, so this page resolves a proposalId via ensureProposalId() (below,
+// pre-existing — already used for Generate Invoice) before opening either.
+import { PaymentModal } from '@/components/payments/PaymentModal'
+import { ReceiptsModal } from '@/components/payments/ReceiptsModal'
 
 type ReservationStatus = 'inquiry' | 'tentative' | 'confirmed' | 'checked_in' | 'checked_out' | 'cancelled' | 'no_show'
 type StatusAction = 'confirm' | 'cancel' | 'check_in' | 'check_out'
@@ -116,6 +122,15 @@ export default function ReservationDetailsPage({ params }: { params: { id: strin
   const [generatingInvoice, setGeneratingInvoice] = useState(false)
   const [invoiceError, setInvoiceError] = useState<string | null>(null)
 
+  // Payment module dedup — Record Payment / Payment History, reusing the
+  // shared PaymentModal/ReceiptsModal (see imports above). `resolvingPayment`
+  // tracks which action is currently resolving a proposalId via
+  // ensureProposalId(); the modals themselves only open once that resolves.
+  const [resolvingPayment, setResolvingPayment] = useState<'record' | 'history' | null>(null)
+  const [paymentActionError, setPaymentActionError] = useState<string | null>(null)
+  const [payProposalId, setPayProposalId] = useState<string | null>(null)
+  const [receiptsProposalId, setReceiptsProposalId] = useState<string | null>(null)
+
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -205,6 +220,32 @@ export default function ReservationDetailsPage({ params }: { params: { id: strin
     }
   }
 
+  async function handleOpenPayment() {
+    setResolvingPayment('record')
+    setPaymentActionError(null)
+    try {
+      const proposalId = await ensureProposalId()
+      setPayProposalId(proposalId)
+    } catch (err) {
+      setPaymentActionError(err instanceof Error ? err.message : 'Failed to open payment form')
+    } finally {
+      setResolvingPayment(null)
+    }
+  }
+
+  async function handleOpenReceipts() {
+    setResolvingPayment('history')
+    setPaymentActionError(null)
+    try {
+      const proposalId = await ensureProposalId()
+      setReceiptsProposalId(proposalId)
+    } catch (err) {
+      setPaymentActionError(err instanceof Error ? err.message : 'Failed to load payment history')
+    } finally {
+      setResolvingPayment(null)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64 text-gray-500">
@@ -235,6 +276,28 @@ export default function ReservationDetailsPage({ params }: { params: { id: strin
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
+      {/* Payment module dedup — shared PaymentModal/ReceiptsModal, same
+          single source of truth as the Proposals page. */}
+      {payProposalId && (
+        <PaymentModal
+          proposalId={payProposalId}
+          displayName={reservation.guestName}
+          displayRef={proposalResult?.proposalNumber ?? 'Reservation Booking'}
+          fallbackTotal={total}
+          fallbackPaid={0}
+          onClose={() => setPayProposalId(null)}
+          onSuccess={() => { setPayProposalId(null); load() }}
+        />
+      )}
+      {receiptsProposalId && (
+        <ReceiptsModal
+          proposalId={receiptsProposalId}
+          displayName={reservation.guestName}
+          displayRef={proposalResult?.proposalNumber ?? 'Reservation Booking'}
+          onClose={() => setReceiptsProposalId(null)}
+        />
+      )}
+
       <Link href="/reservations" className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800">
         <ArrowLeft className="w-4 h-4" /> Back to Reservation Dashboard
       </Link>
@@ -348,9 +411,30 @@ export default function ReservationDetailsPage({ params }: { params: { id: strin
               <Receipt className="w-3.5 h-3.5" /> {generatingInvoice ? 'Generating…' : 'Generate Invoice'}
             </button>
           )}
+          {/* Payment module dedup — single source of truth once a Reservation
+              exists (see src/components/payments/*). Payments are proposal-
+              scoped in the DB, so both actions resolve a proposalId first via
+              ensureProposalId() — same helper Generate Invoice already uses,
+              transparent to the operator (silently creates a proposal behind
+              the scenes for walk-in reservations that don't have one yet). */}
+          <button
+            onClick={handleOpenPayment}
+            disabled={resolvingPayment !== null}
+            className="inline-flex items-center gap-1.5 text-emerald-700 hover:underline disabled:opacity-50"
+          >
+            <IndianRupee className="w-3.5 h-3.5" /> {resolvingPayment === 'record' ? 'Opening…' : 'Record Payment'}
+          </button>
+          <button
+            onClick={handleOpenReceipts}
+            disabled={resolvingPayment !== null}
+            className="inline-flex items-center gap-1.5 text-teal-700 hover:underline disabled:opacity-50"
+          >
+            <Receipt className="w-3.5 h-3.5" /> {resolvingPayment === 'history' ? 'Loading…' : 'Payment History'}
+          </button>
         </div>
         {proposalError && <div className="mt-2 text-sm text-red-700">{proposalError}</div>}
         {invoiceError && <div className="mt-2 text-sm text-red-700">{invoiceError}</div>}
+        {paymentActionError && <div className="mt-2 text-sm text-red-700">{paymentActionError}</div>}
       </div>
 
       {/* ── Status actions ──────────────────────────────────────────────── */}

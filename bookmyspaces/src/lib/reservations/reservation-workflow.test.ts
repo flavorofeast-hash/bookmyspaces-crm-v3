@@ -15,6 +15,11 @@ const mocks = vi.hoisted(() => ({
   // .update(...).eq(...).is(...) call's result. Defaults to success
   // (error: null) so every existing test is unaffected.
   proposalLinkUpdate: vi.fn(),
+  // Duplicate-conversion guard (Proposal -> Reservation UI sync fix) —
+  // reverse-lookup half of the guard. Defaults to "no reservation found" so
+  // every existing test (none of which represent an already-converted
+  // proposal) is unaffected.
+  getReservationByProposalId: vi.fn(),
 }))
 
 const proposalUpdates: Array<{ id: unknown; patch: Record<string, unknown> }> = []
@@ -26,6 +31,7 @@ vi.mock('./availability-service', () => ({
 vi.mock('./reservation-service', () => ({
   createReservation: mocks.createReservation,
   transitionReservationStatus: mocks.transitionReservationStatus,
+  getReservationByProposalId: mocks.getReservationByProposalId,
 }))
 
 vi.mock('@/lib/pricing/pricing-service', () => ({
@@ -169,6 +175,7 @@ describe('createReservationWithQuote', () => {
     mocks.getMealPlanById.mockReset()
     mocks.proposalLookup.mockReset().mockReturnValue({ data: null, error: null })
     mocks.proposalLinkUpdate.mockReset().mockReturnValue({ error: null })
+    mocks.getReservationByProposalId.mockReset().mockResolvedValue(null)
     activityInserts.length = 0
     proposalUpdates.length = 0
   })
@@ -323,6 +330,44 @@ describe('createReservationWithQuote', () => {
     expect(result.reservationResult.ok).toBe(false)
     expect(result.proposalLinkError).toBeUndefined()
     expect(proposalUpdates).toEqual([])
+  })
+
+  // Duplicate-conversion guard (Proposal -> Reservation UI sync fix). This is
+  // the actual enforcement point — the "Convert to Reservation" button being
+  // hidden client-side is a courtesy, not a guarantee; a stale tab, browser
+  // back/forward, or direct API call must still be blocked here, before
+  // checkAvailability/createReservation ever run.
+  it('blocks conversion when proposals.reservation_id is already set (forward link)', async () => {
+    mocks.proposalLookup.mockReturnValue({ data: { reservation_id: 'res-existing' }, error: null })
+
+    const result = await createReservationWithQuote({ ...baseInput, customerId: 'lead-1', proposalId: 'prop-abc' })
+
+    expect(result.reservationResult).toEqual({ ok: false, error: 'already_converted', reservationId: 'res-existing' })
+    expect(result.quote).toBeNull()
+    expect(mocks.checkAvailability).not.toHaveBeenCalled()
+    expect(mocks.createReservation).not.toHaveBeenCalled()
+  })
+
+  it('blocks conversion via the reverse lookup when the forward link is missing (historical row, pre link-back fix)', async () => {
+    mocks.proposalLookup.mockReturnValue({ data: { reservation_id: null }, error: null })
+    mocks.getReservationByProposalId.mockResolvedValue({ id: 'res-existing', propertyName: 'X', inventoryName: 'Y' })
+
+    const result = await createReservationWithQuote({ ...baseInput, customerId: 'lead-1', proposalId: 'prop-abc' })
+
+    expect(result.reservationResult).toEqual({ ok: false, error: 'already_converted', reservationId: 'res-existing' })
+    expect(mocks.checkAvailability).not.toHaveBeenCalled()
+    expect(mocks.createReservation).not.toHaveBeenCalled()
+  })
+
+  it('allows conversion when neither the forward link nor the reverse lookup finds an existing reservation', async () => {
+    mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
+    mocks.createReservation.mockResolvedValue({ ok: true, reservation: { id: 'res-1', customerId: 'lead-1' } })
+    mocks.proposalLookup.mockReturnValue({ data: { status: 'accepted', total_price: 50000, base_price: 45000, reservation_id: null }, error: null })
+
+    const result = await createReservationWithQuote({ ...baseInput, customerId: 'lead-1', proposalId: 'prop-abc' })
+
+    expect(result.reservationResult.ok).toBe(true)
+    expect(mocks.createReservation).toHaveBeenCalled()
   })
 
   // Internal-consistency fix (Reservation -> Invoice architecture pass,

@@ -97,6 +97,18 @@ export async function POST(req: NextRequest) {
           { status: 409 }
         )
       }
+      // Duplicate-conversion guard (Proposal -> Reservation UI sync fix) —
+      // this proposal already has a linked reservation; createReservation()
+      // was never called, so no duplicate row exists. 409, same as the
+      // 'unavailable' case above (a conflict with existing state, not a
+      // server error) — includes the existing reservationId so the caller
+      // can redirect straight to it instead of retrying.
+      if (reservationResult.error === 'already_converted') {
+        return NextResponse.json(
+          { error: 'This proposal has already been converted to a reservation', reservationId: reservationResult.reservationId },
+          { status: 409 }
+        )
+      }
       // db_error here almost always means migration 012's `reservations`
       // table isn't applied yet in this environment — 502, not 500, to
       // signal "dependency not ready" rather than "this route is broken".

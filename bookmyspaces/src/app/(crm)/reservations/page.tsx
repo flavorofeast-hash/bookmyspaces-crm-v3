@@ -21,7 +21,7 @@
 
 import { useEffect, useState, useCallback, useMemo, Suspense } from 'react'
 import Link from 'next/link'
-import { useSearchParams } from 'next/navigation'
+import { useSearchParams, useRouter } from 'next/navigation'
 import {
   Calendar, LogIn, LogOut, Clock, CheckCircle2, IndianRupee,
   Plus, X, RefreshCw, AlertTriangle, ChevronRight, Building2,
@@ -143,6 +143,32 @@ const STATUS_STYLE: Record<ReservationStatus, string> = {
 
 const ACTIVE_STATUSES: ReservationStatus[] = ['inquiry', 'tentative', 'confirmed', 'checked_in']
 
+// Status filter for the "Upcoming reservations" table only — does not touch
+// `reservations`/`stats` (still sourced from the unchanged ACTIVE_STATUSES
+// load below), so the stat cards and default view are byte-for-byte
+// unaffected by this filter existing.
+type StatusFilterValue = 'all' | 'inquiry' | 'confirmed' | 'checked_in' | 'checked_out' | 'cancelled'
+
+const STATUS_FILTER_OPTIONS: { value: StatusFilterValue; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'inquiry', label: 'Inquiry' },
+  { value: 'confirmed', label: 'Confirmed' },
+  { value: 'checked_in', label: 'Checked In' },
+  { value: 'checked_out', label: 'Checked Out' },
+  { value: 'cancelled', label: 'Cancelled' },
+]
+
+// Table heading text per selected status filter — display-only, does not
+// affect filtering/state/API calls.
+const STATUS_FILTER_HEADING: Record<StatusFilterValue, string> = {
+  all: 'Reservations',
+  inquiry: 'Inquiry Reservations',
+  confirmed: 'Confirmed Reservations',
+  checked_in: 'Checked In Reservations',
+  checked_out: 'Checked Out Reservations',
+  cancelled: 'Cancelled Reservations',
+}
+
 export default function ReservationDashboardPage() {
   return (
     <Suspense fallback={<div className="text-sm text-gray-400 p-6">Loading…</div>}>
@@ -152,6 +178,7 @@ export default function ReservationDashboardPage() {
 }
 
 function ReservationDashboardContent() {
+  const router = useRouter()
   const searchParams = useSearchParams()
   const fromProposalId = searchParams.get('fromProposalId')
   // Priority 1 (WhatsApp Sales Platform) — "Booking creation" from the
@@ -167,6 +194,15 @@ function ReservationDashboardContent() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showNewModal, setShowNewModal] = useState(false)
+
+  // Status filter (Reservation Dashboard) — 'checked_out'/'cancelled' are
+  // never part of the ACTIVE_STATUSES load below, so selecting either one
+  // fetches that status on demand into its own state. 'all'/'inquiry'/
+  // 'confirmed'/'checked_in' are already present in `reservations` and are
+  // filtered client-side — no extra fetch needed for those.
+  const [statusFilter, setStatusFilter] = useState<StatusFilterValue>('all')
+  const [extraReservations, setExtraReservations] = useState<ReservationRow[]>([])
+  const [loadingExtra, setLoadingExtra] = useState(false)
   const [proposalPrefill, setProposalPrefill] = useState<ProposalPrefill | null>(null)
   const [proposalPrefillError, setProposalPrefillError] = useState<string | null>(null)
 
@@ -187,10 +223,34 @@ function ReservationDashboardContent() {
 
   useEffect(() => { load() }, [load])
 
+  // On-demand fetch for the two statuses the default load never includes.
+  useEffect(() => {
+    if (statusFilter !== 'checked_out' && statusFilter !== 'cancelled') return
+    let cancelledEffect = false
+    setLoadingExtra(true)
+    fetch(`/api/reservations?status=${statusFilter}`)
+      .then((r) => r.json())
+      .then((json) => { if (!cancelledEffect) setExtraReservations(json.reservations ?? []) })
+      .catch(() => { if (!cancelledEffect) setExtraReservations([]) })
+      .finally(() => { if (!cancelledEffect) setLoadingExtra(false) })
+    return () => { cancelledEffect = true }
+  }, [statusFilter])
+
   // V3 Sprint 3 — arriving from the Proposals page's "Convert to Reservation"
   // link: fetch the proposal and auto-open the New Reservation modal
   // prefilled with its guest/property/date details. The operator still
   // confirms/adjusts everything (esp. inventory + dates) before creating.
+  //
+  // Defensive protection (Proposal -> Reservation UI sync fix): this URL
+  // (?fromProposalId=) can still be reached directly — a stale tab, a
+  // bookmarked link, or browser back/forward — even after the Proposals
+  // page correctly hides "Convert to Reservation" for an already-converted
+  // proposal. Check proposal.reservation_id here too, before ever opening
+  // the New Reservation modal, and redirect to the existing reservation
+  // instead. This is a courtesy (fast, no wasted form-filling) — the actual
+  // guarantee against a duplicate is the server-side check in
+  // createReservationWithQuote() (reservation-workflow.ts), which runs
+  // regardless of whether this redirect fires.
   useEffect(() => {
     if (!fromProposalId) return
     fetch(`/api/proposals?id=${fromProposalId}`)
@@ -200,6 +260,10 @@ function ReservationDashboardContent() {
         if (!p) {
           setProposalPrefillError('Could not find that proposal — pick details manually.')
           setShowNewModal(true)
+          return
+        }
+        if (p.reservation_id) {
+          router.replace(`/reservations/${p.reservation_id}`)
           return
         }
         setProposalPrefill({
@@ -253,12 +317,26 @@ function ReservationDashboardContent() {
     return { arrivalsToday, departuresToday, pendingReservations, pendingConfirmations, checkedIn, monthRevenue }
   }, [reservations, today])
 
+  // Status filter applies only to this table's source list — 'all' keeps the
+  // exact original filter/sort/slice (same as before this feature existed).
+  // 'checked_out'/'cancelled' read from the on-demand `extraReservations`
+  // fetch above since those statuses are never in `reservations`. The other
+  // specific statuses are already present in `reservations` and just get
+  // filtered client-side.
   const upcoming = useMemo(() => {
+    if (statusFilter === 'checked_out' || statusFilter === 'cancelled') {
+      return [...extraReservations]
+        .sort((a, b) => a.checkInDate.localeCompare(b.checkInDate))
+        .slice(0, 20)
+    }
     return [...reservations]
-      .filter((r) => r.status !== 'cancelled' && r.status !== 'checked_out')
+      .filter((r) => {
+        if (statusFilter === 'all') return r.status !== 'cancelled' && r.status !== 'checked_out'
+        return r.status === statusFilter
+      })
       .sort((a, b) => a.checkInDate.localeCompare(b.checkInDate))
       .slice(0, 20)
-  }, [reservations])
+  }, [reservations, extraReservations, statusFilter])
 
   return (
     <div className="space-y-6">
@@ -313,9 +391,20 @@ function ReservationDashboardContent() {
 
       {/* ── Upcoming reservations table ─────────────────────────────────── */}
       <div className="bg-white rounded-xl border border-gray-200">
-        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-700">Upcoming reservations</h2>
-          {loading && <RefreshCw className="w-4 h-4 text-gray-300 animate-spin" />}
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold text-gray-700">{STATUS_FILTER_HEADING[statusFilter]}</h2>
+          <div className="flex items-center gap-2">
+            {(loading || loadingExtra) && <RefreshCw className="w-4 h-4 text-gray-300 animate-spin" />}
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as StatusFilterValue)}
+              className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs font-medium text-gray-600"
+            >
+              {STATUS_FILTER_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {!loading && upcoming.length === 0 ? (

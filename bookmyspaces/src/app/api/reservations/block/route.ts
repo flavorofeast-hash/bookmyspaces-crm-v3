@@ -50,6 +50,18 @@ export async function POST(req: NextRequest) {
           { status: 409 }
         )
       }
+      // Type-level only for this call site: createManualBlock() calls
+      // createReservation() directly (no proposalId ever supplied), so this
+      // variant cannot actually occur here — createReservation() itself
+      // never produces it, only createReservationWithQuote()'s duplicate-
+      // conversion guard does. Handled for exhaustiveness/type-safety since
+      // CreateReservationResult is a shared union with POST /api/reservations.
+      if (result.error === 'already_converted') {
+        return NextResponse.json(
+          { error: 'This proposal has already been converted to a reservation', reservationId: result.reservationId },
+          { status: 409 }
+        )
+      }
       logger.error('reservations/block', 'POST createManualBlock db_error', result.message)
       return NextResponse.json({ error: 'Could not create manual block', detail: result.message }, { status: 502 })
     }

@@ -8,7 +8,7 @@ import {
   AlertTriangle, Flame, RefreshCw, Download, MessageSquare,
   Mail, Copy, Phone, TrendingUp, Zap, ChevronDown, ChevronUp,
   BarChart3, Filter, Search, Plus, IndianRupee, Receipt,
-  X, Loader2, BookOpen, Wallet,
+  Loader2, BookOpen, Wallet,
 } from 'lucide-react'
 import {
   computeProposalUrgency,
@@ -17,6 +17,13 @@ import {
   LeadSnapshot,
   ProposalNextAction,
 } from '@/lib/proposal-intelligence'
+// Payment module dedup — single source of truth shared with the Reservation
+// Details page (src/app/(crm)/reservations/[id]/page.tsx). Do not
+// redeclare PaymentModal/ReceiptsModal/ModalShell locally.
+import { PaymentModal } from '@/components/payments/PaymentModal'
+import { ReceiptsModal } from '@/components/payments/ReceiptsModal'
+import { ModalShell } from '@/components/payments/ModalShell'
+import { PaymentRecord, formatINR, fmtINRFull, fmtDate, modeLabel } from '@/components/payments/format'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -38,6 +45,8 @@ interface ProposalWithLead {
   package_name        : string|null
   total_price         : number|null
   status              : ProposalStatus
+  /** Set once this proposal has been converted to a Reservation (migration 013) — see src/lib/reservations/commercial-source.ts. Drives whether "Convert to Reservation" or "View Reservation" is shown; must never be missing from any query that feeds this page. */
+  reservation_id      : string|null
   payment_status      : PaymentStatus|null
   advance_paid        : number|null
   balance_due         : number|null
@@ -67,37 +76,10 @@ interface LeadSnapshotRaw {
   estimated_revenue:number|null; budget:string|null; event_type:string|null; venue:string|null
 }
 
-// ─── Payment record shape (from GET /api/proposals/[id]/payment) ──────────────
-
-interface PaymentRecord {
-  id             : string
-  receipt_number : string
-  amount         : number
-  payment_date   : string
-  payment_mode   : string
-  transaction_ref: string|null
-  notes          : string|null
-  payment_type   : string
-  created_at     : string
-}
+// PaymentRecord, formatINR, fmtINRFull, fmtDate, modeLabel now imported from
+// @/components/payments/format (payment module dedup) — see import block above.
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function formatINR(n:number):string {
-  if (n>=100_000) return `₹${(n/100_000).toFixed(1)}L`
-  if (n>=1_000)   return `₹${(n/1_000).toFixed(0)}K`
-  return `₹${n}`
-}
-
-function fmtINRFull(n:number):string {
-  return '₹' + Number(n).toLocaleString('en-IN')
-}
-
-function fmtDate(iso:string|null|undefined):string {
-  if (!iso) return '—'
-  try { return new Date(iso).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) }
-  catch { return iso }
-}
 
 function timeAgo(iso:string|null):string {
   if (!iso) return '—'
@@ -105,16 +87,6 @@ function timeAgo(iso:string|null):string {
   if (mins<60)   return `${mins}m ago`
   if (mins<1440) return `${Math.floor(mins/60)}h ago`
   return `${Math.floor(mins/1440)}d ago`
-}
-
-function modeLabel(m:string):string {
-  const map:Record<string,string>={cash:'Cash',upi:'UPI',card:'Card',bank_transfer:'Bank Transfer',cheque:'Cheque'}
-  return map[m]??m
-}
-
-function modeIcon(m:string):string {
-  const map:Record<string,string>={upi:'📱',cash:'💵',card:'💳',bank_transfer:'🏦',cheque:'📄'}
-  return map[m]??'💰'
 }
 
 function toLeadSnapshot(raw:LeadSnapshotRaw|null):LeadSnapshot {
@@ -165,264 +137,10 @@ const RISK_CONFIG:Record<RiskLevel,{label:string;color:string}> = {
   critical:{label:'Critical',   color:'text-red-700 bg-red-50 border border-red-200'},
 }
 
-// ─── Shared modal shell ───────────────────────────────────────────────────────
-
-function ModalShell({title,sub,onClose,children}:{
-  title:string; sub:string; onClose:()=>void; children:React.ReactNode
-}) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 bg-gray-900 text-white flex-shrink-0">
-          <div>
-            <p className="text-xs text-gray-400 mb-0.5">{sub}</p>
-            <p className="text-sm font-bold">{title}</p>
-          </div>
-          <button onClick={onClose} aria-label="Close" className="p-1.5 rounded-lg hover:bg-white/10 transition-colors">
-            <X className="w-4 h-4"/>
-          </button>
-        </div>
-        <div className="overflow-y-auto flex-1">{children}</div>
-      </div>
-    </div>
-  )
-}
-
-// ─── Record Payment Modal (UNCHANGED) ────────────────────────────────────────
-
-function PaymentModal({
-  proposal, onClose, onSuccess,
-}: {
-  proposal:ProposalWithLead; onClose:()=>void; onSuccess:()=>void
-}) {
-  const [amount, setAmount] = useState('')
-  const [date,   setDate]   = useState(new Date().toISOString().slice(0,10))
-  const [mode,   setMode]   = useState('upi')
-  const [ref,    setRef]    = useState('')
-  const [notes,  setNotes]  = useState('')
-  const [type,   setType]   = useState('advance')
-  const [saving, setSaving] = useState(false)
-  const [error,  setError]  = useState<string|null>(null)
-
-  // Production-hardening pass: once a Reservation is linked, its commercial
-  // figures (same resolver Invoice/Receipt/Payment Reminder use) must drive
-  // this balance preview instead of proposal.total_price/advance_paid — see
-  // GET /api/proposals/[id]/payment. Falls back to the existing Proposal-
-  // based calculation below (unchanged) when `commercial` hasn't loaded yet
-  // or no Reservation is linked (source === 'proposal').
-  const [commercial, setCommercial] = useState<{ source:'reservation'|'proposal'; total:number; paid:number; balanceDue:number } | null>(null)
-  useEffect(()=>{
-    let cancelled = false
-    fetch(`/api/proposals/${proposal.id}/payment`)
-      .then(r=>r.json())
-      .then(d=>{ if(!cancelled && d?.commercial) setCommercial(d.commercial) })
-      .catch(()=>{})
-    return ()=>{ cancelled = true }
-  }, [proposal.id])
-
-  const usingReservation = commercial?.source === 'reservation'
-  const previewTotal = usingReservation ? commercial!.total : (proposal.total_price ?? 0)
-  const previewPaid  = usingReservation ? commercial!.paid  : (proposal.advance_paid ?? 0)
-
-  async function submit(e:React.FormEvent) {
-    e.preventDefault()
-    if (!amount||parseFloat(amount)<=0){setError('Enter a valid amount');return}
-    setSaving(true)
-    try {
-      const res=await fetch(`/api/proposals/${proposal.id}/payment`,{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({amount:parseFloat(amount),payment_date:date,payment_mode:mode,transaction_ref:ref||null,notes:notes||null,payment_type:type}),
-      })
-      if (!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d.error??`Error ${res.status}`)}
-      onSuccess()
-    } catch(err:any){setError(err.message??'Failed to record payment');setSaving(false)}
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 bg-gray-900 text-white">
-          <div>
-            <p className="text-xs text-gray-400 mb-0.5">Record Payment</p>
-            <p className="text-sm font-bold">{proposal.client_name} · {proposal.proposal_number}</p>
-          </div>
-          <button onClick={onClose} aria-label="Close" className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"><X className="w-4 h-4"/></button>
-        </div>
-        <form onSubmit={submit} className="p-5 space-y-4">
-          {error&&<div className="px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">{error}</div>}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5">Amount (₹) *</label>
-              <input type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="25000" required
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5">Date</label>
-              <input type="date" value={date} onChange={e=>setDate(e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5">Payment Mode</label>
-              <select value={mode} onChange={e=>setMode(e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none bg-white">
-                <option value="upi">UPI</option><option value="cash">Cash</option>
-                <option value="card">Card</option><option value="bank_transfer">Bank Transfer</option>
-                <option value="cheque">Cheque</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5">Payment Type</label>
-              <select value={type} onChange={e=>setType(e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none bg-white">
-                <option value="advance">Advance</option><option value="partial">Partial</option>
-                <option value="final">Final Payment</option>
-              </select>
-            </div>
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5">Transaction Reference</label>
-            <input type="text" value={ref} onChange={e=>setRef(e.target.value)} placeholder="UPI ref / cheque no."
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5">Notes</label>
-            <textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={2} placeholder="Optional notes…"
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"/>
-          </div>
-          {previewTotal>0&&(
-            <div className="bg-gray-50 rounded-xl px-4 py-3 text-xs space-y-1">
-              <div className="flex justify-between text-gray-500">
-                <span>{usingReservation?'Reservation Total':'Proposal Total'}</span><span className="font-medium text-gray-700">{formatINR(previewTotal)}</span>
-              </div>
-              {previewPaid>0&&(
-                <div className="flex justify-between text-blue-600">
-                  <span>Already Paid</span><span className="font-medium">− {formatINR(previewPaid)}</span>
-                </div>
-              )}
-              {amount&&parseFloat(amount)>0&&(
-                <div className="flex justify-between text-green-600 border-t border-gray-200 pt-1 mt-1">
-                  <span>Balance After This</span>
-                  <span className="font-bold">{formatINR(Math.max(0,previewTotal-previewPaid-parseFloat(amount)))}</span>
-                </div>
-              )}
-            </div>
-          )}
-          <div className="flex gap-3 pt-1">
-            <button type="button" onClick={onClose}
-              className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
-            <button type="submit" disabled={saving}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-bold hover:bg-gray-800 disabled:opacity-60">
-              {saving?<><Loader2 className="w-4 h-4 animate-spin"/>Saving…</>:<><IndianRupee className="w-4 h-4"/>Record Payment</>}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  )
-}
-
-// ─── NEW: Advance Receipts Modal ──────────────────────────────────────────────
-
-function ReceiptsModal({proposal, onClose}:{proposal:ProposalWithLead; onClose:()=>void}) {
-  const [payments, setPayments] = useState<PaymentRecord[]>([])
-  const [loading,  setLoading]  = useState(true)
-  const [error,    setError]    = useState<string|null>(null)
-
-  useEffect(()=>{
-    setLoading(true)
-    fetch(`/api/proposals/${proposal.id}/payment`)
-      .then(r=>r.json())
-      .then(d=>{
-        setPayments(Array.isArray(d.payments)?d.payments:[])
-        setLoading(false)
-      })
-      .catch(()=>{setError('Failed to load payments');setLoading(false)})
-  },[proposal.id])
-
-  return (
-    <ModalShell
-      title={`Advance Receipts — ${proposal.proposal_number}`}
-      sub={proposal.client_name??''}
-      onClose={onClose}
-    >
-      {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="w-5 h-5 animate-spin text-gray-400"/>
-        </div>
-      ) : error ? (
-        <div className="p-5 text-sm text-red-600">{error}</div>
-      ) : payments.length === 0 ? (
-        <div className="p-8 text-center">
-          <Receipt className="w-10 h-10 text-gray-200 mx-auto mb-3"/>
-          <p className="text-sm text-gray-400 font-medium">No payments recorded yet.</p>
-          <p className="text-xs text-gray-300 mt-1">Receipts will appear here after recording a payment.</p>
-        </div>
-      ) : (
-        <div className="divide-y divide-gray-100">
-          {/* Summary header */}
-          <div className="px-5 py-3 bg-gray-50 flex items-center justify-between">
-            <span className="text-xs text-gray-500">{payments.length} payment{payments.length!==1?'s':''} recorded</span>
-            <span className="text-xs font-bold text-emerald-700">
-              Total: {fmtINRFull(payments.reduce((s,p)=>s+Number(p.amount),0))}
-            </span>
-          </div>
-
-          {payments.map((p,i)=>(
-            <div key={p.id} className="px-5 py-4">
-              {/* Row header */}
-              <div className="flex items-start justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-base">{modeIcon(p.payment_mode)}</span>
-                  <div>
-                    <p className="text-xs font-bold text-gray-800 font-mono tracking-wide">{p.receipt_number}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">{fmtDate(p.payment_date)}</p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p className="text-base font-black text-gray-900">{fmtINRFull(Number(p.amount))}</p>
-                  <p className="text-xs text-gray-400 capitalize mt-0.5">{modeLabel(p.payment_mode)}</p>
-                </div>
-              </div>
-
-              {/* Meta row */}
-              <div className="flex items-center gap-2 flex-wrap mb-3">
-                <span className="inline-flex items-center px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded-full border border-gray-200 capitalize">
-                  {(p.payment_type||'advance').replace('_',' ')}
-                </span>
-                {p.transaction_ref && (
-                  <span className="inline-flex items-center px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded-full border border-blue-200 font-mono">
-                    {p.transaction_ref}
-                  </span>
-                )}
-                {p.notes && (
-                  <span className="text-xs text-gray-400 italic truncate max-w-[180px]">{p.notes}</span>
-                )}
-              </div>
-
-              {/* Action buttons */}
-              <div className="flex gap-2">
-                <button
-                  onClick={()=>window.open(`/api/proposals/${proposal.id}/receipt?payment_id=${p.id}`,'_blank')}
-                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-teal-50 text-teal-700 border border-teal-200 rounded-lg text-xs font-semibold hover:bg-teal-100 transition-colors">
-                  <Receipt className="w-3.5 h-3.5"/> View Receipt
-                </button>
-                <button
-                  onClick={()=>window.open(`/api/proposals/${proposal.id}/receipt?payment_id=${p.id}&print=1`,'_blank')}
-                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-700 border border-gray-200 rounded-lg text-xs font-semibold hover:bg-gray-200 transition-colors">
-                  🖨 Print
-                </button>
-              </div>
-
-              {i < payments.length-1 && <div className="mt-4 border-b border-dashed border-gray-100"/>}
-            </div>
-          ))}
-        </div>
-      )}
-    </ModalShell>
-  )
-}
+// ModalShell, PaymentModal, ReceiptsModal now imported from
+// @/components/payments/* (payment module dedup) — see import block above.
+// FinanceModal (below) stays local — not in scope for the payment-module
+// refactor — but reuses the same shared ModalShell/format helpers.
 
 // ─── NEW: Financial Documents Modal ──────────────────────────────────────────
 
@@ -849,6 +567,11 @@ function ProposalCard({proposal,onAction,onStatusUpdate,onPayment,onReceipts,onF
             <div className="flex items-center gap-2 mt-0.5 flex-wrap">
               <StatusPill status={proposal.status}/>
               <PaymentPill status={payStatus}/>
+              {proposal.reservation_id&&(
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-green-50 text-green-700 border border-green-200 text-xs font-semibold rounded">
+                  <CheckCircle2 className="w-2.5 h-2.5"/> Reservation Created
+                </span>
+              )}
               {proposal.event_type&&<span className="text-xs text-gray-500 capitalize">{proposal.event_type}</span>}
               {proposal.event_date&&(
                 <span className="text-xs text-gray-400">
@@ -917,22 +640,30 @@ function ProposalCard({proposal,onAction,onStatusUpdate,onPayment,onReceipts,onF
         {/* Payment actions — accepted proposals only */}
         {isAccepted && (
           <>
-            {/* Record Payment */}
-            <button onClick={()=>onPayment(proposal)}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700 transition-colors">
-              <IndianRupee className="w-3 h-3"/> Record Payment
-            </button>
+            {/* Record Payment / Advance Receipts — single source of truth.
+                Once this proposal has a linked Reservation, payments are
+                recorded and reviewed from the Reservation Details page
+                instead (same PaymentModal/ReceiptsModal, same API) — kept
+                here only for accepted proposals not yet converted, so there
+                is exactly one place to do this per proposal at any time. */}
+            {!proposal.reservation_id && (
+              <>
+                <button onClick={()=>onPayment(proposal)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700 transition-colors">
+                  <IndianRupee className="w-3 h-3"/> Record Payment
+                </button>
 
-            {/* ── NEW: Advance Receipts ── */}
-            <button onClick={()=>onReceipts(proposal)}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-teal-50 text-teal-700 border border-teal-200 rounded-lg text-xs font-semibold hover:bg-teal-100 transition-colors">
-              <Receipt className="w-3 h-3"/> Advance Receipts
-              {hasPaid&&(
-                <span className="ml-0.5 bg-teal-200 text-teal-800 text-xs font-bold px-1 py-0 rounded-full leading-4">
-                  ✓
-                </span>
-              )}
-            </button>
+                <button onClick={()=>onReceipts(proposal)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-teal-50 text-teal-700 border border-teal-200 rounded-lg text-xs font-semibold hover:bg-teal-100 transition-colors">
+                  <Receipt className="w-3 h-3"/> Advance Receipts
+                  {hasPaid&&(
+                    <span className="ml-0.5 bg-teal-200 text-teal-800 text-xs font-bold px-1 py-0 rounded-full leading-4">
+                      ✓
+                    </span>
+                  )}
+                </button>
+              </>
+            )}
 
             {/* ── NEW: Financial Documents ── */}
             <button onClick={()=>onFinance(proposal)}
@@ -940,15 +671,32 @@ function ProposalCard({proposal,onAction,onStatusUpdate,onPayment,onReceipts,onF
               <Wallet className="w-3 h-3"/> Financial Documents
             </button>
 
-            {/* V3 Sprint 3 — Convert Proposal -> Reservation. Only offered once
-                accepted (converting a still-negotiating proposal into a real
-                inventory hold would be premature). Pre-fills the Reservation
-                Dashboard's New Reservation modal from this proposal's data;
-                the operator still picks/confirms dates + inventory there. */}
-            <Link href={`/reservations?fromProposalId=${proposal.id}`}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-semibold hover:bg-indigo-100 transition-colors">
-              <BookOpen className="w-3 h-3"/> Convert to Reservation
-            </Link>
+            {/* V3 Sprint 3 — Convert Proposal -> Reservation. Only offered
+                once accepted (converting a still-negotiating proposal into a
+                real inventory hold would be premature) AND only when no
+                Reservation exists yet — production fix (Proposal ->
+                Reservation UI sync): this proposal's own reservation_id is
+                now selected by GET /api/proposals/intelligence and typed on
+                ProposalWithLead, so this is no longer inferred from status
+                alone. Pre-fills the Reservation Dashboard's New Reservation
+                modal from this proposal's data; the operator still
+                picks/confirms dates + inventory there.
+                A reservation already existing is still enforced server-side
+                (createReservationWithQuote()'s duplicate-conversion guard,
+                reservation-workflow.ts) even if this button were somehow
+                shown or clicked anyway — this UI branch is a courtesy, not
+                the enforcement point. */}
+            {proposal.reservation_id ? (
+              <Link href={`/reservations/${proposal.reservation_id}`}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-green-50 text-green-700 border border-green-200 rounded-lg text-xs font-semibold hover:bg-green-100 transition-colors">
+                <CheckCircle2 className="w-3 h-3"/> View Reservation
+              </Link>
+            ) : (
+              <Link href={`/reservations?fromProposalId=${proposal.id}`}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-semibold hover:bg-indigo-100 transition-colors">
+                <BookOpen className="w-3 h-3"/> Convert to Reservation
+              </Link>
+            )}
           </>
         )}
 
@@ -1127,7 +875,11 @@ export default function ProposalsPage() {
       {/* ── Modals ── */}
       {payModal && (
         <PaymentModal
-          proposal={payModal}
+          proposalId={payModal.id}
+          displayName={payModal.client_name ?? ''}
+          displayRef={payModal.proposal_number ?? ''}
+          fallbackTotal={payModal.total_price ?? 0}
+          fallbackPaid={payModal.advance_paid ?? 0}
           onClose={()=>setPayModal(null)}
           onSuccess={()=>{ setPayModal(null); fetchProposals() }}
         />
@@ -1135,7 +887,9 @@ export default function ProposalsPage() {
       {/* NEW: Advance Receipts modal */}
       {receiptsModal && (
         <ReceiptsModal
-          proposal={receiptsModal}
+          proposalId={receiptsModal.id}
+          displayName={receiptsModal.client_name ?? ''}
+          displayRef={receiptsModal.proposal_number ?? ''}
           onClose={()=>setReceiptsModal(null)}
         />
       )}
