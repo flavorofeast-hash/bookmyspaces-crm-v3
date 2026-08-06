@@ -46,10 +46,6 @@
       "schedule": "0 18 * * *"
     },
     {
-      "path":     "/api/cron/campaign-queue",
-      "schedule": "0 * * * *"
-    },
-    {
       "path":     "/api/cron/stay-lifecycle",
       "schedule": "0 8 * * *"
     }
