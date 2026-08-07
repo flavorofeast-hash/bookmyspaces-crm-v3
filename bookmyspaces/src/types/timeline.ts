@@ -13,6 +13,14 @@ export type TimelineEntryType =
   | 'payment'
   | 'follow_up'
   | 'ai_interaction'
+  // Phase 2 (Social + WhatsApp Growth) — Phase C: unified timeline additions.
+  | 'social'    // Facebook/Instagram DM conversations (conversations table, channel != whatsapp/website)
+  | 'review'    // reviews table (Review Engine, migration 014/033)
+  | 'referral'  // referral_rewards (Referral Engine, migration 034)
+  | 'loyalty'   // loyalty_transactions (Loyalty Foundation, migration 035)
+  | 'campaign'  // message_queue rows tagged with metadata.campaign_id
+  | 'call'      // follow_ups rows with type='call'
+  | 'visit'     // follow_ups rows with type='site_visit'
 
 export interface TimelineEntry {
   type: TimelineEntryType

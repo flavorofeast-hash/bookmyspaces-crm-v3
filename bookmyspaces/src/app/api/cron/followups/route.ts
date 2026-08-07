@@ -25,6 +25,7 @@ export async function GET(request: NextRequest) {
       id,
       lead_id,
       message,
+      trigger_reason,
       leads ( id, name, phone, whatsapp_opted_in )
     `)
     .eq('status', 'pending')
@@ -65,7 +66,21 @@ export async function GET(request: NextRequest) {
       continue
     }
 
-    const message = WHATSAPP_MESSAGES.followUp(lead.name ?? undefined)
+    // Phase 2 (Social + WhatsApp Growth) — AI Follow-up Assistant support.
+    // `message` was already selected above but previously never read here
+    // (every row got the generic template regardless of its content) —
+    // confirmed by reading this file before this change. Gated on
+    // trigger_reason='ai_followup_assistant' specifically (not "message is
+    // present"), because the existing manual /api/followups 'schedule'
+    // action writes a non-customer-facing placeholder into `message`
+    // ('Scheduled follow-up') — using it unconditionally would have sent
+    // that literal placeholder text to customers. Every other row (the
+    // manual-schedule path, and any older row) keeps the exact prior
+    // behavior: the generic WHATSAPP_MESSAGES.followUp() template.
+    const row2 = row as unknown as { message: string | null; trigger_reason: string | null }
+    const message = row2.trigger_reason === 'ai_followup_assistant' && row2.message
+      ? row2.message
+      : WHATSAPP_MESSAGES.followUp(lead.name ?? undefined)
     // Customer Journey Timeline fix (Priority 3): leadId now forwarded so
     // this send shows up on the customer's Timeline (whatsapp_messages.
     // lead_id is what fetchWhatsAppEntries() requires) — previously this

@@ -161,13 +161,32 @@ interface ProposalStatusRow {
   first_viewed_at: string | null
 }
 
+// Phase 2 (Social + WhatsApp Growth) — Phase D additive return shape.
+// getOpportunityScoreForLead's existing callers only ever destructure the
+// OpportunityScoreResult fields they already knew about, so appending
+// `flags` here is backward compatible. Added so marketing-ai.ts's Next
+// Best Action logic can branch on the same real signals this file already
+// computed, instead of re-deriving them from reasoning[]'s free text
+// (which is meant for human display, not machine parsing).
+export interface OpportunityScoreResultWithFlags extends OpportunityScoreResult {
+  flags: {
+    hasAcceptedProposal: boolean
+    hasSentProposal: boolean
+    hasOnlyRejectedProposal: boolean
+    hasNoProposal: boolean
+    hasCompletedVisit: boolean
+    hasViewedProposal: boolean
+    escalationRequired: boolean
+  }
+}
+
 /**
  * Assembles OpportunityScoreInput for a real lead from existing tables and
  * scores it. Best-effort — a failure anywhere returns a LOW-band zero score
  * with a note, never throws, matching this codebase's established
  * fault-tolerance convention for optional/enrichment features.
  */
-export async function getOpportunityScoreForLead(leadId: string): Promise<OpportunityScoreResult> {
+export async function getOpportunityScoreForLead(leadId: string): Promise<OpportunityScoreResultWithFlags> {
   try {
     const db = getSupabaseAdmin()
 
@@ -193,19 +212,27 @@ export async function getOpportunityScoreForLead(leadId: string): Promise<Opport
     const hasViewedProposal = proposals.some((p) => p.first_viewed_at !== null)
     const hasCompletedVisit = (visitResult.count ?? 0) > 0
 
-    return computeOpportunityScore({
+    const escalationRequired = lead?.escalation_required ?? false
+    const result = computeOpportunityScore({
       aiScore: lead?.ai_score ?? null,
       hasAcceptedProposal,
       hasSentProposal,
       hasOnlyRejectedProposal,
       hasNoProposal,
-      escalationRequired: lead?.escalation_required ?? false,
+      escalationRequired,
       followUpCount: lead?.follow_up_count ?? 0,
       clvTotalRevenue: clv.totalRevenue,
       isRepeatCustomer: clv.isRepeatCustomer,
       hasCompletedVisit,
       hasViewedProposal,
     })
+    return {
+      ...result,
+      flags: {
+        hasAcceptedProposal, hasSentProposal, hasOnlyRejectedProposal, hasNoProposal,
+        hasCompletedVisit, hasViewedProposal, escalationRequired,
+      },
+    }
   } catch (err) {
     console.error(`[opportunity-score] Failed to score lead ${leadId}:`, err)
     return {
@@ -216,6 +243,10 @@ export async function getOpportunityScoreForLead(leadId: string): Promise<Opport
         repeatCustomerBonus: 0, siteVisitEngagement: 0, proposalEngagement: 0,
       },
       reasoning: ['[ERROR] Could not compute — insufficient data or a lookup failed'],
+      flags: {
+        hasAcceptedProposal: false, hasSentProposal: false, hasOnlyRejectedProposal: false, hasNoProposal: true,
+        hasCompletedVisit: false, hasViewedProposal: false, escalationRequired: false,
+      },
     }
   }
 }

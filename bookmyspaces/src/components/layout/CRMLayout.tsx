@@ -42,10 +42,16 @@ const links = [
   { href: '/reservations', label: 'Reservations' },
   { href: '/visits/new', label: 'Schedule Visit' },
   { href: '/whatsapp', label: 'WhatsApp' },
+  // Phase 2 (Social + WhatsApp Growth) — same nav discipline as Reviews below.
+  { href: '/whatsapp/drip-sequences', label: 'Drip Sequences' },
   { href: '/proposals', label: 'Proposals' },
   { href: '/campaigns', label: 'Campaigns' },
   { href: '/social', label: 'Social' },
   { href: '/content-studio', label: 'Content Studio' },
+  // Growth Engine Epic 1 — Review Engine. Same "add it to the nav at build
+  // time" discipline already applied to every other dashboard/page in this
+  // list, so this doesn't become another orphaned page.
+  { href: '/reviews', label: 'Reviews' },
   { href: '/kanban', label: 'Kanban' },
   { href: '/catalog', label: 'Catalog' },
   { href: '/knowledge-base', label: 'AI Knowledge' },

@@ -106,11 +106,20 @@ export interface ProposalRow {
 interface CampaignSendRow {
   lead_id: string | null
   metadata: { campaign_id?: string } | null
+  // Growth Engine Epic 6 — needed to order touches for multi-touch
+  // attribution (computeMultiTouchAttribution below). Harmless addition to
+  // an existing bulk query — buildCampaignAttributionByLead/computeCampaignROI
+  // never read this field, so their first-touch behavior is unchanged.
+  created_at: string
 }
 
 interface CampaignNameRow {
   id: string
   name: string
+  // Growth Platform Phase 1 (Campaign ROI, migration 030) — optional,
+  // operator-entered. Null for every campaign created before this column
+  // existed, or where no budget was set; ROI is never fabricated for those.
+  budget: number | null
 }
 
 // Business-strategy expansion, Phase 6 — "AI Recommendation Success Rate".
@@ -184,8 +193,8 @@ async function fetchRawData(sinceISO: string): Promise<RawData> {
     db.from('reservations').select('id, customer_id, proposal_id, status, final_room_rate, meal_plan_charge, room_count, check_in_date, check_out_date, created_at'),
     db.from('stage_transitions').select('lead_id, from_stage, to_stage, created_at').gte('created_at', sinceISO),
     db.from('inventory_items').select('id', { count: 'exact', head: true }).eq('is_active', true),
-    db.from('message_queue').select('lead_id, metadata').eq('status', 'sent').not('lead_id', 'is', null),
-    db.from('broadcast_campaigns').select('id, name'),
+    db.from('message_queue').select('lead_id, metadata, created_at').eq('status', 'sent').not('lead_id', 'is', null),
+    db.from('broadcast_campaigns').select('id, name, budget'),
     db.from('ai_interaction_log').select('lead_id, summary').eq('interaction_type', 'event_sales_advisor').not('lead_id', 'is', null),
     db.from('follow_ups').select('id', { count: 'exact', head: true }).eq('type', 'site_visit').gte('created_at', sinceISO),
     // Version 2.1 (Marketing Intelligence) — separate, isolated query for
@@ -817,6 +826,21 @@ function computeAIRecommendationSuccess(data: RawData): AIRecommendationSuccess 
   }
 }
 
+// Shared by computeEventSalesDashboard()'s revenueByCampaign and
+// computeCampaignROI() — first-touch outbound-campaign attribution per lead,
+// derived from message_queue sends (metadata.campaign_id, set by
+// scheduleCampaignSend() in campaign-scheduler.ts). One definition, reused,
+// rather than two copies that could silently drift apart.
+function buildCampaignAttributionByLead(campaignSends: CampaignSendRow[]): Map<string, string> {
+  const campaignIdByLead = new Map<string, string>()
+  for (const row of campaignSends) {
+    if (!row.lead_id) continue
+    const cid = row.metadata?.campaign_id
+    if (cid && !campaignIdByLead.has(row.lead_id)) campaignIdByLead.set(row.lead_id, cid)
+  }
+  return campaignIdByLead
+}
+
 function groupProposalRevenue(proposals: ProposalRow[], keyFn: (p: ProposalRow) => string): RevenueBreakdownRow[] {
   const buckets = new Map<string, RevenueBreakdownRow>()
   for (const p of proposals) {
@@ -861,12 +885,7 @@ function computeEventSalesDashboard(data: RawData): EventSalesDashboard {
   )
 
   const campaignNameById = new Map(campaignNames.map((c) => [c.id, c.name]))
-  const campaignIdByLead = new Map<string, string>()
-  for (const row of campaignSends) {
-    if (!row.lead_id) continue
-    const cid = row.metadata?.campaign_id
-    if (cid && !campaignIdByLead.has(row.lead_id)) campaignIdByLead.set(row.lead_id, cid) // first-touch attribution
-  }
+  const campaignIdByLead = buildCampaignAttributionByLead(campaignSends)
   const revenueByCampaign = groupProposalRevenue(proposals, (p) => {
     const cid = p.lead_id ? campaignIdByLead.get(p.lead_id) : undefined
     if (!cid) return 'Organic / No Campaign'
@@ -890,6 +909,206 @@ function computeEventSalesDashboard(data: RawData): EventSalesDashboard {
     revenueByCampaign,
     campaignAttributionDegraded: campaignSendsDegraded,
     aiRecommendationSuccess: computeAIRecommendationSuccess(data),
+  }
+}
+
+// ─── Campaign ROI (Growth Platform Phase 1) ───────────────────────────────────
+// Distinct from computeCampaignPerformance() below (that's INBOUND ad/
+// landing-page attribution, migration 026). This is OUTBOUND campaign ROI:
+// for each broadcast_campaigns row with a budget set (migration 030), how
+// much accepted-proposal revenue is attributed to it (first-touch, via
+// buildCampaignAttributionByLead) divided by that budget. Campaigns with no
+// budget are still listed (revenue is real and useful on its own) but
+// roiAvailable is false and roi is null — never a fabricated number.
+
+export interface CampaignROIRow {
+  campaignId: string
+  campaignName: string
+  budget: number | null
+  revenue: number
+  leadsReached: number
+  bookings: number
+  roi: number | null
+  roiAvailable: boolean
+}
+
+export interface CampaignROI {
+  rows: CampaignROIRow[]
+  degraded: boolean
+  note: string
+}
+
+function computeCampaignROI(data: RawData): CampaignROI {
+  const { campaignNames, campaignSends, campaignSendsDegraded, proposals } = data
+
+  if (campaignSendsDegraded) {
+    return {
+      rows: [],
+      degraded: true,
+      note: 'message_queue is unavailable in this environment — campaign ROI cannot be computed.',
+    }
+  }
+
+  const campaignIdByLead = buildCampaignAttributionByLead(campaignSends)
+
+  const leadsByCampaign = new Map<string, Set<string>>()
+  for (const [leadId, cid] of Array.from(campaignIdByLead.entries())) {
+    if (!leadsByCampaign.has(cid)) leadsByCampaign.set(cid, new Set())
+    leadsByCampaign.get(cid)!.add(leadId)
+  }
+
+  const revenueByCampaign = new Map<string, number>()
+  const bookingsByCampaign = new Map<string, number>()
+  for (const p of proposals) {
+    if (!p.lead_id || !p.accepted_at) continue
+    const cid = campaignIdByLead.get(p.lead_id)
+    if (!cid) continue
+    revenueByCampaign.set(cid, (revenueByCampaign.get(cid) ?? 0) + (Number(p.total_price) || 0))
+    bookingsByCampaign.set(cid, (bookingsByCampaign.get(cid) ?? 0) + 1)
+  }
+
+  const rows: CampaignROIRow[] = campaignNames
+    .map((c) => {
+      const revenue = revenueByCampaign.get(c.id) ?? 0
+      const budget = c.budget ?? null
+      const roiAvailable = !!budget && budget > 0
+      return {
+        campaignId: c.id,
+        campaignName: c.name,
+        budget,
+        revenue,
+        leadsReached: leadsByCampaign.get(c.id)?.size ?? 0,
+        bookings: bookingsByCampaign.get(c.id) ?? 0,
+        roi: roiAvailable ? Math.round((revenue / budget!) * 100) / 100 : null,
+        roiAvailable,
+      }
+    })
+    .filter((r) => r.leadsReached > 0 || r.budget !== null)
+    .sort((a, b) => (b.roi ?? -1) - (a.roi ?? -1))
+
+  return {
+    rows,
+    degraded: false,
+    note: 'ROI = revenue from accepted proposals attributed to the campaign (first-touch, via message_queue) ÷ budget. Campaigns without a budget set show revenue only — ROI is not fabricated.',
+  }
+}
+
+// ─── Multi-Touch Campaign Attribution (Growth Engine Epic 6) ─────────────────
+// Upgrades OUTBOUND campaign attribution from first-touch-only
+// (buildCampaignAttributionByLead — still used unchanged by computeCampaignROI
+// and revenueByCampaign, so neither existing report's numbers move) to a
+// genuine LINEAR multi-touch model: every campaign actually sent to a lead
+// (message_queue, migration 002) before that lead's proposal was accepted
+// shares equal credit for the accepted revenue. This is real send history
+// already collected, not fabricated — the only change is no longer
+// collapsing it to "whichever campaign was sent first."
+//
+// INBOUND ad/landing-page attribution (leads.campaign, migration 026) is
+// deliberately NOT given the same treatment: /api/campaigns/track's
+// insert-only write means a lead captures exactly one campaign value at
+// creation time — there is no second recorded touch anywhere in this
+// codebase to attribute against. A multi-touch model needs multiple real
+// touchpoints; building one on single-touch data would be inventing
+// touchpoints that were never recorded, which the "no placeholders / no
+// fabricated data" rule rules out. computeCampaignPerformance() (inbound)
+// is intentionally untouched.
+
+export interface MultiTouchCampaignRow {
+  campaignId: string
+  campaignName: string
+  linearRevenue: number
+  firstTouchRevenue: number
+  touchedLeads: number
+}
+
+export interface MultiTouchAttribution {
+  model: 'linear'
+  rows: MultiTouchCampaignRow[]
+  degraded: boolean
+  note: string
+}
+
+function computeMultiTouchAttribution(data: RawData): MultiTouchAttribution {
+  const { campaignNames, campaignSends, campaignSendsDegraded, proposals } = data
+
+  if (campaignSendsDegraded) {
+    return {
+      model: 'linear',
+      rows: [],
+      degraded: true,
+      note: 'message_queue is unavailable in this environment — multi-touch attribution cannot be computed.',
+    }
+  }
+
+  // Every distinct campaign a lead was actually sent, keyed to the EARLIEST
+  // send timestamp for that (lead, campaign) pair — not collapsed across
+  // campaigns the way buildCampaignAttributionByLead() is.
+  const touchesByLead = new Map<string, Map<string, string>>()
+  for (const row of campaignSends) {
+    if (!row.lead_id) continue
+    const cid = row.metadata?.campaign_id
+    if (!cid) continue
+    if (!touchesByLead.has(row.lead_id)) touchesByLead.set(row.lead_id, new Map())
+    const leadTouches = touchesByLead.get(row.lead_id)!
+    const existing = leadTouches.get(cid)
+    if (!existing || row.created_at < existing) leadTouches.set(cid, row.created_at)
+  }
+
+  const touchedLeadsByCampaign = new Map<string, Set<string>>()
+  for (const [leadId, touches] of Array.from(touchesByLead.entries())) {
+    for (const cid of Array.from(touches.keys())) {
+      if (!touchedLeadsByCampaign.has(cid)) touchedLeadsByCampaign.set(cid, new Set())
+      touchedLeadsByCampaign.get(cid)!.add(leadId)
+    }
+  }
+
+  const firstTouchByLead = buildCampaignAttributionByLead(campaignSends)
+  const firstTouchRevenueByCampaign = new Map<string, number>()
+  const linearRevenueByCampaign = new Map<string, number>()
+
+  for (const p of proposals) {
+    if (!p.lead_id || !p.accepted_at) continue
+    const revenue = Number(p.total_price) || 0
+    if (revenue <= 0) continue
+
+    // First-touch comparison figure — same definition computeCampaignROI() uses.
+    const firstTouchCid = firstTouchByLead.get(p.lead_id)
+    if (firstTouchCid) {
+      firstTouchRevenueByCampaign.set(firstTouchCid, (firstTouchRevenueByCampaign.get(firstTouchCid) ?? 0) + revenue)
+    }
+
+    // Linear split across every campaign actually sent before acceptance.
+    // Touches recorded AFTER accepted_at couldn't have influenced the
+    // decision, so they're excluded, not credited.
+    const leadTouches = touchesByLead.get(p.lead_id)
+    if (!leadTouches || leadTouches.size === 0) continue
+    const qualifyingCampaignIds = Array.from(leadTouches.entries())
+      .filter(([, sentAt]) => sentAt <= p.accepted_at!)
+      .map(([cid]) => cid)
+    if (qualifyingCampaignIds.length === 0) continue
+
+    const share = revenue / qualifyingCampaignIds.length
+    for (const cid of qualifyingCampaignIds) {
+      linearRevenueByCampaign.set(cid, (linearRevenueByCampaign.get(cid) ?? 0) + share)
+    }
+  }
+
+  const campaignNameById = new Map(campaignNames.map((c) => [c.id, c.name]))
+  const rows: MultiTouchCampaignRow[] = Array.from(touchedLeadsByCampaign.keys())
+    .map((cid) => ({
+      campaignId: cid,
+      campaignName: campaignNameById.get(cid) || 'Unknown Campaign',
+      linearRevenue: Math.round((linearRevenueByCampaign.get(cid) ?? 0) * 100) / 100,
+      firstTouchRevenue: Math.round((firstTouchRevenueByCampaign.get(cid) ?? 0) * 100) / 100,
+      touchedLeads: touchedLeadsByCampaign.get(cid)?.size ?? 0,
+    }))
+    .sort((a, b) => b.linearRevenue - a.linearRevenue)
+
+  return {
+    model: 'linear',
+    rows,
+    degraded: false,
+    note: 'Linear multi-touch: every campaign actually sent to a lead (message_queue) before their proposal was accepted shares equal credit for that revenue. Compare firstTouchRevenue (the same figure Campaign ROI uses) to see how credit shifts once every real touch counts, not just the first.',
   }
 }
 
@@ -1069,6 +1288,12 @@ export interface RevenueIntelligence {
   channelPerformance: AcquisitionPerformanceRow[]
   campaignPerformance: CampaignPerformance
   marketingBrief: MarketingBrief
+  // Growth Platform Phase 1 — outbound broadcast-campaign ROI (distinct from
+  // campaignPerformance, which is inbound ad/landing-page attribution).
+  campaignROI: CampaignROI
+  // Growth Engine Epic 6 — linear multi-touch upgrade of the same outbound
+  // campaign attribution campaignROI uses (first-touch, unchanged above).
+  multiTouchAttribution: MultiTouchAttribution
 }
 
 export async function buildRevenueIntelligence(windowDays = 180): Promise<RevenueIntelligence> {
@@ -1093,5 +1318,7 @@ export async function buildRevenueIntelligence(windowDays = 180): Promise<Revenu
     channelPerformance,
     campaignPerformance,
     marketingBrief: computeMarketingBrief(channelPerformance, campaignPerformance.rows, campaignPerformance.degraded),
+    campaignROI: computeCampaignROI(data),
+    multiTouchAttribution: computeMultiTouchAttribution(data),
   }
 }

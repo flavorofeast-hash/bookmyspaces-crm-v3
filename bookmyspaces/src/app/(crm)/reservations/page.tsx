@@ -282,7 +282,7 @@ function ReservationDashboardContent() {
         setProposalPrefillError('Could not load proposal details — pick details manually.')
         setShowNewModal(true)
       })
-  }, [fromProposalId])
+  }, [fromProposalId, router])
 
   // Priority 1 (WhatsApp Sales Platform) — arriving from the Inbox's "New
   // Reservation" quick action on a conversation: no proposal exists yet,

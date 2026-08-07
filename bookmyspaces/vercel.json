@@ -34,6 +34,21 @@
     },
     "src/app/api/cron/stay-lifecycle/route.ts": {
       "maxDuration": 30
+    },
+    "src/app/api/cron/review-reminders/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/cron/social-publish/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/cron/marketing-automations/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/cron/drip-sequences/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/cron/ai-followup-assistant/route.ts": {
+      "maxDuration": 60
     }
   },
   "crons": [
@@ -48,6 +63,26 @@
     {
       "path":     "/api/cron/stay-lifecycle",
       "schedule": "0 8 * * *"
+    },
+    {
+      "path":     "/api/cron/review-reminders",
+      "schedule": "0 10 * * *"
+    },
+    {
+      "path":     "/api/cron/social-publish",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path":     "/api/cron/marketing-automations",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path":     "/api/cron/drip-sequences",
+      "schedule": "0 11 * * *"
+    },
+    {
+      "path":     "/api/cron/ai-followup-assistant",
+      "schedule": "0 6 * * *"
     }
   ]
 }

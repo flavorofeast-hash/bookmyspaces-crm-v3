@@ -20,6 +20,8 @@ import {
   Play,
   Ban,
   Repeat,
+  Bookmark,
+  IndianRupee,
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -88,6 +90,17 @@ interface NewCampaign {
   // Priority 3 (Campaign Scheduler) — recurring campaign support.
   is_recurring?: boolean
   recurrence_interval?: 'daily' | 'weekly' | 'monthly'
+  // Growth Platform Phase 1 (Campaign ROI / Saved Segments, migration 030).
+  budget?: number
+  segment_id?: string
+}
+
+interface SavedSegment {
+  id: string
+  name: string
+  description: string | null
+  filter: NewCampaign['segment']
+  use_count: number
 }
 
 // Reasonable starting points for the "days" input on each recurring-segment
@@ -307,6 +320,67 @@ function CreateModal({
   const [aiDrafting, setAiDrafting] = useState(false)
   const [aiBrief, setAiBrief] = useState<{ suggestedAudience: string; bestSendTime: string; cta: string; emailSubject: string; emailBody: string } | null>(null)
 
+  // Growth Platform Phase 1 — Saved Segments.
+  const [segments, setSegments] = useState<SavedSegment[]>([])
+  const [selectedSegmentId, setSelectedSegmentId] = useState('')
+  const [savingSegment, setSavingSegment] = useState(false)
+  const [newSegmentName, setNewSegmentName] = useState('')
+  const [showSaveSegment, setShowSaveSegment] = useState(false)
+
+  useEffect(() => {
+    fetch('/api/marketing/segments')
+      .then((res) => res.json())
+      .then((data) => setSegments(Array.isArray(data.segments) ? data.segments : []))
+      .catch(() => setSegments([]))
+  }, [])
+
+  // Growth Platform Phase 3 — Message Templates. Only WhatsApp templates are
+  // offered here since that's the only channel this campaign form actually
+  // sends through; email templates are managed from Content Studio.
+  const [templates, setTemplates] = useState<{ id: string; name: string; body: string; use_count: number }[]>([])
+  const [selectedTemplateId, setSelectedTemplateId] = useState('')
+
+  useEffect(() => {
+    fetch('/api/marketing/templates?channel=whatsapp')
+      .then((res) => res.json())
+      .then((data) => setTemplates(Array.isArray(data.templates) ? data.templates : []))
+      .catch(() => setTemplates([]))
+  }, [])
+
+  function handleLoadTemplate(id: string) {
+    setSelectedTemplateId(id)
+    const tpl = templates.find((t) => t.id === id)
+    if (!tpl) return
+    setForm((p) => ({ ...p, message_template: tpl.body }))
+    fetch('/api/marketing/templates', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, action: 'mark_used' }),
+    }).catch(() => {})
+  }
+
+  async function handleSaveSegment() {
+    if (!newSegmentName.trim()) return
+    setSavingSegment(true)
+    try {
+      const res = await fetch('/api/marketing/segments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newSegmentName.trim(), filter: form.segment }),
+      })
+      const data = await res.json()
+      if (data.segment) {
+        setSegments((p) => [data.segment, ...p])
+        setSelectedSegmentId(data.segment.id)
+        setForm((p) => ({ ...p, segment_id: data.segment.id }))
+        setNewSegmentName('')
+        setShowSaveSegment(false)
+      }
+    } finally {
+      setSavingSegment(false)
+    }
+  }
+
   async function handleAiDraft() {
     if (!aiGoal.trim()) return
     setAiDrafting(true)
@@ -489,6 +563,64 @@ function CreateModal({
             </div>
           )}
 
+          {/* Saved Segments (Growth Platform Phase 1) — load a previously
+              named audience, or save the currently-built filter for reuse
+              across future campaigns. Loading a segment replaces the
+              current segment filter outright; it does not merge. */}
+          <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-3 space-y-2">
+            <label className="block text-xs font-semibold text-emerald-700 flex items-center gap-1">
+              <Bookmark className="w-3.5 h-3.5" /> Saved Segments
+            </label>
+            <div className="flex gap-2">
+              <select
+                value={selectedSegmentId}
+                onChange={(e) => {
+                  const id = e.target.value
+                  setSelectedSegmentId(id)
+                  const seg = segments.find((s) => s.id === id)
+                  if (seg) {
+                    setAudiencePreset('none')
+                    setForm((p) => ({ ...p, segment: seg.filter, segment_id: seg.id }))
+                  } else {
+                    setForm((p) => ({ ...p, segment_id: undefined }))
+                  }
+                }}
+                className="flex-1 px-3 py-2 border border-emerald-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
+              >
+                <option value="">Don&apos;t load a saved segment</option>
+                {segments.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name} (used {s.use_count}x)</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setShowSaveSegment((v) => !v)}
+                className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-xs font-medium hover:bg-emerald-700"
+              >
+                Save Current
+              </button>
+            </div>
+            {showSaveSegment && (
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newSegmentName}
+                  onChange={(e) => setNewSegmentName(e.target.value)}
+                  placeholder="Segment name, e.g. VIP Wedding Leads"
+                  className="flex-1 px-3 py-2 border border-emerald-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleSaveSegment()}
+                  disabled={savingSegment || !newSegmentName.trim()}
+                  className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-xs font-medium hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {savingSegment ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Save'}
+                </button>
+              </div>
+            )}
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Audience (optional refinement)</label>
             <select
@@ -520,7 +652,21 @@ function CreateModal({
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Message Template</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-sm font-medium text-gray-700">Message Template</label>
+              {templates.length > 0 && (
+                <select
+                  value={selectedTemplateId}
+                  onChange={(e) => handleLoadTemplate(e.target.value)}
+                  className="text-xs border border-gray-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                >
+                  <option value="">Load a saved WhatsApp template…</option>
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name} (used {t.use_count}x)</option>
+                  ))}
+                </select>
+              )}
+            </div>
             <textarea
               required
               rows={4}
@@ -529,9 +675,43 @@ function CreateModal({
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
               placeholder="Hi {{name}}, BookMySpaces has a special offer for you this festive season..."
             />
-            <p className="mt-1 text-xs text-gray-400">
-              Use {'{{name}}'} as a placeholder for the customer name.
-            </p>
+            <div className="flex items-center justify-between mt-1">
+              <p className="text-xs text-gray-400">
+                Use {'{{name}}'} as a placeholder for the customer name.
+              </p>
+              <button
+                type="button"
+                onClick={async () => {
+                  const name = window.prompt('Save this message as a template named:')
+                  if (!name?.trim() || !form.message_template.trim()) return
+                  const res = await fetch('/api/marketing/templates', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name.trim(), channel: 'whatsapp', body: form.message_template }),
+                  })
+                  const data = await res.json()
+                  if (data.template) setTemplates((p) => [data.template, ...p])
+                }}
+                className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+              >
+                Save as template
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
+              <IndianRupee className="w-3.5 h-3.5" /> Budget (optional)
+            </label>
+            <input
+              type="number"
+              min={0}
+              value={form.budget ?? ''}
+              onChange={(e) => setForm((p) => ({ ...p, budget: e.target.value ? Number(e.target.value) : undefined }))}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="e.g. 5000"
+            />
+            <p className="mt-1 text-xs text-gray-400">Enables Campaign ROI tracking on the Marketing Dashboard (revenue attributed to this campaign ÷ budget).</p>
           </div>
 
           <div>

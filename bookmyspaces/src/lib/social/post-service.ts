@@ -35,6 +35,8 @@ export interface SocialPostRecord {
   external_post_id: string | null
   failure_reason: string | null
   created_by: string | null
+  // Growth Engine Epic 5 — publish attempt counter (migration 036).
+  publish_attempts: number
 }
 
 type Result<T> = { ok: true; value: T } | { ok: false; error: string }

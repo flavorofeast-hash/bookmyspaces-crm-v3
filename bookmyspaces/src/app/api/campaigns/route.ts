@@ -64,6 +64,8 @@ export async function POST(req: NextRequest) {
       dry_run = true,
       is_recurring = false,
       recurrence_interval,
+      budget,
+      segment_id,
     } = body
 
     if (action === 'generate_festival') {
@@ -117,11 +119,38 @@ export async function POST(req: NextRequest) {
           // action below — next_run_at only governs *future* recurrences,
           // set once that first send has gone out.
           next_run_at: null,
+          // Growth Platform Phase 1 (Campaign ROI / Saved Segments,
+          // migration 030) — both optional. budget enables ROI computation
+          // in revenue-intelligence.ts; segment_id is an advisory link back
+          // to the saved marketing_segments row this audience was loaded
+          // from (the `segment` JSONB above is the actual filter used at
+          // send time either way).
+          budget: typeof budget === 'number' && budget > 0 ? budget : null,
+          segment_id: segment_id || null,
         })
         .select('*')
         .single()
 
       if (error) throw error
+
+      // Best-effort usage tracking on the saved segment (use_count/
+      // last_used_at) — never blocks campaign creation if it fails.
+      if (segment_id) {
+        try {
+          const { data: seg } = await supabaseAdmin
+            .from('marketing_segments')
+            .select('use_count')
+            .eq('id', segment_id)
+            .single()
+          await supabaseAdmin
+            .from('marketing_segments')
+            .update({ last_used_at: new Date().toISOString(), use_count: (seg?.use_count ?? 0) + 1 })
+            .eq('id', segment_id)
+        } catch {
+          // non-fatal — segment tracking is advisory only
+        }
+      }
+
       return NextResponse.json({ campaign }, { status: 201 })
     }
 

@@ -22,6 +22,7 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { enqueueMessage } from '@/lib/queue'
 import { WHATSAPP_MESSAGES } from '@/lib/templates'
 import { logger } from '@/lib/logger'
+import { logJourneyEvent, JOURNEY_ACTIONS } from '@/lib/customers/journey'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -116,6 +117,31 @@ export async function GET(request: NextRequest) {
         type: 'session',
         metadata: { journey: 'review_request', reservation_id: row.id, lead_id: row.customer_id },
       })
+      // Growth Engine Epic 1 (Review Engine) — persist that a request was
+      // made so it can be tracked/reminded/reported on. UNIQUE(reservation_id)
+      // on review_requests makes this safe to re-run: a second cron run that
+      // somehow re-matches the same reservation on the same day hits the
+      // unique constraint (Postgres error 23505) and no-ops rather than
+      // double-requesting. Best-effort — never blocks the WhatsApp send
+      // above. Note: supabase-js resolves with {error}, it does not throw,
+      // so any unexpected (non-duplicate) failure is logged here rather
+      // than silently disappearing into an unreachable catch block.
+      try {
+        const { error: reviewRequestError } = await db.from('review_requests').insert({
+          lead_id: row.customer_id,
+          reservation_id: row.id,
+          channel: 'whatsapp',
+          status: 'requested',
+        })
+        if (reviewRequestError && reviewRequestError.code !== '23505') {
+          logger.error('cron', 'stay-lifecycle review_requests insert failed', reviewRequestError)
+        }
+      } catch (reviewRequestErr) {
+        logger.error('cron', 'stay-lifecycle review_requests insert threw', reviewRequestErr)
+      }
+      // Growth Engine Epic 4 (Customer Journey Engine) — same best-effort
+      // contract, never blocks the send/insert above.
+      await logJourneyEvent(row.customer_id, JOURNEY_ACTIONS.REVIEW_REQUESTED, 'Review requested via WhatsApp (3 days post-checkout)', { reservationId: row.id })
       reviewRequests++
     }
 

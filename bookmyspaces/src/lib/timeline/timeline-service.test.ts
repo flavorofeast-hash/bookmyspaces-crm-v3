@@ -11,6 +11,11 @@ const state = {
   reservationsError: null as { message: string } | null,
   aiLog: [] as Record<string, unknown>[],
   aiLogError: null as { message: string } | null,
+  reviews: [] as Record<string, unknown>[],
+  referralRewards: [] as Record<string, unknown>[],
+  loyaltyTransactions: [] as Record<string, unknown>[],
+  messageQueue: [] as Record<string, unknown>[],
+  followUps: [] as Record<string, unknown>[],
 }
 
 function resetState() {
@@ -24,6 +29,11 @@ function resetState() {
   state.reservationsError = null
   state.aiLog = []
   state.aiLogError = null
+  state.reviews = []
+  state.referralRewards = []
+  state.loyaltyTransactions = []
+  state.messageQueue = []
+  state.followUps = []
 }
 
 vi.mock('@/lib/supabase', () => ({
@@ -39,6 +49,22 @@ vi.mock('@/lib/supabase', () => ({
         }),
       })
 
+      // Phase 2 (Social + WhatsApp Growth) — Phase C additions use varying
+      // chain shapes (eq/in/or in different orders), so they get a single
+      // flexible chainable stub: every method returns itself, and the
+      // terminal .limit() resolves. Simpler than extending `chain()`'s
+      // fixed eq->eq/order shape for every new call pattern.
+      const flex = (data: unknown, error: unknown = null) => {
+        const node: Record<string, unknown> = {}
+        node.select = () => node
+        node.eq = () => node
+        node.in = () => node
+        node.or = () => node
+        node.order = () => node
+        node.limit = () => Promise.resolve({ data, error })
+        return node
+      }
+
       switch (table) {
         case 'conversations': return chain(state.conversations)
         case 'whatsapp_messages': return chain(state.whatsappMessages)
@@ -48,6 +74,11 @@ vi.mock('@/lib/supabase', () => ({
         case 'invoices': return chain(state.invoices)
         case 'reservations': return chain(state.reservations, state.reservationsError)
         case 'ai_interaction_log': return chain(state.aiLog, state.aiLogError)
+        case 'reviews': return flex(state.reviews)
+        case 'referral_rewards': return flex(state.referralRewards)
+        case 'loyalty_transactions': return flex(state.loyaltyTransactions)
+        case 'message_queue': return flex(state.messageQueue)
+        case 'follow_ups': return flex(state.followUps)
         default: throw new Error(`unexpected table: ${table}`)
       }
     },
@@ -128,5 +159,38 @@ describe('getCustomerTimeline', () => {
     expect(aiEntry).toBeDefined()
     expect(aiEntry?.title).toBe('AI customer_summary')
     expect(aiEntry?.description).toBe('Repeat guest, prefers rooftop venues.')
+  })
+
+  // Phase 2 (Social + WhatsApp Growth) — Phase C: review/referral/loyalty/
+  // campaign/call/visit sources.
+  it('surfaces review, referral, loyalty, campaign, call and visit entries', async () => {
+    state.reviews = [{ id: 'r1', platform: 'google', rating: 4.5, content: 'Great stay!', review_date: '2026-07-01T00:00:00Z', response_status: 'posted', created_at: '2026-07-01T00:00:00Z' }]
+    state.referralRewards = [{ id: 'rr1', referrer_lead_id: 'lead-1', referred_lead_id: 'lead-2', status: 'earned', reward_type: 'discount', reward_value: 500, created_at: '2026-07-02T00:00:00Z' }]
+    state.loyaltyTransactions = [{ id: 'lt1', points_delta: 100, reason: 'Booking reward', reference_type: 'reservation', created_at: '2026-07-03T00:00:00Z' }]
+    state.messageQueue = [
+      { id: 'mq1', message: 'Festival offer!', status: 'sent', scheduled_at: '2026-07-04T00:00:00Z', last_attempted_at: '2026-07-04T00:05:00Z', metadata: { campaign_id: 'camp-1', lead_id: 'lead-1' } },
+      { id: 'mq2', message: 'Non-campaign send', status: 'sent', scheduled_at: '2026-07-04T00:00:00Z', last_attempted_at: null, metadata: {} },
+    ]
+    state.followUps = [
+      { id: 'f1', type: 'call', status: 'completed', scheduled_at: '2026-07-05T00:00:00Z', completed_at: '2026-07-05T01:00:00Z', notes: 'Discussed package', purpose: null, property: null, created_at: '2026-07-05T00:00:00Z' },
+      { id: 'f2', type: 'site_visit', status: 'pending', scheduled_at: '2026-07-06T00:00:00Z', completed_at: null, notes: null, purpose: 'Wedding site visit', property: 'Skyline Serenity', created_at: '2026-07-06T00:00:00Z' },
+    ]
+
+    const result = await getCustomerTimeline('lead-1')
+    const types = result.entries.map((e) => e.type)
+
+    expect(types).toContain('review')
+    expect(types).toContain('referral')
+    expect(types).toContain('loyalty')
+    expect(types).toContain('call')
+    expect(types).toContain('visit')
+
+    // Only the row with a campaign_id in metadata becomes a 'campaign' entry.
+    const campaignEntries = result.entries.filter((e) => e.type === 'campaign')
+    expect(campaignEntries).toHaveLength(1)
+    expect(campaignEntries[0].metadata.campaignId).toBe('camp-1')
+
+    const visitEntry = result.entries.find((e) => e.type === 'visit')
+    expect(visitEntry?.description).toBe('Wedding site visit')
   })
 })

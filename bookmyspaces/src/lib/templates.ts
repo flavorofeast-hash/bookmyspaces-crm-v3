@@ -316,6 +316,56 @@ Would you mind sharing a quick review? It really helps us out! 🙏
 ${params.reviewLink ? `👉 ${params.reviewLink}` : 'Just reply here or search "BookMySpaces" on Google.'}
 
 Thank you for your support! 💛`,
+
+  // ── REVIEW ENGINE: REMINDER (Growth Engine Epic 1) ────
+  // Sent once, via /api/cron/review-reminders, to guests whose
+  // review_requests row is still 'requested' 7+ days after the original ask.
+  reviewReminderMessage: (params: { name?: string; reviewLink?: string }) =>
+    `⭐ Hi${params.name ? ` ${params.name}` : ''}, just a gentle nudge — if you have a moment, we'd really appreciate a quick review of your stay with *BookMySpaces*. 🙏
+
+${params.reviewLink ? `👉 ${params.reviewLink}` : 'Just reply here or search "BookMySpaces" on Google.'}
+
+No worries if you're busy — thank you either way! 💛`,
+
+  // ── PHASE 2 (SOCIAL + WHATSAPP GROWTH): MARKETING AUTOMATIONS ──────────
+  // Sent via /api/cron/marketing-automations. Session messages (24h-window
+  // free-form), same style/footer convention as the templates above.
+  birthdayWish: (name?: string) =>
+    `🎂 Happy Birthday${name ? `, ${name}` : ''}! 🎉
+
+The whole team at *BookMySpaces* wishes you a wonderful year ahead!
+
+Celebrating your birthday with us? Reply here and we'll help you plan something special. 🥳
+
+📞 9051459463 | 🌐 www.bookmyspaces.in`,
+
+  anniversaryWish: (name?: string) =>
+    `💐 Happy Anniversary${name ? `, ${name}` : ''}! 🥂
+
+Wishing you many more wonderful years together — from all of us at *BookMySpaces*.
+
+Want to celebrate with us this year? Reply here and we'll put together something memorable. 🎉
+
+📞 9051459463 | 🌐 www.bookmyspaces.in`,
+
+  // ── PHASE 2: repeat-booking invite (previous guest, dormant a while) ──
+  repeatBookingInvite: (params: { name?: string; venue?: string }) =>
+    `👋 Hi${params.name ? ` ${params.name}` : ''}! It's been a while since your last visit${params.venue ? ` to *${params.venue}*` : ' with *BookMySpaces*'}.
+
+We've missed hosting you! Ready to plan your next celebration or stay? We'd love to welcome you back. 🎉
+
+📞 9051459463 | 🌐 www.bookmyspaces.in`,
+
+  // ── PHASE 2: referral request, sent with a real ref link (see
+  // src/lib/customers/referrals.ts's buildReferralLink) ─────────────────
+  referralRequestMessage: (params: { name?: string; referralLink: string }) =>
+    `🙏 Hi${params.name ? ` ${params.name}` : ''}! We're so glad you enjoyed your time with *BookMySpaces*.
+
+Know someone planning an event, a stay, or a celebration? Share your link — you'll both get a reward when they book! 🎁
+
+👉 ${params.referralLink}
+
+Thank you for spreading the word! 💛`,
 }
 
 // ─────────────────────────────────────────

@@ -470,3 +470,29 @@ export const createSocialPostSchema = z.object({
     (v) => !v.scheduled_at || new Date(v.scheduled_at).getTime() > Date.now(),
     { message: 'scheduled_at must be in the future', path: ['scheduled_at'] }
   )
+
+// ─── Social accounts (Phase 2 — multi-account management, migration 014) ───
+
+export const createSocialAccountSchema = z.object({
+  platform           : socialPlatformEnum,
+  display_name       : z.string().trim().min(1).max(200),
+  external_account_id: z.string().trim().max(200).optional(),
+  // Plaintext access token, if the operator has one to hand — the route
+  // encrypts it before it ever reaches the DB (src/lib/social/token-cipher.ts).
+  // Never stored/returned in plaintext by any GET.
+  access_token       : z.string().trim().min(1).max(4000).optional(),
+  token_expires_at   : z.string().datetime({ offset: true }).optional(),
+  scopes             : z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+  config             : z.record(z.unknown()).optional(),
+}).strict()
+
+export const updateSocialAccountSchema = z.object({
+  id                 : uuid,
+  display_name       : z.string().trim().min(1).max(200).optional(),
+  access_token       : z.string().trim().min(1).max(4000).optional(),
+  token_expires_at   : z.string().datetime({ offset: true }).optional(),
+  status             : z.enum(['disconnected', 'connected', 'token_expired', 'error']).optional(),
+  is_active          : z.boolean().optional(),
+  scopes             : z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+  config             : z.record(z.unknown()).optional(),
+}).strict()

@@ -12,7 +12,10 @@
 // change to fetch behavior, only where the render lives).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { MessageSquare, Mail, Tag, Calendar, FileText, Wallet, Clock, Bot } from 'lucide-react'
+import {
+  MessageSquare, Mail, Tag, Calendar, FileText, Wallet, Clock, Bot,
+  Share2, Star, Gift, Award, Megaphone, Phone, MapPin,
+} from 'lucide-react'
 import type { CustomerTimeline, TimelineEntryType } from '@/types/timeline'
 
 function fmtDateTime(iso: string): string {
@@ -33,6 +36,14 @@ const TIMELINE_ICON: Record<TimelineEntryType, React.ComponentType<{ className?:
   payment: Wallet,
   follow_up: Clock,
   ai_interaction: Bot,
+  // Phase 2 (Social + WhatsApp Growth) — Phase C additions.
+  social: Share2,
+  review: Star,
+  referral: Gift,
+  loyalty: Award,
+  campaign: Megaphone,
+  call: Phone,
+  visit: MapPin,
 }
 
 export function LeadTimeline({ timeline }: { timeline: CustomerTimeline | null }) {

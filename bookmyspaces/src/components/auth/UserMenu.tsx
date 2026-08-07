@@ -79,6 +79,16 @@ export default function UserMenu() {
         {/* Avatar */}
         <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
           {user.avatar_url
+            // avatar_url comes straight from user_profiles with no upload
+            // path anywhere in this codebase (grepped — nothing writes this
+            // column), so it can be set to any arbitrary external URL, not
+            // just the hostnames already allow-listed in next.config.js's
+            // images.remotePatterns (supabase.co/bookmyspaces.in/vercel.app).
+            // next/image throws at runtime for an unconfigured hostname, so
+            // swapping this 28px decorative avatar to next/image would risk
+            // breaking rendering for any admin-set avatar on another domain
+            // — suppressed rather than "fixed" into a behavior change.
+            // eslint-disable-next-line @next/next/no-img-element
             ? <img src={user.avatar_url} alt={user.full_name ?? ''} className="w-7 h-7 rounded-full object-cover" />
             : initials
           }

@@ -113,6 +113,23 @@ export async function POST(request: NextRequest) {
             recipient: status.recipient_id,
             errors:    status.errors ?? null,
           })
+          // Phase 2 (Social + WhatsApp Growth) — Read/Delivery Tracking.
+          // Previously logged only; whatsapp_messages.message_status
+          // already supports 'sent'/'delivered'/'read'/'failed' (migration
+          // 009) but nothing ever wrote delivered/read back — this closes
+          // that gap. Matched on whatsapp_message_id, the id sendWhatsAppText
+          // captures from the send response. Best-effort: a persistence
+          // failure here must not break webhook processing (same fail-open
+          // posture as the rest of this handler).
+          if (status.id && ['sent', 'delivered', 'read', 'failed'].includes(status.status)) {
+            void getSupabaseAdmin()
+              .from('whatsapp_messages')
+              .update({ message_status: status.status })
+              .eq('whatsapp_message_id', status.id)
+              .then(({ error }) => {
+                if (error) logger.error('whatsapp-webhook', 'Failed to persist message status', error, { id: status.id })
+              })
+          }
         }
 
         for (const message of value.messages ?? []) {

@@ -14,6 +14,13 @@
 //   - payment      -> `invoices` (LIVE — migration 009), joined via proposals.lead_id
 //   - reservation  -> `reservations` (migration 012, NOT LIVE — degrades)
 //   - ai_interaction -> `ai_interaction_log` (migration 012, NOT LIVE — degrades)
+//   - social       -> `conversations` (channel='facebook'/'instagram' — same
+//                      table as `chat`, reclassified by channel, Phase 2)
+//   - review       -> `reviews` (migration 014/033, Phase 2)
+//   - referral     -> `referral_rewards` (migration 034, Phase 2)
+//   - loyalty      -> `loyalty_transactions` (migration 035, Phase 2)
+//   - campaign     -> `message_queue` rows carrying metadata.campaign_id (Phase 2)
+//   - call/visit   -> `follow_ups` where type IN ('call','site_visit') (Phase 2)
 //
 // Same fault-tolerance contract as src/lib/ai/context-builder.ts: each
 // source is fetched independently and a failure in one (typically a
@@ -25,6 +32,16 @@ import type { CustomerTimeline, TimelineEntry, TimelineEntryType } from '@/types
 
 const FOLLOWUP_ACTIONS = new Set(['followup_sent', 'followup_completed', 'followup_scheduled'])
 
+// Phase 2 (Social + WhatsApp Growth) — Phase C fix: this previously labeled
+// EVERY non-whatsapp channel "Website chat", including Facebook/Instagram
+// DM conversations (dm-capture-service.ts creates these with
+// channel='facebook'/'instagram') — silently mislabeling social DMs as
+// website chat and giving Phase C's "Social" timeline category nothing to
+// bucket into. Now classified correctly per channel; website chat behavior
+// (channel='website'/'chat', type stays 'chat') is unchanged.
+const SOCIAL_CHANNELS = new Set(['facebook', 'instagram'])
+const CHANNEL_LABEL: Record<string, string> = { whatsapp: 'WhatsApp', facebook: 'Facebook', instagram: 'Instagram' }
+
 async function fetchChatEntries(leadId: string): Promise<TimelineEntry[]> {
   const supabase = getSupabaseAdmin()
   const { data } = await supabase
@@ -35,9 +52,9 @@ async function fetchChatEntries(leadId: string): Promise<TimelineEntry[]> {
     .limit(20)
 
   return (data ?? []).map((c) => ({
-    type: 'chat' as const,
+    type: SOCIAL_CHANNELS.has(c.channel) ? ('social' as const) : ('chat' as const),
     timestamp: c.updated_at,
-    title: `${c.channel === 'whatsapp' ? 'WhatsApp' : 'Website'} chat`,
+    title: `${CHANNEL_LABEL[c.channel] ?? 'Website'} chat`,
     description: c.is_active ? 'Active conversation' : 'Conversation ended',
     metadata: { conversationId: c.id, channel: c.channel },
   }))
@@ -203,6 +220,133 @@ async function fetchAIInteractionEntries(leadId: string): Promise<{ entries: Tim
   }
 }
 
+// ── Phase 2 (Social + WhatsApp Growth) — Phase C: Review / Referral /
+// Loyalty / Campaign / Call / Visit. Same fault-tolerance contract as the
+// sources above: each wrapped so one failure never blocks the rest.
+
+async function fetchReviewEntries(leadId: string): Promise<TimelineEntry[]> {
+  const supabase = getSupabaseAdmin()
+  try {
+    const { data, error } = await supabase
+      .from('reviews')
+      .select('id, platform, rating, content, review_date, response_status, created_at')
+      .eq('customer_id', leadId)
+      .order('review_date', { ascending: false, nullsFirst: false })
+      .limit(20)
+    if (error) return []
+    return (data ?? []).map((r) => ({
+      type: 'review' as const,
+      timestamp: r.review_date ?? r.created_at,
+      title: `Review on ${r.platform}${r.rating != null ? ` — ${r.rating}★` : ''}`,
+      description: r.content ?? (r.response_status !== 'none' ? `Reply status: ${r.response_status}` : null),
+      metadata: { reviewId: r.id, platform: r.platform, rating: r.rating, responseStatus: r.response_status },
+    }))
+  } catch {
+    return []
+  }
+}
+
+async function fetchReferralEntries(leadId: string): Promise<TimelineEntry[]> {
+  const supabase = getSupabaseAdmin()
+  try {
+    const { data, error } = await supabase
+      .from('referral_rewards')
+      .select('id, referrer_lead_id, referred_lead_id, status, reward_type, reward_value, created_at')
+      .or(`referrer_lead_id.eq.${leadId},referred_lead_id.eq.${leadId}`)
+      .order('created_at', { ascending: false })
+      .limit(20)
+    if (error) return []
+    return (data ?? []).map((r) => ({
+      type: 'referral' as const,
+      timestamp: r.created_at,
+      title: r.referrer_lead_id === leadId ? `Referral made (${r.status})` : `Referred by another customer (${r.status})`,
+      description: r.reward_value != null ? `Reward: ${r.reward_type ?? 'unspecified'} — ${r.reward_value}` : null,
+      metadata: { referralRewardId: r.id, status: r.status, rewardType: r.reward_type, rewardValue: r.reward_value },
+    }))
+  } catch {
+    return []
+  }
+}
+
+async function fetchLoyaltyEntries(leadId: string): Promise<TimelineEntry[]> {
+  const supabase = getSupabaseAdmin()
+  try {
+    const { data, error } = await supabase
+      .from('loyalty_transactions')
+      .select('id, points_delta, reason, reference_type, created_at')
+      .eq('lead_id', leadId)
+      .order('created_at', { ascending: false })
+      .limit(20)
+    if (error) return []
+    return (data ?? []).map((t) => ({
+      type: 'loyalty' as const,
+      timestamp: t.created_at,
+      title: `${t.points_delta >= 0 ? '+' : ''}${t.points_delta} loyalty points`,
+      description: t.reason,
+      metadata: { transactionId: t.id, referenceType: t.reference_type },
+    }))
+  } catch {
+    return []
+  }
+}
+
+async function fetchCampaignEntries(leadId: string): Promise<TimelineEntry[]> {
+  const supabase = getSupabaseAdmin()
+  try {
+    // No dedicated per-recipient/campaign_id column exists in this schema —
+    // campaign linkage lives inside message_queue.metadata (set by
+    // campaign-scheduler.ts's scheduleCampaignSend()). Bounded per-lead
+    // fetch + in-JS filter, same idiom as revenue-intelligence.ts's own
+    // campaign_id-from-metadata reads.
+    const { data, error } = await supabase
+      .from('message_queue')
+      .select('id, message, status, scheduled_at, last_attempted_at, metadata')
+      .eq('lead_id', leadId)
+      .order('scheduled_at', { ascending: false })
+      .limit(30)
+    if (error) return []
+    return (data ?? [])
+      .filter((m) => m.metadata && typeof m.metadata === 'object' && 'campaign_id' in (m.metadata as Record<string, unknown>))
+      .map((m) => {
+        const meta = m.metadata as Record<string, unknown>
+        return {
+          type: 'campaign' as const,
+          timestamp: m.last_attempted_at ?? m.scheduled_at,
+          title: `Campaign message — ${m.status}`,
+          description: m.message,
+          metadata: { messageQueueId: m.id, campaignId: meta.campaign_id, status: m.status },
+        }
+      })
+  } catch {
+    return []
+  }
+}
+
+const TASK_TYPE_MAP: Record<string, 'call' | 'visit'> = { call: 'call', site_visit: 'visit' }
+
+async function fetchTaskEntries(leadId: string): Promise<TimelineEntry[]> {
+  const supabase = getSupabaseAdmin()
+  try {
+    const { data, error } = await supabase
+      .from('follow_ups')
+      .select('id, type, status, scheduled_at, completed_at, notes, purpose, property, created_at')
+      .eq('lead_id', leadId)
+      .in('type', ['call', 'site_visit'])
+      .order('scheduled_at', { ascending: false })
+      .limit(20)
+    if (error) return []
+    return (data ?? []).map((f) => ({
+      type: TASK_TYPE_MAP[f.type] ?? ('call' as const),
+      timestamp: f.completed_at ?? f.scheduled_at ?? f.created_at,
+      title: `${f.type === 'site_visit' ? 'Site visit' : 'Call'} — ${f.status}${f.property ? ` (${f.property})` : ''}`,
+      description: f.purpose ?? f.notes,
+      metadata: { followUpId: f.id, status: f.status },
+    }))
+  } catch {
+    return []
+  }
+}
+
 /**
  * Builds one chronological (most recent first) timeline across every
  * existing customer touchpoint. Safe to call today — live sources (chat,
@@ -212,7 +356,10 @@ async function fetchAIInteractionEntries(leadId: string): Promise<{ entries: Tim
  * migration is applied.
  */
 export async function getCustomerTimeline(leadId: string): Promise<CustomerTimeline> {
-  const [chat, whatsapp, email, activity, proposalResult, reservationResult, aiResult] = await Promise.all([
+  const [
+    chat, whatsapp, email, activity, proposalResult, reservationResult, aiResult,
+    review, referral, loyalty, campaign, task,
+  ] = await Promise.all([
     fetchChatEntries(leadId),
     fetchWhatsAppEntries(leadId),
     fetchEmailEntries(leadId),
@@ -220,6 +367,11 @@ export async function getCustomerTimeline(leadId: string): Promise<CustomerTimel
     fetchProposalEntries(leadId),
     fetchReservationEntries(leadId),
     fetchAIInteractionEntries(leadId),
+    fetchReviewEntries(leadId),
+    fetchReferralEntries(leadId),
+    fetchLoyaltyEntries(leadId),
+    fetchCampaignEntries(leadId),
+    fetchTaskEntries(leadId),
   ])
 
   const payment = await fetchPaymentEntries(proposalResult.proposalIds)
@@ -234,6 +386,11 @@ export async function getCustomerTimeline(leadId: string): Promise<CustomerTimel
     ...payment,
     ...reservationResult.entries,
     ...aiResult.entries,
+    ...review,
+    ...referral,
+    ...loyalty,
+    ...campaign,
+    ...task,
   ].sort((a, b) => (a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0))
 
   const degraded: Partial<Record<TimelineEntryType, boolean>> = {}

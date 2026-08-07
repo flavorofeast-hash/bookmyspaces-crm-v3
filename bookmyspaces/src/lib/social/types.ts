@@ -47,6 +47,26 @@ export interface ReplyResult {
   error?: string
 }
 
+// Phase 2 (Social Growth) — Engagement Analytics. Every field is nullable:
+// a platform's Insights/Analytics API may not expose all of them (e.g. X
+// has no "saves" concept), and an unconfigured adapter returns ok:false
+// rather than fabricated zeros — NULL means "not measured", not "zero".
+export interface PostMetrics {
+  reach?: number | null
+  impressions?: number | null
+  clicks?: number | null
+  likes?: number | null
+  comments?: number | null
+  shares?: number | null
+  saves?: number | null
+}
+
+export interface MetricsResult {
+  ok: boolean
+  metrics?: PostMetrics
+  error?: string
+}
+
 export interface SocialAdapter {
   readonly platform: SocialPlatform
   /** True when env/config credentials exist — gates every real API call. */
@@ -59,4 +79,6 @@ export interface SocialAdapter {
   publishPost(input: PublishInput): Promise<PublishResult>
   /** Reply to a comment/mention. Must return ok:false when unconfigured. */
   replyToInteraction(externalId: string, message: string): Promise<ReplyResult>
+  /** Fetch reach/impressions/likes/etc. for a published post. Must return ok:false (not throw, not fabricate) when unconfigured. */
+  fetchEngagementMetrics(externalPostId: string): Promise<MetricsResult>
 }

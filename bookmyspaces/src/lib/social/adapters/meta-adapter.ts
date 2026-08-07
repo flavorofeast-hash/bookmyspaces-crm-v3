@@ -21,7 +21,7 @@
 import crypto from 'crypto'
 import type {
   SocialAdapter, SocialPlatform, NormalizedInteraction, PublishInput,
-  PublishResult, ReplyResult,
+  PublishResult, ReplyResult, MetricsResult,
 } from '@/lib/social/types'
 
 const GRAPH = 'https://graph.facebook.com/v23.0'
@@ -127,6 +127,64 @@ export class MetaAdapter implements SocialAdapter {
       const json = (await res.json()) as { id?: string; error?: { message?: string } }
       if (!res.ok || !json.id) return { ok: false, error: json.error?.message ?? `graph_error_${res.status}` }
       return { ok: true, externalReplyId: json.id }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  // FB posts and IG media use different Insights metric names. Both are
+  // requested from the same /{id}/insights endpoint; reactions/comments/
+  // shares on FB come back from the plain object fields (not insights) so
+  // they're fetched in one combined call with `fields=`.
+  async fetchEngagementMetrics(externalPostId: string): Promise<MetricsResult> {
+    if (!this.isConfigured()) return notConfigured()
+    const token = process.env.META_PAGE_ACCESS_TOKEN
+    try {
+      if (this.platform === 'facebook') {
+        const metricNames = ['post_impressions', 'post_impressions_unique', 'post_clicks']
+        const [objRes, insightsRes] = await Promise.all([
+          fetch(`${GRAPH}/${externalPostId}?fields=shares,reactions.summary(true),comments.summary(true)&access_token=${token}`),
+          fetch(`${GRAPH}/${externalPostId}/insights?metric=${metricNames.join(',')}&access_token=${token}`),
+        ])
+        const obj = (await objRes.json()) as {
+          shares?: { count?: number }; reactions?: { summary?: { total_count?: number } };
+          comments?: { summary?: { total_count?: number } }; error?: { message?: string }
+        }
+        const insights = (await insightsRes.json()) as { data?: { name: string; values: { value: number }[] }[]; error?: { message?: string } }
+        if (!objRes.ok || obj.error) return { ok: false, error: obj.error?.message ?? `graph_error_${objRes.status}` }
+        const byName = (name: string) => insights.data?.find((d) => d.name === name)?.values?.[0]?.value
+        return {
+          ok: true,
+          metrics: {
+            impressions: byName('post_impressions') ?? null,
+            reach: byName('post_impressions_unique') ?? null,
+            clicks: byName('post_clicks') ?? null,
+            likes: obj.reactions?.summary?.total_count ?? null,
+            comments: obj.comments?.summary?.total_count ?? null,
+            shares: obj.shares?.count ?? null,
+            saves: null, // not exposed for FB page posts
+          },
+        }
+      }
+
+      // Instagram media
+      const igMetrics = ['impressions', 'reach', 'likes', 'comments', 'saved', 'shares']
+      const res = await fetch(`${GRAPH}/${externalPostId}/insights?metric=${igMetrics.join(',')}&access_token=${token}`)
+      const json = (await res.json()) as { data?: { name: string; values: { value: number }[] }[]; error?: { message?: string } }
+      if (!res.ok || json.error) return { ok: false, error: json.error?.message ?? `graph_error_${res.status}` }
+      const byName = (name: string) => json.data?.find((d) => d.name === name)?.values?.[0]?.value
+      return {
+        ok: true,
+        metrics: {
+          impressions: byName('impressions') ?? null,
+          reach: byName('reach') ?? null,
+          clicks: null, // not an IG media insight metric
+          likes: byName('likes') ?? null,
+          comments: byName('comments') ?? null,
+          shares: byName('shares') ?? null,
+          saves: byName('saved') ?? null,
+        },
+      }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
