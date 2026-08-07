@@ -21,6 +21,10 @@ const links = [
   // at build time" fix already applied above for Founder/Revenue/
   // Intelligence/Operations, so this dashboard isn't URL-only on day one.
   { href: '/dashboard/marketing', label: 'Marketing' },
+  // Phase 3 (Revenue Automation) — AI Follow-up Assistant dashboard, same
+  // "add it to the nav at build time" discoverability fix already applied
+  // above for Founder/Revenue/Intelligence/Operations/Marketing.
+  { href: '/dashboard/followups', label: 'Follow-ups' },
   // Sprint 5 fix: Revenue Dashboard and Operations Dashboard were both
   // fully built (Sprint 2 and Sprint 4 respectively) but had no path to
   // them from the persistent nav — each only linked to the *other* one

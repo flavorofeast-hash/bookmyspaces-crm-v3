@@ -48,9 +48,15 @@ export interface DripEnrollmentRow {
   sequence_id: string
   lead_id: string
   current_step: number
-  status: 'active' | 'completed' | 'cancelled'
+  status: 'active' | 'paused' | 'completed' | 'cancelled'
   next_send_at: string | null
 }
+
+// Phase 3 (Revenue Automation) — the same "booked = goal met" concept
+// loyalty.ts's REVENUE_RECOGNIZED_STATUSES already established for revenue
+// recognition, reused here as the drip exit condition: a lead who has
+// reached one of these reservation statuses no longer needs nurturing.
+const CONVERTED_RESERVATION_STATUSES = ['confirmed', 'checked_in', 'checked_out']
 
 function renderTemplate(template: string, name: string | null): string {
   return template.replace(/\{\{\s*name\s*\}\}/gi, name || 'there')
@@ -97,6 +103,66 @@ export async function cancelEnrollment(enrollmentId: string): Promise<Result<Dri
   return { ok: true, value: data as DripEnrollmentRow }
 }
 
+// Phase 3 (Revenue Automation) — Pause/Resume. Only an 'active' enrollment
+// can be paused (pausing a completed/cancelled one is a no-op error, not a
+// silent state change); only a 'paused' one can be resumed. Pausing clears
+// next_send_at so advanceDueDripSteps()'s own status='active' filter is the
+// single source of truth for what's due — no second "is it paused" check
+// needed there. Resuming re-derives next_send_at from the NEXT step's
+// delay_days, counted from now (not from the original schedule), so a
+// resumed sequence doesn't immediately fire a backlog of "overdue" sends.
+export async function pauseEnrollment(enrollmentId: string): Promise<Result<DripEnrollmentRow>> {
+  const db = getSupabaseAdmin()
+  const { data, error } = await db
+    .from('drip_sequence_enrollments')
+    .update({ status: 'paused', next_send_at: null })
+    .eq('id', enrollmentId)
+    .eq('status', 'active')
+    .select('*')
+    .maybeSingle()
+  if (error) return { ok: false, error: error.message }
+  if (!data) return { ok: false, error: 'enrollment_not_active' }
+  return { ok: true, value: data as DripEnrollmentRow }
+}
+
+export async function resumeEnrollment(enrollmentId: string): Promise<Result<DripEnrollmentRow>> {
+  const db = getSupabaseAdmin()
+  const { data: enrollment, error: fetchError } = await db
+    .from('drip_sequence_enrollments')
+    .select('*')
+    .eq('id', enrollmentId)
+    .eq('status', 'paused')
+    .maybeSingle()
+  if (fetchError) return { ok: false, error: fetchError.message }
+  if (!enrollment) return { ok: false, error: 'enrollment_not_paused' }
+
+  const { data: nextStep } = await db
+    .from('drip_sequence_steps')
+    .select('delay_days')
+    .eq('sequence_id', enrollment.sequence_id)
+    .eq('step_order', enrollment.current_step + 1)
+    .maybeSingle()
+
+  const nextSendAt = nextStep ? new Date(Date.now() + nextStep.delay_days * 86400000).toISOString() : null
+  const status = nextStep ? 'active' : 'completed'
+
+  // Guarded on status='paused' (not just id): the fetch above confirmed
+  // 'paused' a moment ago, but without re-checking it here a concurrent
+  // cancel (or a second resume request) between the fetch and this write
+  // could be silently overwritten. Scoping the write to the state we just
+  // observed makes a lost update impossible instead of just unlikely.
+  const { data, error } = await db
+    .from('drip_sequence_enrollments')
+    .update({ status, next_send_at: nextSendAt })
+    .eq('id', enrollmentId)
+    .eq('status', 'paused')
+    .select('*')
+    .maybeSingle()
+  if (error) return { ok: false, error: error.message }
+  if (!data) return { ok: false, error: 'enrollment_not_paused' }
+  return { ok: true, value: data as DripEnrollmentRow }
+}
+
 export interface AdvanceResult {
   processed: number
   sent: number
@@ -129,6 +195,33 @@ export async function advanceDueDripSteps(limit = 20): Promise<AdvanceResult> {
   for (const enrollment of (due ?? []) as DripEnrollmentRow[]) {
     result.processed++
     try {
+      // Phase 3 (Revenue Automation) — Exit condition: a lead who has
+      // already converted (a revenue-recognized reservation exists) no
+      // longer needs nurturing towards the same goal. Checked before
+      // sending the next step, not on enrollment, since conversion can
+      // happen at any point mid-sequence. Cheap, bounded (limit 1) —
+      // mirrors CONVERTED_RESERVATION_STATUSES' reuse of loyalty.ts's
+      // revenue-recognition definition rather than inventing a new one.
+      const { data: converted } = await db
+        .from('reservations')
+        .select('id')
+        .eq('customer_id', enrollment.lead_id)
+        .in('status', CONVERTED_RESERVATION_STATUSES)
+        .limit(1)
+        .maybeSingle()
+
+      if (converted) {
+        // Guarded on status='active': this enrollment was 'active' when the
+        // batch was fetched above, but an operator could have paused/
+        // cancelled it in the meantime via the enroll route's PATCH action.
+        // Scoping the write to the state we actually observed makes it a
+        // no-op instead of clobbering that concurrent change.
+        await db.from('drip_sequence_enrollments').update({ status: 'cancelled', next_send_at: null }).eq('id', enrollment.id).eq('status', 'active')
+        await logJourneyEvent(enrollment.lead_id, 'drip_sequence_exited_goal_met', 'Drip sequence exited — lead already converted', { sequenceId: enrollment.sequence_id })
+        result.completed++
+        continue
+      }
+
       const stepOrder = enrollment.current_step + 1
 
       const { data: step } = await db
@@ -139,8 +232,9 @@ export async function advanceDueDripSteps(limit = 20): Promise<AdvanceResult> {
         .maybeSingle()
 
       if (!step) {
-        // No more steps — sequence complete.
-        await db.from('drip_sequence_enrollments').update({ status: 'completed', next_send_at: null }).eq('id', enrollment.id)
+        // No more steps — sequence complete. Same status='active' guard as
+        // the exit-condition write above.
+        await db.from('drip_sequence_enrollments').update({ status: 'completed', next_send_at: null }).eq('id', enrollment.id).eq('status', 'active')
         result.completed++
         continue
       }
@@ -170,6 +264,12 @@ export async function advanceDueDripSteps(limit = 20): Promise<AdvanceResult> {
         .eq('step_order', stepOrder + 1)
         .maybeSingle()
 
+      // Same status='active' guard as the two writes above: if the
+      // enrollment was paused/cancelled concurrently, this write becomes a
+      // no-op rather than silently re-activating it or clobbering that
+      // state — the step send above already happened either way (no way to
+      // unsend a WhatsApp message), but bookkeeping stays consistent with
+      // the operator's actual pause/cancel action.
       await db
         .from('drip_sequence_enrollments')
         .update({
@@ -178,6 +278,7 @@ export async function advanceDueDripSteps(limit = 20): Promise<AdvanceResult> {
           next_send_at: nextStep ? new Date(Date.now() + nextStep.delay_days * 86400000).toISOString() : null,
         })
         .eq('id', enrollment.id)
+        .eq('status', 'active')
     } catch (err) {
       result.failed++
       logger.error('drip-service', 'advanceDueDripSteps: enrollment processing threw', err, { enrollmentId: enrollment.id })
@@ -187,7 +288,36 @@ export async function advanceDueDripSteps(limit = 20): Promise<AdvanceResult> {
   return result
 }
 
-export async function listSequences(): Promise<Result<(DripSequenceRow & { steps: DripStepRow[] })[]>> {
+export interface DripSequenceMetrics {
+  active: number
+  paused: number
+  completed: number
+  cancelled: number
+  total: number
+}
+
+const EMPTY_METRICS: DripSequenceMetrics = { active: 0, paused: 0, completed: 0, cancelled: 0, total: 0 }
+
+// Phase 3 (Revenue Automation) — Performance Metrics. Deliberately just
+// enrollment-status counts (no new table, no send-rate/open-rate tracking
+// that doesn't exist anywhere in this codebase for WhatsApp — outbound
+// delivery status isn't captured per-message here) — an honest, real
+// number rather than a fabricated engagement metric.
+function tallyMetrics(rows: { sequence_id: string; status: string }[]): Map<string, DripSequenceMetrics> {
+  const map = new Map<string, DripSequenceMetrics>()
+  for (const row of rows) {
+    const m = map.get(row.sequence_id) ?? { ...EMPTY_METRICS }
+    if (row.status === 'active') m.active++
+    else if (row.status === 'paused') m.paused++
+    else if (row.status === 'completed') m.completed++
+    else if (row.status === 'cancelled') m.cancelled++
+    m.total++
+    map.set(row.sequence_id, m)
+  }
+  return map
+}
+
+export async function listSequences(): Promise<Result<(DripSequenceRow & { steps: DripStepRow[]; metrics: DripSequenceMetrics })[]>> {
   const db = getSupabaseAdmin()
   const { data: sequences, error } = await db.from('drip_sequences').select('*').order('created_at', { ascending: false })
   if (error) return { ok: false, error: error.message }
@@ -195,9 +325,15 @@ export async function listSequences(): Promise<Result<(DripSequenceRow & { steps
   const { data: steps, error: stepsError } = await db.from('drip_sequence_steps').select('*').order('step_order', { ascending: true })
   if (stepsError) return { ok: false, error: stepsError.message }
 
+  // Best-effort — a metrics query failure should degrade to all-zero
+  // counts, never block the sequence list itself from loading.
+  const { data: enrollments } = await db.from('drip_sequence_enrollments').select('sequence_id, status')
+  const metricsBySequence = tallyMetrics((enrollments ?? []) as { sequence_id: string; status: string }[])
+
   const value = (sequences ?? []).map((s) => ({
     ...(s as DripSequenceRow),
     steps: (steps ?? []).filter((st) => st.sequence_id === s.id) as DripStepRow[],
+    metrics: metricsBySequence.get(s.id) ?? EMPTY_METRICS,
   }))
   return { ok: true, value }
 }

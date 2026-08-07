@@ -8,7 +8,9 @@
 //                                    already-active lead just resets progress
 //                                    to step 1, via the upsert in
 //                                    enrollLead()'s onConflict clause)
-// PATCH  { enrollmentId, action: 'cancel' } → cancelEnrollment
+// PATCH  { enrollmentId, action: 'cancel' | 'pause' | 'resume' }
+//   → cancelEnrollment / pauseEnrollment / resumeEnrollment
+//   (pause/resume added Phase 3 — Revenue Automation, drip pause/resume)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const dynamic = 'force-dynamic'
@@ -17,7 +19,7 @@ export const runtime = 'nodejs'
 import { NextRequest, NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { requireAuth } from '@/lib/auth-guard'
-import { enrollLead, cancelEnrollment } from '@/lib/whatsapp/drip-service'
+import { enrollLead, cancelEnrollment, pauseEnrollment, resumeEnrollment } from '@/lib/whatsapp/drip-service'
 
 export async function POST(req: NextRequest) {
   const auth = await requireAuth()
@@ -47,13 +49,18 @@ export async function PATCH(req: NextRequest) {
     const body = await req.json()
     const { enrollmentId, action } = body as { enrollmentId?: string; action?: string }
     if (!enrollmentId) return NextResponse.json({ error: 'enrollmentId is required' }, { status: 400 })
-    if (action !== 'cancel') return NextResponse.json({ error: 'Only action:"cancel" is supported' }, { status: 400 })
+    if (action !== 'cancel' && action !== 'pause' && action !== 'resume') {
+      return NextResponse.json({ error: 'action must be "cancel", "pause", or "resume"' }, { status: 400 })
+    }
 
-    const result = await cancelEnrollment(enrollmentId)
+    const result =
+      action === 'cancel' ? await cancelEnrollment(enrollmentId)
+      : action === 'pause' ? await pauseEnrollment(enrollmentId)
+      : await resumeEnrollment(enrollmentId)
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: 422 })
     return NextResponse.json({ enrollment: result.value })
   } catch (err) {
     logger.error('drip-sequences-enroll', 'PATCH failed', err)
-    return NextResponse.json({ error: 'Failed to cancel enrollment' }, { status: 500 })
+    return NextResponse.json({ error: 'Failed to update enrollment' }, { status: 500 })
   }
 }

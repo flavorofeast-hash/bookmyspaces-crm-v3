@@ -23,6 +23,16 @@
 // (3) sends via sendWhatsAppText, (4) logs the send so the cooldown check
 // prevents a duplicate next run. Bounded per-run (MAX_PER_TRIGGER) so one
 // cron tick can't fan out an unbounded number of sends.
+//
+// Phase 3 (Revenue Automation) — added runProposalNudge(), the automated
+// counterpart to "Proposal not opened" / "Proposal viewed but inactive".
+// Distinct from runProposalExpiry() above (which fires only near
+// expires_at, regardless of view state): this reuses the existing
+// computeProposalUrgency() engine (src/lib/proposal-intelligence.ts,
+// already used by /api/proposals/intelligence and the Chief of Staff) —
+// its 'follow_up_now'/'resend_proposal' next-actions ARE the "not opened
+// after 24/48h" and "viewed with no reply after 24h" signals the mission
+// asked for. No second urgency calculation was written.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const dynamic = 'force-dynamic'
@@ -37,6 +47,7 @@ import { sendWhatsAppText } from '@/lib/whatsapp/send-message'
 import { logJourneyEvent } from '@/lib/customers/journey'
 import { WHATSAPP_MESSAGES } from '@/lib/templates'
 import { getOrCreateReferralCode, buildReferralLink } from '@/lib/customers/referrals'
+import { computeProposalUrgency, LeadSnapshot, ProposalSnapshot } from '@/lib/proposal-intelligence'
 
 const MAX_PER_TRIGGER = 25
 
@@ -59,6 +70,7 @@ interface AutomationCounts {
   proposalExpiry: number
   repeatBooking: number
   referralRequest: number
+  proposalNudge: number
 }
 
 async function runBirthday(): Promise<number> {
@@ -186,6 +198,124 @@ async function runProposalExpiry(): Promise<number> {
   return sent
 }
 
+// Phase 3 (Revenue Automation) — "Proposal not opened" + "Proposal viewed
+// but inactive" triggers, both driven by computeProposalUrgency() rather
+// than a second hand-rolled staleness check. Scans open (sent/viewed)
+// proposals with a lead attached, computes urgency, and:
+//   1. Persists urgency_score/risk_level/next_action back onto the
+//      proposal (same fields /api/proposals/intelligence's PATCH writes)
+//      so this field stays fresh automatically instead of only on a
+//      manual recompute — closes the staleness gap the AI Chief of Staff
+//      sprint doc explicitly flagged ("only updated by a manual PATCH
+//      call and can be stale").
+//   2. Sends a WhatsApp nudge (reusing the same proposalFollowUp template
+//      runProposalExpiry() already uses — one template, not two) only
+//      when the urgency engine says follow-up/resend is actually due,
+//      deduped per-proposal via the same activity_logs.metadata.contains
+//      idiom runProposalExpiry() already established.
+async function runProposalNudge(): Promise<number> {
+  const db = getSupabaseAdmin()
+
+  const { data: proposals, error } = await db
+    .from('proposals')
+    .select(
+      'id, status, total_price, package_name, guest_count, event_type, sent_at, first_viewed_at, ' +
+      'last_viewed_at, followed_up_at, viewed_count, engagement_score, created_at, proposal_number, share_token, lead_id, ' +
+      'leads(id, name, phone, whatsapp_opted_in, ai_score, lead_temperature, urgency_level, lead_stage, estimated_revenue, budget, event_type, venue, email, event_date, guest_count)'
+    )
+    .in('status', ['sent', 'viewed'])
+    .limit(MAX_PER_TRIGGER * 3) // headroom — most scanned proposals won't need a nudge this run
+
+  if (error || !proposals) {
+    if (error) logger.error('marketing-automations', 'Failed to load open proposals for nudge scan', error)
+    return 0
+  }
+
+  let sent = 0
+  for (const proposal of proposals) {
+    if (sent >= MAX_PER_TRIGGER) break
+    const leadRaw = (Array.isArray(proposal.leads) ? proposal.leads[0] : proposal.leads) as Record<string, unknown> | null
+    if (!leadRaw?.id) continue
+
+    const lead: LeadSnapshot = {
+      id: leadRaw.id as string,
+      name: (leadRaw.name as string) ?? null,
+      phone: (leadRaw.phone as string) ?? null,
+      email: (leadRaw.email as string) ?? null,
+      event_type: (leadRaw.event_type as string) ?? null,
+      event_date: (leadRaw.event_date as string) ?? null,
+      guest_count: (leadRaw.guest_count as number) ?? null,
+      budget: (leadRaw.budget as string) ?? null,
+      venue: (leadRaw.venue as string) ?? null,
+      ai_score: (leadRaw.ai_score as number) ?? null,
+      lead_temperature: (leadRaw.lead_temperature as string) ?? null,
+      urgency_level: (leadRaw.urgency_level as string) ?? null,
+      lead_stage: (leadRaw.lead_stage as string) ?? null,
+      estimated_revenue: (leadRaw.estimated_revenue as number) ?? null,
+      score_breakdown: null,
+    }
+
+    const proposalSnap: ProposalSnapshot = {
+      id: proposal.id,
+      status: proposal.status as ProposalSnapshot['status'],
+      total_price: proposal.total_price ?? null,
+      package_name: proposal.package_name ?? null,
+      guest_count: proposal.guest_count ?? null,
+      event_type: proposal.event_type ?? null,
+      sent_at: proposal.sent_at ?? null,
+      first_viewed_at: proposal.first_viewed_at ?? null,
+      last_viewed_at: proposal.last_viewed_at ?? null,
+      followed_up_at: proposal.followed_up_at ?? null,
+      viewed_count: proposal.viewed_count ?? 0,
+      engagement_score: proposal.engagement_score ?? 0,
+      created_at: proposal.created_at,
+    }
+
+    const urgency = computeProposalUrgency(proposalSnap, lead)
+
+    // Keep urgency_score/risk_level/next_action fresh on every scan, not
+    // just when a nudge is sent — best-effort, never blocks the send path.
+    const { error: updateErr } = await db
+      .from('proposals')
+      .update({
+        urgency_score: urgency.urgencyScore,
+        risk_level: urgency.riskLevel,
+        next_action: urgency.nextAction,
+        recommendation: urgency.recommendation,
+        escalation_required: urgency.escalationRequired,
+      })
+      .eq('id', proposal.id)
+    if (updateErr) logger.error('marketing-automations', 'Failed to refresh proposal urgency', updateErr, { proposalId: proposal.id })
+
+    if (!urgency.followUpRequired && !urgency.resendRecommended) continue
+    if (!lead.phone || leadRaw.whatsapp_opted_in === false || !proposal.share_token) continue
+
+    const { count } = await db
+      .from('activity_logs')
+      .select('id', { count: 'exact', head: true })
+      .eq('lead_id', lead.id)
+      .eq('action', 'whatsapp_proposal_nudge_sent')
+      .contains('metadata', { proposalId: proposal.id })
+    if ((count ?? 0) > 0) continue
+
+    const shareUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://bookmyspaces.in'}/proposals/share/${proposal.share_token}`
+    const result = await sendWhatsAppText(
+      lead.phone,
+      WHATSAPP_MESSAGES.proposalFollowUp(lead.name ?? undefined, proposal.proposal_number ?? '', shareUrl),
+      { leadId: lead.id }
+    )
+    if (result.success) {
+      sent++
+      await logJourneyEvent(lead.id, 'whatsapp_proposal_nudge_sent', `Proposal nudge sent (${urgency.nextAction})`, {
+        proposalId: proposal.id,
+        nextAction: urgency.nextAction,
+        riskLevel: urgency.riskLevel,
+      })
+    }
+  }
+  return sent
+}
+
 export async function POST(req: NextRequest) {
   const cronSecret = process.env.CRON_SECRET
   if (cronSecret) {
@@ -196,7 +326,7 @@ export async function POST(req: NextRequest) {
   }
 
   const counts: AutomationCounts = {
-    birthday: 0, anniversary: 0, winBack: 0, proposalExpiry: 0, repeatBooking: 0, referralRequest: 0,
+    birthday: 0, anniversary: 0, winBack: 0, proposalExpiry: 0, repeatBooking: 0, referralRequest: 0, proposalNudge: 0,
   }
 
   try {
@@ -222,6 +352,10 @@ export async function POST(req: NextRequest) {
   try {
     counts.referralRequest = await runReferralRequest()
   } catch (err) { logger.error('marketing-automations', 'Referral request trigger failed', err) }
+
+  try {
+    counts.proposalNudge = await runProposalNudge()
+  } catch (err) { logger.error('marketing-automations', 'Proposal nudge trigger failed', err) }
 
   return NextResponse.json({ sent: counts })
 }

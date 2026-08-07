@@ -53,10 +53,39 @@ export async function GET(req: NextRequest) {
       .order('created_at', { ascending: true })
       .limit(50)
 
+    // Phase 3 (Revenue Automation) — AI Follow-up Assistant dashboard.
+    // /api/cron/ai-followup-assistant already drafts these (follow_ups rows,
+    // status='pending', created_by='ai_followup_assistant') for a human to
+    // review before /api/cron/followups' drain cron sends them — but until
+    // now nothing ever surfaced the drafts for that review step. Reusing
+    // the existing follow_ups table/leads join, not a new queue.
+    const { data: aiDraftedRaw } = await supabaseAdmin
+      .from('follow_ups')
+      .select('id, lead_id, message, notes, scheduled_at, trigger_reason, created_at, leads(id, name, phone, status)')
+      .eq('status', 'pending')
+      .eq('created_by', 'ai_followup_assistant')
+      .order('scheduled_at', { ascending: true })
+      .limit(30)
+
+    const aiDrafted = (aiDraftedRaw ?? []).map((row) => {
+      const leadRaw = Array.isArray(row.leads) ? row.leads[0] : row.leads
+      return {
+        id: row.id,
+        leadId: row.lead_id,
+        leadName: leadRaw?.name ?? null,
+        leadPhone: leadRaw?.phone ?? null,
+        leadStatus: leadRaw?.status ?? null,
+        message: row.message,
+        scheduledAt: row.scheduled_at,
+        createdAt: row.created_at,
+      }
+    })
+
     return NextResponse.json({
       leads: pendingLeads || [],
       overdue: overdueLeads || [],
-      counts: { pending: pendingLeads?.length ?? 0, overdue: overdueLeads?.length ?? 0 }
+      aiDrafted,
+      counts: { pending: pendingLeads?.length ?? 0, overdue: overdueLeads?.length ?? 0, aiDrafted: aiDrafted.length }
     })
   } catch (err) {
     logger.error('followups', 'GET failed', err)
@@ -71,7 +100,7 @@ export async function GET(req: NextRequest) {
       .order('created_at', { ascending: true })
       .limit(50)
 
-    return NextResponse.json({ leads: data || [], overdue: [], counts: { pending: data?.length ?? 0, overdue: 0 } })
+    return NextResponse.json({ leads: data || [], overdue: [], aiDrafted: [], counts: { pending: data?.length ?? 0, overdue: 0, aiDrafted: 0 } })
   }
 }
 
@@ -81,7 +110,7 @@ export async function POST(req: NextRequest) {
   const supabaseAdmin = getSupabaseAdmin()
   try {
     const body = await req.json()
-    const { action, lead_id, note, followup_date, performed_by = 'admin' } = body
+    const { action, lead_id, note, followup_date, follow_up_id, performed_by = 'admin' } = body
 
     if (action === 'schedule' && lead_id) {
       if (!followup_date) return NextResponse.json({ error: 'followup_date required' }, { status: 400 })
@@ -135,6 +164,77 @@ export async function POST(req: NextRequest) {
         await supabaseAdmin.from('activity_logs').insert({ lead_id, action: 'followup_sent', description: 'WhatsApp follow-up sent', performed_by: 'system' })
       }
       return NextResponse.json({ success: sent })
+    }
+
+    // Phase 3 (Revenue Automation) — AI Follow-up Assistant dashboard
+    // approve/dismiss actions, operating on a specific follow_ups row
+    // (not a lead) — distinct from 'single' above, which sends the
+    // generic template for a lead rather than a specific AI-drafted row.
+    if (action === 'send_now' && follow_up_id) {
+      const { data: row, error: rowErr } = await supabaseAdmin
+        .from('follow_ups')
+        .select('id, lead_id, message, status, trigger_reason, leads(id, name, phone, whatsapp_opted_in)')
+        .eq('id', follow_up_id)
+        .single()
+      if (rowErr || !row) return NextResponse.json({ error: 'Follow-up not found' }, { status: 404 })
+
+      const leadRaw = Array.isArray(row.leads) ? row.leads[0] : row.leads
+      if (!leadRaw?.phone) return NextResponse.json({ error: 'Lead has no phone number' }, { status: 400 })
+      if (leadRaw.whatsapp_opted_in === false) return NextResponse.json({ error: 'Lead has opted out of WhatsApp' }, { status: 400 })
+
+      // Claim BEFORE sending, not after: a conditional update guarded on
+      // status='pending' so two concurrent send_now calls (e.g. a double
+      // click) for the same row can't both pass the check-then-act window
+      // and both send the WhatsApp message — only the request that actually
+      // flips the row proceeds. Reverted back to 'pending' below if the
+      // send itself fails, so a real failure can still be retried.
+      const { data: claimed, error: claimErr } = await supabaseAdmin
+        .from('follow_ups')
+        .update({ status: 'sent', sent_at: new Date().toISOString() })
+        .eq('id', follow_up_id)
+        .eq('status', 'pending')
+        .select('id')
+        .maybeSingle()
+      if (claimErr) throw claimErr
+      if (!claimed) return NextResponse.json({ error: 'Follow-up is not pending' }, { status: 409 })
+
+      // Same guard /api/cron/followups' drain cron already established:
+      // `message` is only real customer-facing content on AI-drafted rows.
+      // Manually-scheduled rows (action:'schedule' above) write a non-
+      // customer-facing placeholder ('Scheduled follow-up') into the same
+      // column — sending it unconditionally would leak that placeholder
+      // text to the customer.
+      const message = row.trigger_reason === 'ai_followup_assistant' && row.message
+        ? row.message
+        : WHATSAPP_MESSAGES.followUp(leadRaw.name || undefined)
+      const sent = await smartSend(leadRaw.phone, message, { type: 'session', leadId: leadRaw.id })
+      if (sent) {
+        await supabaseAdmin.from('leads').update({ last_contacted_at: new Date().toISOString() }).eq('id', leadRaw.id)
+        await supabaseAdmin.from('activity_logs').insert({ lead_id: leadRaw.id, action: 'followup_sent', description: 'AI-drafted follow-up approved and sent', performed_by })
+      } else {
+        // Send failed — release the claim so it isn't stuck 'sent' with
+        // nothing actually delivered.
+        await supabaseAdmin.from('follow_ups').update({ status: 'pending', sent_at: null }).eq('id', follow_up_id)
+      }
+      return NextResponse.json({ success: sent })
+    }
+
+    if (action === 'dismiss' && follow_up_id) {
+      // Guarded on status='pending' so a dismiss racing a concurrent
+      // send_now can't both "succeed" — .select().maybeSingle() confirms
+      // whether this request actually matched/changed the row instead of
+      // reporting success on a silent zero-row no-op (e.g. it was already
+      // sent a moment earlier).
+      const { data: dismissed, error: dismissErr } = await supabaseAdmin
+        .from('follow_ups')
+        .update({ status: 'skipped' })
+        .eq('id', follow_up_id)
+        .eq('status', 'pending')
+        .select('id')
+        .maybeSingle()
+      if (dismissErr) throw dismissErr
+      if (!dismissed) return NextResponse.json({ error: 'Follow-up is not pending' }, { status: 409 })
+      return NextResponse.json({ success: true })
     }
 
     if (action === 'bulk') {

@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { GitBranch, Plus, X, Save, Loader2, Trash2, UserPlus } from 'lucide-react'
+import { GitBranch, Plus, X, Save, Loader2, Trash2, UserPlus, Pause, Play, Ban } from 'lucide-react'
 
 interface DripStep {
   id: string
@@ -22,6 +22,14 @@ interface DripStep {
   message_template: string
 }
 
+interface DripSequenceMetrics {
+  active: number
+  paused: number
+  completed: number
+  cancelled: number
+  total: number
+}
+
 interface DripSequence {
   id: string
   name: string
@@ -29,6 +37,7 @@ interface DripSequence {
   trigger_event: string
   is_active: boolean
   steps: DripStep[]
+  metrics: DripSequenceMetrics
 }
 
 const TRIGGER_EVENTS = [
@@ -55,6 +64,32 @@ export default function DripSequencesPage() {
   const [enrollSequenceId, setEnrollSequenceId] = useState<string | null>(null)
   const [enrollLeadId, setEnrollLeadId] = useState('')
   const [enrolling, setEnrolling] = useState(false)
+
+  // Phase 3 (Revenue Automation) — Pause/Resume/Cancel by enrollment ID,
+  // same "operator pastes an ID" pattern already established above for
+  // enrolling by lead ID (no enrollment list/picker exists yet — a natural
+  // follow-up, not required to make pause/resume genuinely usable today).
+  const [manageEnrollmentId, setManageEnrollmentId] = useState('')
+  const [managing, setManaging] = useState(false)
+
+  async function handleManageEnrollment(action: 'pause' | 'resume' | 'cancel') {
+    if (!manageEnrollmentId.trim()) return
+    setManaging(true)
+    try {
+      const res = await fetch('/api/whatsapp/drip-sequences/enroll', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enrollmentId: manageEnrollmentId.trim(), action }),
+      })
+      const data = await res.json()
+      if (!res.ok) { toast.error(data.error || `Failed to ${action} enrollment`); return }
+      toast.success(`Enrollment ${action === 'cancel' ? 'cancelled' : `${action}d`}.`)
+      setManageEnrollmentId('')
+      await load()
+    } finally {
+      setManaging(false)
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -139,6 +174,38 @@ export default function DripSequencesPage() {
       </div>
 
       <div className="max-w-4xl mx-auto px-6 py-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-gray-500">Manage an enrollment:</span>
+          <input
+            value={manageEnrollmentId}
+            onChange={(e) => setManageEnrollmentId(e.target.value)}
+            placeholder="Enrollment ID"
+            aria-label="Enrollment ID to manage"
+            className="w-56 px-2 py-1 border border-gray-200 rounded text-xs"
+          />
+          <button
+            onClick={() => handleManageEnrollment('pause')}
+            disabled={managing || !manageEnrollmentId.trim()}
+            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-amber-200 text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+          >
+            <Pause className="w-3.5 h-3.5" /> Pause
+          </button>
+          <button
+            onClick={() => handleManageEnrollment('resume')}
+            disabled={managing || !manageEnrollmentId.trim()}
+            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+          >
+            <Play className="w-3.5 h-3.5" /> Resume
+          </button>
+          <button
+            onClick={() => handleManageEnrollment('cancel')}
+            disabled={managing || !manageEnrollmentId.trim()}
+            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-red-200 text-red-700 hover:bg-red-50 disabled:opacity-50"
+          >
+            <Ban className="w-3.5 h-3.5" /> Cancel
+          </button>
+        </div>
+
         {formOpen && (
           <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-blue-200 p-6 mb-6">
             <div className="flex items-center justify-between mb-4">
@@ -263,6 +330,15 @@ export default function DripSequencesPage() {
                         <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">{seq.steps.length} step{seq.steps.length === 1 ? '' : 's'}</span>
                         <span className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">{TRIGGER_EVENTS.find((t) => t.value === seq.trigger_event)?.label ?? seq.trigger_event}</span>
                       </div>
+                      {seq.metrics.total > 0 && (
+                        <div className="flex items-center gap-1.5 mt-1.5 text-xs text-gray-500">
+                          <span className="text-emerald-600">{seq.metrics.active} active</span>
+                          {seq.metrics.paused > 0 && <span className="text-amber-600">· {seq.metrics.paused} paused</span>}
+                          <span>· {seq.metrics.completed} completed</span>
+                          <span>· {seq.metrics.cancelled} cancelled</span>
+                          <span className="text-gray-400">({seq.metrics.total} enrolled total)</span>
+                        </div>
+                      )}
                       {seq.description && <p className="text-xs text-gray-500 mt-1">{seq.description}</p>}
                       <ol className="mt-2 space-y-1">
                         {seq.steps.map((st) => (

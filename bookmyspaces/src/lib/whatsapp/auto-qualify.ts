@@ -43,6 +43,7 @@
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { extractLeadDetails } from '@/lib/extract-lead-details'
 import { scoreLead } from '@/lib/lead-scorer'
+import { logJourneyEvent } from '@/lib/customers/journey'
 
 interface QualifyResult {
   scored: boolean
@@ -104,7 +105,22 @@ export async function qualifyLeadFromMessage(leadId: string, messageText: string
 
     await supabase.from('leads').update(updatePayload).eq('id', leadId)
 
-    return { scored: true, buyingSignals: extracted?.buying_signals ?? [] }
+    // Phase 3 (Revenue Automation) — "Detect buying intent." extractLeadDetails()
+    // already computes buying_signals on every inbound message but every
+    // caller of this function (process-inbound.ts, create-lead-with-journey.ts,
+    // dm-capture-service.ts, api/leads/route.ts) previously discarded the
+    // returned value — confirmed by reading every call site before this
+    // change. Logging it here (once, in the function that already computes
+    // it) rather than at each of the four call sites reaches every channel
+    // for free and makes it visible on the existing Customer Timeline with
+    // zero new UI work, the same reuse decision journey.ts's own header
+    // documents for its other events.
+    const buyingSignals = extracted?.buying_signals ?? []
+    if (buyingSignals.length > 0) {
+      await logJourneyEvent(leadId, 'buying_signal_detected', `Buying intent detected: ${buyingSignals.join(', ')}`, { signals: buyingSignals })
+    }
+
+    return { scored: true, buyingSignals }
   } catch (err) {
     console.error(`[auto-qualify] Failed to qualify lead ${leadId}:`, err)
     return { scored: false, buyingSignals: [] }
