@@ -130,6 +130,10 @@ function makeRevenueIntelligence(overrides: Partial<RevenueIntelligence> = {}): 
       ],
       degraded: false,
     },
+    // Not exercised by any assertion in this file — present only to satisfy
+    // RevenueIntelligence's shape (added after this fixture was written).
+    campaignROI: { rows: [], degraded: true, note: 'not used by these tests' },
+    multiTouchAttribution: { model: 'linear', rows: [], degraded: true, note: 'not used by these tests' },
     marketingBrief: {
       topPerformingCampaign: 'summer-wedding-fb-ad',
       worstPerformingCampaign: null,

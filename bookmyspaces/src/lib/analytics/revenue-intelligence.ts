@@ -1296,6 +1296,19 @@ export interface RevenueIntelligence {
   multiTouchAttribution: MultiTouchAttribution
 }
 
+// Production Stabilization (Priority 3 — Campaign Conversion Consistency).
+// Standalone entry point into the SAME fetchRawData()/computeCampaignROI()
+// pipeline buildRevenueIntelligence() already uses for the Marketing
+// Dashboard's Campaign ROI section — so a second caller (getMarketingPerformance()
+// in src/lib/campaigns.ts, for the Campaigns page) shows the identical
+// bookings/revenue/ROI numbers per campaign, by construction, rather than a
+// second calculation that could silently drift from Revenue Attribution.
+export async function getCampaignROI(windowDays = 180): Promise<CampaignROI> {
+  const sinceISO = new Date(Date.now() - windowDays * 86_400_000).toISOString()
+  const data = await fetchRawData(sinceISO)
+  return computeCampaignROI(data)
+}
+
 export async function buildRevenueIntelligence(windowDays = 180): Promise<RevenueIntelligence> {
   const sinceISO = new Date(Date.now() - windowDays * 86_400_000).toISOString()
   const data = await fetchRawData(sinceISO)

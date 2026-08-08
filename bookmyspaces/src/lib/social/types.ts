@@ -35,6 +35,21 @@ export interface PublishInput {
   media: { url: string; type: string; alt?: string }[]
 }
 
+// Social OAuth -> Publishing credential fix. Resolved from an OAuth-connected
+// social_accounts row (see resolvePublishCredentials() in
+// src/lib/social/oauth/refresh-service.ts) and passed to publishPost() so the
+// adapter uses the SPECIFIC connected account's token instead of a static
+// env var. externalAccountId is the page id / IG business account id for
+// platforms where the stored connected identity IS the correct publish
+// target (Meta); it is null for platforms where posting target is a
+// different concept than the connected identity (LinkedIn's organization
+// page vs. the connected member, Google Business's location vs. account) —
+// those keep their existing env-configured target, only the token moves.
+export interface PublishCredentials {
+  accessToken: string
+  externalAccountId: string | null
+}
+
 export interface PublishResult {
   ok: boolean
   externalPostId?: string
@@ -75,8 +90,8 @@ export interface SocialAdapter {
   verifyWebhook(req: Request, rawBody: string): Promise<boolean>
   /** Parse a webhook payload into zero or more normalized interactions. */
   parseWebhook(payload: Record<string, unknown>): NormalizedInteraction[]
-  /** Publish a post. Must return ok:false (not throw) when unconfigured. */
-  publishPost(input: PublishInput): Promise<PublishResult>
+  /** Publish a post. `credentials`, when provided (an OAuth-connected account was selected for this post), takes priority over any static env-var token. Must return ok:false (not throw) when unconfigured. */
+  publishPost(input: PublishInput, credentials?: PublishCredentials): Promise<PublishResult>
   /** Reply to a comment/mention. Must return ok:false when unconfigured. */
   replyToInteraction(externalId: string, message: string): Promise<ReplyResult>
   /** Fetch reach/impressions/likes/etc. for a published post. Must return ok:false (not throw, not fabricate) when unconfigured. */

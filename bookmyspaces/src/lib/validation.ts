@@ -75,6 +75,10 @@ export const createLeadSchema = z.object({
   city                : z.string().trim().max(100).nullish(),
   state               : z.string().trim().max(100).nullish(),
   preferred_channel   : z.string().trim().max(50).nullish(),
+  // Business Package Engine (migration 044) — optional at creation; also
+  // set automatically by the landing-page capture path (campaignTrackSchema
+  // below) when the lead arrived via a package-driven campaign.
+  business_package_id : uuid.nullish(),
 })
 
 // PATCH /api/leads allow-list — deliberately excludes columns that have their
@@ -99,10 +103,13 @@ export const updateLeadSchema = z.object({
   status              : z.string().trim().max(50).nullish(),
   assigned_to         : z.string().trim().max(200).nullish(),
   notes               : z.string().trim().max(2000).nullish(),
+  // Business Package Engine — lets an operator (re)assign a lead's package
+  // from the CRM, same allow-listed-field posture as every other column here.
+  business_package_id : uuid.nullish(),
 }).strict().partial({
   name: true, phone: true, email: true, event_type: true, event_date: true,
   guest_count: true, budget: true, special_requirements: true, venue: true,
-  source: true, status: true, assigned_to: true, notes: true,
+  source: true, status: true, assigned_to: true, notes: true, business_package_id: true,
 })
 
 // ─── Campaign Landing Pages (Sprint 1 — Revenue Capture Engine) ────────────
@@ -121,6 +128,28 @@ export const campaignTrackSchema = z.object({
   utmCampaign: z.string().trim().max(200).nullish(),
   referral   : z.string().trim().max(200).nullish(),
   landingPage: z.string().trim().max(300).nullish(),
+  // Business Package Engine — set by /[campaign]/page.tsx when the slug
+  // resolved to a business_packages row, so the captured lead inherits it
+  // automatically ("every lead should optionally belong to a Business
+  // Package"). Validated as a UUID only; existence is enforced by the FK.
+  businessPackageId: z.string().uuid().nullish(),
+})
+
+/** Revenue Attribution Priority 2 — public click-beacon body (POST /api/track/click). Mirrors campaignTrackSchema's public/unauthenticated posture (marketing pages, not CRM pages). */
+export const clickTrackSchema = z.object({
+  type      : z.enum(['whatsapp', 'call', 'website']),
+  target    : z.string().trim().min(1).max(300),
+  sessionId : z.string().trim().max(100).nullish(),
+  leadId    : z.string().uuid().nullish(),
+  campaign  : z.string().trim().max(50).nullish(),
+  page      : z.string().trim().max(300).nullish(),
+  // End-to-End Campaign Attribution — preserves the Business Package this
+  // click's landing page resolved to (mirrors campaignTrackSchema's own
+  // businessPackageId), so click events don't lose attribution that the
+  // page itself already knew. Validated as a UUID only; not a FK at the DB
+  // layer since analytics_events.properties is JSONB, same posture as
+  // every other property on this beacon.
+  businessPackageId: z.string().uuid().nullish(),
 })
 
 /** Optional campaign context passed into POST /api/chat from a landing page. */
@@ -449,6 +478,25 @@ const socialPlatformEnum = z.enum([
   'facebook', 'instagram', 'linkedin', 'google_business', 'x', 'youtube', 'threads',
 ])
 
+// ─── Social Operations Priority 4 — Duplicate lead merge ───────────────────
+
+export const mergeLeadsSchema = z.object({
+  duplicateLeadId: z.string().uuid(),
+}).strict()
+
+// ─── Marketing Intelligence Priority 3 — Ad spend ingestion ────────────────
+
+export const createAdSpendSchema = z.object({
+  platform    : z.enum(['facebook', 'instagram', 'linkedin', 'google_business', 'x', 'youtube', 'threads', 'google_ads', 'other']),
+  campaignName: z.string().trim().max(200).nullish(),
+  spendDate   : z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'spendDate must be YYYY-MM-DD'),
+  amount      : money,
+  currency    : z.string().trim().length(3).optional(),
+  notes       : z.string().trim().max(1000).nullish(),
+  // Business Package Engine (migration 044) — optional, enables ROI-by-package.
+  businessPackageId: uuid.nullish(),
+}).strict()
+
 export const createSocialPostSchema = z.object({
   platform    : socialPlatformEnum,
   post_type   : z.enum(['text', 'image', 'carousel', 'video', 'reel', 'story']),
@@ -461,7 +509,32 @@ export const createSocialPostSchema = z.object({
   hashtags    : z.array(z.string().trim().min(1).max(100)).max(50).optional(),
   account_id  : uuid.nullish(),
   scheduled_at: z.string().datetime({ offset: true, message: 'must be an ISO 8601 datetime' }).nullish(),
+  // Business Package Engine — optional attribution link (migration 043) so
+  // a post created from a package's AI Prompt/hashtags can be rolled up by
+  // package later. Purely additive; every existing caller that omits it
+  // keeps working unchanged.
+  business_package_id: uuid.nullish(),
+  // End-to-End Campaign Attribution — optional link to the outbound
+  // broadcast_campaigns row this post promotes (migration 045), so Revenue
+  // by Campaign can roll up the social side too. Same posture as
+  // business_package_id above: UUID only, existence enforced by the FK.
+  campaign_id: uuid.nullish(),
 }).strict()
+
+// Plain-field-edit allow-list for PATCH /api/social/posts (no action). Was
+// previously a deny-list on the raw request body (status/external_post_id/
+// published_at/publish_attempts/failure_reason stripped) which did NOT
+// block approved_at, account_id, or platform — a caller could PATCH
+// approved_at directly and completely bypass the publish-approval gate
+// (migration 041) without ever going through the action:'approve' status
+// checks, and could overwrite content/media/hashtags past
+// createSocialPostSchema's own size caps. Explicit allow-list closes both:
+// same validated shape as create, everything else (status, approved_at,
+// external_post_id, published_at, publish_attempts, failure_reason,
+// next_retry_at, platform) is simply not a settable key here — approve/
+// publish state transitions only ever happen via the dedicated
+// action:'approve'/'publish' branches.
+export const updateSocialPostSchema = createSocialPostSchema.omit({ platform: true }).partial().strict()
   .refine(
     (v) => (v.content && v.content.length > 0) || (v.media && v.media.length > 0),
     { message: 'Post needs content text and/or at least one media item', path: ['content'] }
@@ -470,6 +543,46 @@ export const createSocialPostSchema = z.object({
     (v) => !v.scheduled_at || new Date(v.scheduled_at).getTime() > Date.now(),
     { message: 'scheduled_at must be in the future', path: ['scheduled_at'] }
   )
+
+// ─── Business Package Engine (migration 043) ───────────────────────────────
+// Configurable marketing/campaign package archetype. Every pointer field
+// (pricing_package_id, follow_up_sequence_id) is validated as a UUID only —
+// existence is checked at the DB layer via the FK constraint (ON DELETE SET
+// NULL), same posture as createSocialPostSchema's account_id above.
+
+const businessPackageStatusEnum = z.enum(['active', 'inactive', 'retired'])
+
+export const createBusinessPackageSchema = z.object({
+  name                    : z.string().trim().min(1).max(200),
+  category                : z.string().trim().max(100).nullish(),
+  description             : z.string().trim().max(4000).nullish(),
+  target_audience         : z.string().trim().max(2000).nullish(),
+  highlights              : z.array(z.string().trim().min(1).max(300)).max(30).optional(),
+  budget_range            : z.string().trim().max(200).nullish(),
+  cta                     : z.string().trim().max(300).nullish(),
+  // Lowercase letters, numbers, and hyphens only — same shape as the
+  // existing hardcoded CampaignSlug values, so a package-driven slug can't
+  // produce an invalid /[campaign]/<slug> URL.
+  landing_page_slug       : z.string().trim().toLowerCase().regex(/^[a-z0-9-]+$/, 'lowercase letters, numbers, and hyphens only').min(1).max(100).nullish(),
+  pricing_package_id      : uuid.nullish(),
+  proposal_template_notes : z.string().trim().max(4000).nullish(),
+  ai_prompt               : z.string().trim().max(4000).nullish(),
+  hashtags                : z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+  recommended_media       : z.string().trim().max(1000).nullish(),
+  recommended_posting_time: z.string().trim().max(500).nullish(),
+  whatsapp_template       : z.string().trim().max(4000).nullish(),
+  email_subject_template  : z.string().trim().max(300).nullish(),
+  email_template          : z.string().trim().max(8000).nullish(),
+  follow_up_sequence_id   : uuid.nullish(),
+  // SegmentFilter-shaped (src/lib/campaigns.ts) — kept as a permissive
+  // record here (validated by buildSegment() itself at read time, same as
+  // every other buildSegment() caller) rather than re-declaring its whole
+  // shape a second time.
+  marketing_segment       : z.record(z.unknown()).optional(),
+  status                  : businessPackageStatusEnum.optional(),
+}).strict()
+
+export const updateBusinessPackageSchema = createBusinessPackageSchema.partial().strict()
 
 // ─── Social accounts (Phase 2 — multi-account management, migration 014) ───
 

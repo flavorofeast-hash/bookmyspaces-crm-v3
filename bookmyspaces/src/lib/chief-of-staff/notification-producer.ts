@@ -45,7 +45,7 @@ const NOTIFICATION_CAP = 5
 const OCCUPANCY_ALMOST_FULL_PCT = 90
 const REVENUE_TREND_DROP_THRESHOLD = 30 // businessHealthScore's revenueTrend factor, 0-100, flat=50
 
-interface CandidateNotification {
+export interface CandidateNotification {
   title: string
   message: string
   priority: 'normal' | 'high' | 'urgent'
@@ -105,8 +105,22 @@ export interface NotificationRunResult {
 }
 
 export async function notifyMeaningfulEvents(brief: ExecutiveBrief, urgentProposals: UrgentProposal[]): Promise<NotificationRunResult> {
-  const result: NotificationRunResult = { audienceSize: 0, written: 0, skippedCapped: 0, errors: [] }
   const candidates = buildCandidates(brief, urgentProposals)
+  if (candidates.length === 0) return { audienceSize: 0, written: 0, skippedCapped: 0, errors: [] }
+  return writeNotificationToAudience(candidates)
+}
+
+/**
+ * Social Operations Priority 4 (Publish failure alerts) reuses this exact
+ * function rather than a second "insert a notification" implementation —
+ * extracted from notifyMeaningfulEvents() above (which now just builds its
+ * own candidates and delegates here) so the founder-tier-audience lookup +
+ * per-user NOTIFICATION_CAP spam guard lives in exactly one place. Any
+ * future producer (a new alert type) should call this, not write to
+ * `notifications` directly.
+ */
+export async function writeNotificationToAudience(candidates: CandidateNotification[]): Promise<NotificationRunResult> {
+  const result: NotificationRunResult = { audienceSize: 0, written: 0, skippedCapped: 0, errors: [] }
   if (candidates.length === 0) return result
 
   try {

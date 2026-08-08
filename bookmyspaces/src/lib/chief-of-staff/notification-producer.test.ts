@@ -99,6 +99,10 @@ function makeBrief(overrides: Partial<ExecutiveBrief> = {}): ExecutiveBrief {
         lostRevenue: { windowDays: 90, lostLeadsValue: 0, lostLeadsCount: 0, lostProposalsValue: 0, lostProposalsCount: 0, noFollowUp: { count: 0, value: 0 }, reasonBreakdownAvailable: false, gapNote: '' },
         recentProposals: [], windowDays: 90,
         channelPerformance: [], campaignPerformance: { rows: [], degraded: false },
+        // Not exercised by any assertion in this file — present only to
+        // satisfy RevenueIntelligence's shape (added after this fixture was written).
+        campaignROI: { rows: [], degraded: true, note: 'not used by these tests' },
+        multiTouchAttribution: { model: 'linear', rows: [], degraded: true, note: 'not used by these tests' },
         marketingBrief: { topPerformingCampaign: null, worstPerformingCampaign: null, highestRevenueChannel: null, lowestConversionChannel: null, budgetRecommendation: '', businessRecommendation: '' },
       },
       followUpsDue: [],

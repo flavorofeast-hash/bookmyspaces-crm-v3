@@ -13,6 +13,7 @@ import { parseEventDate } from '@/lib/ai'
 import { enqueueMessage } from '@/lib/queue'
 import { WHATSAPP_MESSAGES } from '@/lib/templates'
 import { getPackageById, resolvePackagePrice } from '@/lib/packages/package-service'
+import { logJourneyEvent, JOURNEY_ACTIONS } from '@/lib/customers/journey'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -108,6 +109,10 @@ export async function POST(req: NextRequest) {
       generate_cover_note = true,
     } = body
     const { package_id = null } = body
+    // Business Package Engine — explicit override if the caller sends one;
+    // otherwise inherited from the resolved lead below ("every proposal
+    // should inherit the Business Package").
+    let { business_package_id = null } = body
 
     // ── Smart Proposal Generator (Direct Event Sales Engine, Section 4) ─────
     // When the operator picked a package (from the AI Event Sales Advisor's
@@ -214,6 +219,19 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Business Package Engine — inherit the lead's Business Package onto
+    // this proposal when the caller didn't explicitly pick one. Safe-fill
+    // only (same convention as the package_id auto-fill block above): never
+    // overwrites an explicit business_package_id from the request body.
+    if (!business_package_id && resolvedLeadId) {
+      const { data: leadRow } = await supabaseAdmin
+        .from('leads')
+        .select('business_package_id')
+        .eq('id', resolvedLeadId)
+        .maybeSingle()
+      business_package_id = leadRow?.business_package_id ?? null
+    }
+
     // ── Insert ────────────────────────────────────────────────────────────
     const { data: proposal, error } = await supabaseAdmin
       .from('proposals')
@@ -230,6 +248,7 @@ export async function POST(req: NextRequest) {
         hall             : hall || null,
         package_name,
         package_id       : package_id || null,
+        business_package_id: business_package_id || null,
         base_price       : Number(base_price) || 0,
         addons,
         addon_service_ids: addon_service_ids || [],
@@ -262,6 +281,16 @@ export async function POST(req: NextRequest) {
         description : `Proposal ${proposal.proposal_number} created: ${package_name} — ₹${total_price.toLocaleString('en-IN')}${leadAutoCreated ? ' (customer record auto-created from proposal)' : ''}`,
         performed_by: 'admin',
       })
+
+      // Business Package Engine — Customer Timeline requirement.
+      if (business_package_id) {
+        await logJourneyEvent(
+          resolvedLeadId,
+          JOURNEY_ACTIONS.BUSINESS_PACKAGE_ASSIGNED,
+          'Proposal inherited Business Package',
+          { proposalId: proposal.id, businessPackageId: business_package_id }
+        )
+      }
     }
 
     return NextResponse.json({ proposal }, { status: 201 })

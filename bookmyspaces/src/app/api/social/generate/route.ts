@@ -19,7 +19,7 @@ export const runtime = 'nodejs'
 import { NextRequest, NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { requireAuth } from '@/lib/auth-guard'
-import { generateSocialPostDraft, generateHashtags, generateImagePrompt } from '@/lib/social/content-generator'
+import { generateSocialPostDraft, generateHashtags, generateImagePrompt, type GenerateDraftOptions } from '@/lib/social/content-generator'
 
 export async function POST(req: NextRequest) {
   const auth = await requireAuth()
@@ -27,7 +27,11 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json()
-    const { platform, goal, context, type } = body as { platform?: string; goal?: string; context?: string; type?: string }
+    const { platform, goal, context, type, variant, template } = body as {
+      platform?: string; goal?: string; context?: string; type?: string
+      // Sprint 2 (AI Content Studio) — optional length/tone variant + occasion template preset.
+      variant?: string; template?: string
+    }
 
     if (!platform || typeof platform !== 'string') {
       return NextResponse.json({ error: 'platform is required' }, { status: 400 })
@@ -52,7 +56,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ imagePrompt: result.prompt })
     }
 
-    const draft = await generateSocialPostDraft(platform, goal.trim(), context)
+    const VALID_VARIANTS = ['standard', 'short', 'long', 'emoji']
+    const VALID_TEMPLATES = ['wedding', 'birthday', 'corporate', 'rooftop', 'restaurant', 'weekend_stay', 'festival', 'offer']
+    const draft = await generateSocialPostDraft(platform, goal.trim(), context, {
+      variant: variant && VALID_VARIANTS.includes(variant) ? (variant as GenerateDraftOptions['variant']) : undefined,
+      template: template && VALID_TEMPLATES.includes(template) ? (template as GenerateDraftOptions['template']) : undefined,
+    })
     if (!draft.content) {
       return NextResponse.json({ error: 'AI draft generation failed — try again or write the post manually.' }, { status: 502 })
     }

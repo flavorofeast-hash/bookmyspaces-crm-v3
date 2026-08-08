@@ -252,4 +252,7 @@ export interface Reservation {
   /** Reservation commercial snapshot (migration 029) — copied from the originating proposal at creation time, when there is one. Reservation is the display/commercial source of truth once it exists; see src/lib/reservations/commercial-source.ts. NULL for walk-in reservations with no originating proposal. */
   packageName: string | null
   venue: string | null
+
+  /** Business Package Engine (migration 044) — inherited from the originating proposal's business_package_id at creation time, same snapshot convention as packageName/venue above. NULL for a walk-in reservation, or one from a proposal with no business package. */
+  businessPackageId: string | null
 }

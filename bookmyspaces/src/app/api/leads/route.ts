@@ -12,6 +12,7 @@ import { enqueueMessage } from '@/lib/queue'
 import { WHATSAPP_MESSAGES } from '@/lib/templates'
 import { qualifyLeadFromMessage } from '@/lib/whatsapp/auto-qualify'
 import { runAutoPackageRecommendation } from '@/lib/leads/auto-package-recommendation'
+import { logJourneyEvent, JOURNEY_ACTIONS } from '@/lib/customers/journey'
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth()
@@ -108,6 +109,8 @@ export async function POST(req: NextRequest) {
       // optional field above.
       company: body.company || null, city: body.city || null, state: body.state || null,
       preferred_channel: body.preferred_channel || null,
+      // Business Package Engine (migration 044).
+      business_package_id: body.business_package_id || null,
     }).select('*').single()
 
     if (error) throw error
@@ -193,6 +196,11 @@ export async function PATCH(req: NextRequest) {
 
     if (updates.status) {
       await supabaseAdmin.from('activity_logs').insert({ lead_id: id, action: 'status_changed', description: `Status updated to: ${updates.status}`, performed_by: 'admin', metadata: { new_status: updates.status } })
+    }
+
+    // Business Package Engine — Customer Timeline requirement.
+    if (updates.business_package_id !== undefined && updates.business_package_id) {
+      await logJourneyEvent(id, JOURNEY_ACTIONS.BUSINESS_PACKAGE_ASSIGNED, 'Lead assigned a Business Package', { businessPackageId: updates.business_package_id })
     }
 
     syncLeadToSheets(lead).catch(err => logger.error('leads', 'Sheets re-sync failed', err))

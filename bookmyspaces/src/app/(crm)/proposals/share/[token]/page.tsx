@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { getSupabaseAdmin } from "@/lib/supabase"
+import { ProposalActionButtons } from "@/components/proposals/ProposalActionButtons"
 
 export const dynamic = "force-dynamic"
 
@@ -169,21 +170,7 @@ Please guide me with the next payment steps.`);
           {/* ACTION BUTTONS */}
           <div className="space-y-4">
 
-            <a
-              href={`https://wa.me/919051459463?text=${whatsappMessage}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="w-full bg-[#25D366] hover:bg-[#1ebe5d] text-white font-semibold py-5 rounded-2xl flex items-center justify-center text-xl transition-all"
-            >
-              Confirm on WhatsApp
-            </a>
-
-            <a
-              href="tel:+919051459463"
-              className="w-full bg-[#0d1b2a] hover:bg-[#16263a] text-white font-semibold py-5 rounded-2xl flex items-center justify-center text-xl transition-all"
-            >
-              Call Us: +91 9051459463
-            </a>
+            <ProposalActionButtons proposalId={proposal.id} whatsappMessage={whatsappMessage} />
 
             <Link
               href={`/api/proposals/${proposal.id}/pdf`}

@@ -30,12 +30,15 @@ import { logger } from '@/lib/logger'
 import { requireAuth } from '@/lib/auth-guard'
 import { buildRevenueIntelligence } from '@/lib/analytics/revenue-intelligence'
 import { computeReferralPerformance } from '@/lib/customers/referrals'
-import { computeLoyaltyOverview } from '@/lib/customers/loyalty'
+import { computeLoyaltyOverview, computeRevenueByLoyaltyTier } from '@/lib/customers/loyalty'
 import { computeJourneyFunnel } from '@/lib/customers/journey'
 import { computeGrowthIntelligence } from '@/lib/analytics/growth-intelligence'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { computeWhatsAppAnalytics, computeLikelyToBook, computeChurnRisk, computeNextBestActions } from '@/lib/analytics/marketing-ai'
-import { getEngagementSummary } from '@/lib/social/metrics-service'
+import { getEngagementSummary, getTopPerformingContent, computeBestPostingTime, recommendBestContentFormat, recommendBestAudience, recommendBestCTA } from '@/lib/social/metrics-service'
+import { computeClickAnalytics } from '@/lib/analytics/click-analytics-service'
+import { getSpendByChannelAndCampaign, withSpendMetrics } from '@/lib/analytics/ad-spend-service'
+import { computeSocialAttribution } from '@/lib/analytics/social-attribution-service'
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth()
@@ -63,6 +66,8 @@ export async function GET(req: NextRequest) {
 
     // Growth Engine Epic 3 — Loyalty Foundation overview.
     const loyaltyOverview = await computeLoyaltyOverview()
+    // Customer Loyalty & Referral Experience — "Revenue by Loyalty Tier."
+    const revenueByLoyaltyTier = await computeRevenueByLoyaltyTier()
     // Growth Engine Epic 4 — post-booking journey stage counts (extends the
     // existing Lead->Booked funnel already in ri.funnel).
     const journeyFunnel = await computeJourneyFunnel()
@@ -75,12 +80,34 @@ export async function GET(req: NextRequest) {
     // Phase 2 (Social + WhatsApp Growth) — Phase D: AI Marketing. Each is
     // independently best-effort (own try/catch) so one failure never blanks
     // the rest of an otherwise-working dashboard.
-    const [whatsappAnalytics, socialAnalyticsResult, likelyToBook, churnRisk, nextBestActions] = await Promise.all([
+    const [whatsappAnalytics, socialAnalyticsResult, likelyToBook, churnRisk, nextBestActions, topContentResult, bestPostingTimeResult, clickAnalytics, adSpendByKey, socialAttribution] = await Promise.all([
       computeWhatsAppAnalytics(30).catch(() => null),
       getEngagementSummary().catch(() => null),
       computeLikelyToBook(10).catch(() => []),
       computeChurnRisk(10).catch(() => []),
       computeNextBestActions(10).catch(() => []),
+      // Sprint 4 (Marketing Intelligence) — Top Performing Content + Best
+      // Posting Time. Same independent-best-effort contract as the other
+      // AI Marketing entries above.
+      getTopPerformingContent(10).catch(() => null),
+      computeBestPostingTime().catch(() => null),
+      // Revenue Attribution Priority 2 — WhatsApp/call/website click totals.
+      computeClickAnalytics().catch(() => null),
+      // Marketing Intelligence Priority 3 — ad spend, matched against
+      // channelPerformance (byPlatform) below.
+      getSpendByChannelAndCampaign(),
+      // End-to-End Campaign Attribution — "Revenue by Social Platform" /
+      // "Revenue by Individual Social Post". Independent best-effort read,
+      // same contract as the rest of this Promise.all.
+      computeSocialAttribution().catch(() => null),
+    ])
+
+    // Content Operations Priority 5 — AI recommendations (best CTA/format/
+    // audience), same independent-best-effort contract as the block above.
+    const [bestFormatResult, bestAudienceResult, bestCTAResult] = await Promise.all([
+      recommendBestContentFormat().catch(() => null),
+      recommendBestAudience().catch(() => null),
+      recommendBestCTA().catch(() => null),
     ])
 
     return NextResponse.json({
@@ -88,10 +115,17 @@ export async function GET(req: NextRequest) {
       // Lead Source Analysis / per-channel required fields (Leads, Qualified
       // Leads, Proposals, Bookings, Revenue, Conversion%, Avg Booking Value).
       channelPerformance: ri.channelPerformance,
+      // Marketing Intelligence Priority 3 — same channelPerformance rows,
+      // augmented with spend/costPerEnquiry/costPerBooking/roiFromSpend
+      // wherever a matching ad_spend.platform record exists (migration
+      // 040). Null fields mean "no spend on file for this channel," never
+      // a fabricated zero.
+      channelPerformanceWithSpend: withSpendMetrics(ri.channelPerformance, adSpendByKey.byPlatform),
       // Campaign Attribution — inbound ad/landing-page campaigns (migration
       // 026). degraded=true means migration 026 isn't live yet; the UI must
       // show that explicitly, never fabricate a per-campaign breakdown.
       campaignPerformance: ri.campaignPerformance,
+      campaignPerformanceWithSpend: withSpendMetrics(ri.campaignPerformance.rows, adSpendByKey.byCampaign),
       // AI Marketing Brief — deterministic, template-grounded (no real LLM
       // call), same convention as the Founder Dashboard's own AI Morning
       // Brief.
@@ -124,18 +158,23 @@ export async function GET(req: NextRequest) {
       referralRewards,
       // Growth Engine Epic 3 — Loyalty Foundation overview.
       loyaltyOverview,
+      // Customer Loyalty & Referral Experience — Revenue by Loyalty Tier.
+      revenueByLoyaltyTier,
       // Growth Engine Epic 4 — post-booking Customer Journey stage counts.
       journeyFunnel,
       // Growth Engine Epic 7 — AI Growth Intelligence (deterministic,
       // template-grounded recommendations — see growth-intelligence.ts).
       growthIntelligence,
-      // ROI Dashboard note: this system does not track inbound ad spend
-      // anywhere (no spend-capture path exists for any channel), so a true
-      // channel-level ROI (revenue ÷ spend) cannot be computed without
-      // fabricating a number. channelPerformance/campaignPerformance's
-      // revenue-per-lead and conversion% are the closest real proxies.
-      // Outbound campaign ROI (above) is real where a budget was set.
-      roiNote: 'Ad spend is not tracked anywhere in this system, so a true channel-level ROI (revenue ÷ spend) cannot be computed. Use revenue-per-lead and conversion% below as the closest real proxy until spend tracking is built. Outbound campaign ROI above is real wherever a budget was set on the campaign.',
+      // ROI Dashboard note: Marketing Intelligence Priority 3 added manual
+      // ad spend ingestion (POST /api/marketing/ad-spend, migration 040) —
+      // channelPerformanceWithSpend/campaignPerformanceWithSpend above carry
+      // real cost-per-enquiry/cost-per-booking/ROI wherever an operator has
+      // logged spend for that platform/campaign. Rows with no spend on file
+      // show null (never a fabricated zero) — spend must still be entered
+      // manually per platform; there is no automatic Meta/Google Ads spend
+      // ingestion yet (ad_spend.source supports 'meta_ads'/'google_ads' for
+      // that future API-fed path without a schema change).
+      roiNote: 'Ad spend is tracked via manual entry (Marketing > Ad Spend). channelPerformanceWithSpend/campaignPerformanceWithSpend carry real cost-per-enquiry, cost-per-booking, and ROI wherever spend has been logged for that platform/campaign — null means no spend recorded yet, not zero cost. Outbound campaign ROI above is separately real wherever a budget was set on the campaign.',
       // Phase 2 (Social + WhatsApp Growth) — Phase D: AI Marketing.
       whatsappAnalytics,
       socialAnalytics: socialAnalyticsResult?.ok ? socialAnalyticsResult.value : null,
@@ -147,6 +186,33 @@ export async function GET(req: NextRequest) {
       likelyToBook,
       churnRisk,
       nextBestActions,
+      // Sprint 4 (Marketing Intelligence) — "Top content" leaderboard
+      // (post-level, by disclosed engagement score) and a deterministic
+      // "best posting time" recommendation, both computed from this
+      // account's own published-post metrics history (metrics-service.ts)
+      // — not fabricated, and honestly reports "insufficient data" below a
+      // minimum sample size.
+      topContent: topContentResult?.ok ? topContentResult.value : [],
+      bestPostingTime: bestPostingTimeResult?.ok ? bestPostingTimeResult.value : null,
+      // Revenue Attribution Priority 2 — WhatsApp/call/website click totals
+      // (trailing 30 days) from the click-beacon events POST /api/track/
+      // click writes into analytics_events. Null if the aggregation query
+      // itself failed (never blocks the rest of an otherwise-working
+      // dashboard).
+      clickAnalytics,
+      // End-to-End Campaign Attribution — "Revenue by Social Platform" and
+      // "Revenue by Individual Social Post" (social-attribution-service.ts).
+      // null only if the underlying queries themselves failed; an empty
+      // {posts:[], byPlatform:[]} means "no published posts on file yet,"
+      // both rendered as an honest empty state, never fabricated.
+      socialAttribution,
+      // Content Operations Priority 5 — best content format ("best image"
+      // reframed to format-level, this schema's finest real signal), best
+      // platform audience, and best CTA category — all deterministic,
+      // grounded in this account's own published-post engagement history.
+      bestContentFormat: bestFormatResult?.ok ? bestFormatResult.value : null,
+      bestAudience: bestAudienceResult?.ok ? bestAudienceResult.value : null,
+      bestCTA: bestCTAResult?.ok ? bestCTAResult.value : null,
     })
   } catch (error) {
     logger.error('dashboard/marketing', 'GET failed', error)

@@ -18,7 +18,7 @@ export const runtime = 'nodejs'
 import { NextRequest, NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { requireAuth } from '@/lib/auth-guard'
-import { parseBody, createSocialPostSchema } from '@/lib/validation'
+import { parseBody, createSocialPostSchema, updateSocialPostSchema } from '@/lib/validation'
 import {
   listSocialPosts,
   createSocialPost,
@@ -79,6 +79,8 @@ export async function POST(req: NextRequest) {
       account_id: parsed.data.account_id ?? null,
       scheduled_at: parsed.data.scheduled_at ?? null,
       created_by: auth.user.email ?? auth.user.id,
+      business_package_id: parsed.data.business_package_id ?? null,
+      campaign_id: parsed.data.campaign_id ?? null,
     })
 
     if (!result.ok) {
@@ -111,7 +113,7 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const body = await req.json()
-    const { id, action, ...updates } = body as { id?: string; action?: string; [k: string]: unknown }
+    const { id, action } = body as { id?: string; action?: string }
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
 
     if (action === 'publish') {
@@ -127,23 +129,42 @@ export async function PATCH(req: NextRequest) {
       if (post.status !== 'draft' && post.status !== 'scheduled') {
         return NextResponse.json({ error: `cannot_approve_from_status_${post.status}` }, { status: 422 })
       }
-      const { data, error } = await db.from('social_posts').update({ status: 'approved' }).eq('id', id).select('*').single()
+      // migration 041 — a 'scheduled' post is approved by stamping
+      // approved_at, NOT by changing status. Changing status to 'approved'
+      // would pull it out of processDueScheduledPosts()'s status='scheduled'
+      // selection and it would never auto-publish at its scheduled_at again.
+      // A 'draft' post has no scheduled_at to preserve, so it still just
+      // transitions status directly, unchanged from before.
+      const updates = post.status === 'scheduled' ? { approved_at: new Date().toISOString() } : { status: 'approved' }
+      const { data, error } = await db.from('social_posts').update(updates).eq('id', id).select('*').single()
       if (error) throw error
       return NextResponse.json({ post: data })
     }
 
-    // Plain field edits (content/media/hashtags/scheduled_at) — never
-    // status, external_post_id, published_at, or publish_attempts, which
-    // are only ever set by createSocialPost/publishSocialPost above.
-    delete (updates as Record<string, unknown>).status
-    delete (updates as Record<string, unknown>).external_post_id
-    delete (updates as Record<string, unknown>).published_at
-    delete (updates as Record<string, unknown>).publish_attempts
-    delete (updates as Record<string, unknown>).failure_reason
+    // Plain field edits — explicit ALLOW-list (updateSocialPostSchema:
+    // content/media/hashtags/scheduled_at/account_id only), not a deny-list.
+    // The previous deny-list stripped status/external_post_id/published_at/
+    // publish_attempts/failure_reason but NOT approved_at, account_id, or
+    // platform — a caller could PATCH {id, approved_at: <any date>} and
+    // completely bypass the publish-approval gate (migration 041) without
+    // ever going through the action:'approve' checks above, and could
+    // overwrite content/media/hashtags past createSocialPostSchema's own
+    // size caps. The body was already consumed by req.json() above, so this
+    // validates the already-parsed object directly rather than re-reading
+    // the request stream (parseBody() would fail — a Request body can only
+    // be read once).
+    const parsed = updateSocialPostSchema.safeParse(body)
+    if (!parsed.success) {
+      const issues = parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message }))
+      return NextResponse.json({ error: 'Invalid request body', issues }, { status: 400 })
+    }
+    if (Object.keys(parsed.data).length === 0) {
+      return NextResponse.json({ error: 'No updatable fields provided' }, { status: 400 })
+    }
 
     const { data, error } = await db
       .from('social_posts')
-      .update(updates)
+      .update(parsed.data)
       .eq('id', id)
       .select('*')
       .single()

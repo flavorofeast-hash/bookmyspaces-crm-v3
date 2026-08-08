@@ -76,6 +76,10 @@ export async function POST(req: NextRequest) {
         utm_medium: body.utmMedium || null,
         utm_campaign: body.utmCampaign || null,
         referral: body.referral || null,
+        // Business Package Engine — set when this landing page resolved to
+        // a business_packages row (see /[campaign]/page.tsx), so a lead
+        // captured from a package-driven campaign inherits it automatically.
+        business_package_id: body.businessPackageId || null,
       })
       .select('id')
       .single()

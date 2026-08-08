@@ -12,6 +12,8 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { enqueueMessage } from '@/lib/queue'
 import { WHATSAPP_MESSAGES } from '@/lib/templates'
 import { logger } from '@/lib/logger'
+import { logJourneyEvent, JOURNEY_ACTIONS } from '@/lib/customers/journey'
+import { canSendAutomatedMessage } from '@/lib/messaging/orchestrator'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -62,6 +64,7 @@ export async function GET(request: NextRequest) {
     for (const row of rows) {
       const lead = row.lead_id ? leadById.get(row.lead_id) : undefined
       if (!lead?.phone) continue
+      if (!(await canSendAutomatedMessage(lead.id, 'review_reminder'))) continue
 
       await enqueueMessage({
         phone: lead.phone,
@@ -69,6 +72,7 @@ export async function GET(request: NextRequest) {
         type: 'session',
         metadata: { journey: 'review_reminder', lead_id: lead.id },
       })
+      await logJourneyEvent(lead.id, JOURNEY_ACTIONS.REVIEW_REMINDER_SENT, 'Review reminder sent via WhatsApp', { reviewRequestId: row.id })
 
       await db.from('review_requests').update({
         status: 'reminded',

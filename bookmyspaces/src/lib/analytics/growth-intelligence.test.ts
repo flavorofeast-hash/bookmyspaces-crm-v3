@@ -36,7 +36,7 @@ function makeRI(overrides: Partial<RevenueIntelligence> = {}): RevenueIntelligen
 }
 
 const emptyLoyalty: LoyaltyOverview = { totalAccounts: 0, totalPointsIssued: 0, byTier: [], topEarners: [] }
-const emptyReferral: ReferralPerformance = { totalLeadsWithReferralText: 0, attributedReferrals: 0, unattributedReferralText: 0, topReferrers: [], note: '' }
+const emptyReferral: ReferralPerformance = { totalLeadsWithReferralText: 0, attributedReferrals: 0, unattributedReferralText: 0, topReferrers: [], referralConversionRate: 0, totalReferralRevenue: 0, note: '' }
 const noRewards = { pending: 0, earned: 0, redeemed: 0 }
 
 describe('computeGrowthIntelligence', () => {

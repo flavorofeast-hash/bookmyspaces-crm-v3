@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Share2, RefreshCw, AlertCircle, MessageCircle, AtSign, Star,
-  Archive, Send, ThumbsUp, ThumbsDown, Minus,
+  Archive, Send, ThumbsUp, ThumbsDown, Minus, Sparkles, Loader2,
 } from 'lucide-react'
 
 interface Interaction {
@@ -24,9 +24,26 @@ interface Interaction {
   author_name: string | null
   content: string | null
   sentiment: 'positive' | 'neutral' | 'negative' | null
+  // Sprint 3 (Social CRM) — AI intent classification (classifyInteractionIntent()).
+  intent: 'enquiry' | 'complaint' | 'booking_intent' | 'spam' | null
   status: 'new' | 'replied' | 'escalated' | 'archived'
   reply_draft: string | null
+  customer_id: string | null
   leads: { name: string | null; phone: string | null } | { name: string | null; phone: string | null }[] | null
+}
+
+const INTENT_STYLES: Record<NonNullable<Interaction['intent']>, string> = {
+  enquiry: 'bg-blue-50 text-blue-700',
+  booking_intent: 'bg-emerald-50 text-emerald-700',
+  complaint: 'bg-red-50 text-red-700',
+  spam: 'bg-gray-100 text-gray-500',
+}
+
+const INTENT_LABELS: Record<NonNullable<Interaction['intent']>, string> = {
+  enquiry: 'Enquiry',
+  booking_intent: 'Booking Intent',
+  complaint: 'Complaint',
+  spam: 'Spam',
 }
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -56,6 +73,8 @@ export default function SocialPage() {
   const [replyText, setReplyText] = useState('')
   const [sending, setSending] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  // Sprint 3 (Social CRM) — AI-suggested reply, review-before-send.
+  const [suggestingId, setSuggestingId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setError(null)
@@ -103,6 +122,29 @@ export default function SocialPage() {
       body: JSON.stringify({ status }),
     })
     if (res.ok) await load()
+  }
+
+  // Sprint 3 (Social CRM) — fetch an AI-drafted reply and drop it into the
+  // reply box for the operator to review/edit before sending; never sends
+  // anything itself.
+  async function suggestReply(id: string) {
+    setSuggestingId(id)
+    setNotice(null)
+    try {
+      const res = await fetch(`/api/social/interactions/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'suggest_reply' }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json?.error || 'Suggestion failed')
+      setReplyFor(id)
+      setReplyText(json.suggestion ?? '')
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'Failed to generate a reply suggestion')
+    } finally {
+      setSuggestingId(null)
+    }
   }
 
   return (
@@ -166,6 +208,12 @@ export default function SocialPage() {
                         <SentimentIcon s={it.sentiment} />
                         <span className="text-sm font-medium text-gray-900">{it.author_name ?? 'Unknown'}</span>
                         <span className="text-xs text-gray-400">{new Date(it.created_at).toLocaleString()}</span>
+                        {it.intent && (
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${INTENT_STYLES[it.intent]}`}>{INTENT_LABELS[it.intent]}</span>
+                        )}
+                        {it.customer_id && (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-violet-50 text-violet-600">Linked to CRM</span>
+                        )}
                         {it.status !== 'new' && (
                           <span className={`text-xs px-2 py-0.5 rounded-full ${it.status === 'escalated' ? 'bg-red-50 text-red-600' : 'bg-gray-100 text-gray-500'}`}>{it.status}</span>
                         )}
@@ -196,12 +244,23 @@ export default function SocialPage() {
                     </div>
                     <div className="shrink-0 whitespace-nowrap text-sm">
                       {replyFor !== it.id && it.status !== 'archived' && (
-                        <button
-                          onClick={() => { setReplyFor(it.id); setReplyText(it.reply_draft ?? '') }}
-                          className="text-blue-600 hover:text-blue-800 mr-3"
-                        >
-                          Reply
-                        </button>
+                        <>
+                          <button
+                            onClick={() => suggestReply(it.id)}
+                            disabled={suggestingId === it.id}
+                            className="text-violet-600 hover:text-violet-800 mr-3 disabled:opacity-50 inline-flex items-center gap-1"
+                            title="AI-suggest a reply"
+                          >
+                            {suggestingId === it.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                            Suggest
+                          </button>
+                          <button
+                            onClick={() => { setReplyFor(it.id); setReplyText(it.reply_draft ?? '') }}
+                            className="text-blue-600 hover:text-blue-800 mr-3"
+                          >
+                            Reply
+                          </button>
+                        </>
                       )}
                       {it.status !== 'archived' && (
                         <button onClick={() => setStatus(it.id, 'archived')} className="text-gray-400 hover:text-gray-700">

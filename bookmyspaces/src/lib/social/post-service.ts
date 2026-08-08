@@ -16,8 +16,12 @@
 import { getSupabaseAdmin } from '@/lib/supabase'
 import type { SocialPlatform } from '@/lib/social/types'
 
+// Sprint 1 (Social Publishing) added 'failed_permanent' (migration 039,
+// CHECK-widened) — a transient 'failed' status that exhausted
+// MAX_PUBLISH_ATTEMPTS automatic retries in publish-service.ts. Still
+// manually re-publishable by an explicit human action.
 export type SocialPostStatus =
-  | 'draft' | 'approved' | 'scheduled' | 'publishing' | 'published' | 'failed'
+  | 'draft' | 'approved' | 'scheduled' | 'publishing' | 'published' | 'failed' | 'failed_permanent'
 
 export interface SocialPostRecord {
   id: string
@@ -37,6 +41,27 @@ export interface SocialPostRecord {
   created_by: string | null
   // Growth Engine Epic 5 — publish attempt counter (migration 036).
   publish_attempts: number
+  // Sprint 1 (Social Publishing) — backoff-scheduled automatic retry time
+  // for a transient failure (migration 039); null once published or once
+  // permanently failed.
+  next_retry_at: string | null
+  // Content Operations Priority 5 — approval hard gate (migration 041).
+  // Set only for a 'scheduled' post that a human explicitly approved
+  // without pulling it out of the cron pipeline (status stays 'scheduled'
+  // so processDueScheduledPosts() still fires it at scheduled_at — see
+  // publish-service.ts's gate and the PATCH .../posts 'approve' action).
+  // Not used for 'draft'->'approved' transitions, which still just flip
+  // status the same way they always have.
+  approved_at: string | null
+  // Business Package Engine (migration 043) — optional attribution link, so
+  // a post drafted from a package's AI Prompt/hashtags can be rolled up by
+  // package. Null for every post created before this, and for any post not
+  // created from a package.
+  business_package_id: string | null
+  // End-to-End Campaign Attribution (migration 045) — optional link to the
+  // outbound broadcast_campaigns row this post promotes. Null for posts not
+  // tied to a tracked campaign.
+  campaign_id: string | null
 }
 
 type Result<T> = { ok: true; value: T } | { ok: false; error: string }
@@ -79,6 +104,8 @@ export interface CreatePostInput {
   /** Present + future ⇒ the post is created as 'scheduled'; absent ⇒ 'draft'. */
   scheduled_at?: string | null
   created_by: string
+  business_package_id?: string | null
+  campaign_id?: string | null
 }
 
 export async function createSocialPost(
@@ -103,6 +130,8 @@ export async function createSocialPost(
       status,
       scheduled_at: input.scheduled_at ?? null,
       created_by: input.created_by,
+      business_package_id: input.business_package_id ?? null,
+      campaign_id: input.campaign_id ?? null,
     })
     .select('*')
     .single()

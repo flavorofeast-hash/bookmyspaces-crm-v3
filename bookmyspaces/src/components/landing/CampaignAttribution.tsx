@@ -22,6 +22,7 @@ export interface CampaignAttributionValue {
   referral: string | null
   landingPage: string
   leadId: string | null
+  businessPackageId: string | null
 }
 
 const CampaignAttributionContext = createContext<CampaignAttributionValue | null>(null)
@@ -40,6 +41,7 @@ export function CampaignAttribution({
   utmCampaign,
   referral,
   landingPage,
+  businessPackageId = null,
   children,
 }: {
   slug: string
@@ -51,6 +53,8 @@ export function CampaignAttribution({
   utmCampaign: string | null
   referral: string | null
   landingPage: string
+  /** Business Package Engine — set when this landing page is package-driven, so the captured lead inherits it. */
+  businessPackageId?: string | null
   children: ReactNode
 }) {
   const [leadId, setLeadId] = useState<string | null>(null)
@@ -77,6 +81,7 @@ export function CampaignAttribution({
         utmCampaign,
         referral,
         landingPage,
+        businessPackageId,
       }),
     })
       .then((res) => res.json())
@@ -103,6 +108,7 @@ export function CampaignAttribution({
         referral,
         landingPage,
         leadId,
+        businessPackageId,
       }}
     >
       {children}

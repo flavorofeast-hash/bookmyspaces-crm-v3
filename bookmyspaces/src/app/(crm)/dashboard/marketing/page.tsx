@@ -11,7 +11,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { toast } from 'sonner'
-import { RefreshCw, AlertTriangle, Sparkles, TrendingUp, TrendingDown, Megaphone, Users, IndianRupee, Share2, Award, MessageCircle, BarChart3, Target, HeartCrack, Compass } from 'lucide-react'
+import { RefreshCw, AlertTriangle, Sparkles, TrendingUp, TrendingDown, Megaphone, Users, IndianRupee, Share2, Award, MessageCircle, BarChart3, Target, HeartCrack, Compass, MousePointerClick, Wallet, Loader2 } from 'lucide-react'
 
 interface AcquisitionPerformanceRow {
   key: string
@@ -93,6 +93,8 @@ interface MarketingDashboard {
     attributedReferrals: number
     unattributedReferralText: number
     topReferrers: Array<{ referrerId: string; referrerName: string; referrerPhone: string | null; referredCount: number; referredRevenue: number }>
+    referralConversionRate: number
+    totalReferralRevenue: number
     note: string
   }
   referralRewards: { pending: number; earned: number; redeemed: number }
@@ -102,6 +104,7 @@ interface MarketingDashboard {
     byTier: Array<{ tier: string; count: number }>
     topEarners: Array<{ leadId: string; leadName: string | null; points: number; tier: string }>
   }
+  revenueByLoyaltyTier: Array<{ tier: string; revenue: number; accountCount: number }>
   journeyFunnel: Array<{ stage: string; count: number }>
   growthIntelligence: {
     revenueOpportunities: Array<{ title: string; detail: string }>
@@ -132,6 +135,94 @@ interface MarketingDashboard {
   likelyToBook: ScoredLead[]
   churnRisk: ChurnRiskEntry[]
   nextBestActions: ScoredLead[]
+  // Sprint 4 (Marketing Intelligence) — Top Performing Content + Best Posting Time.
+  topContent: {
+    postId: string
+    platform: string
+    content: string | null
+    publishedAt: string | null
+    engagementScore: number
+  }[]
+  bestPostingTime: {
+    sampleSize: number
+    byHour: { hour: number; avgEngagement: number; posts: number }[]
+    byDayOfWeek: { day: string; avgEngagement: number; posts: number }[]
+    recommendation: string
+  } | null
+  // Marketing Intelligence Priority 3 — same rows as channelPerformance/
+  // campaignPerformance.rows, augmented with spend-derived metrics wherever
+  // ad spend has been logged for that platform/campaign.
+  channelPerformanceWithSpend: (AcquisitionPerformanceRow & { spend: number | null; costPerEnquiry: number | null; costPerBooking: number | null; roiFromSpend: number | null })[]
+  campaignPerformanceWithSpend: (AcquisitionPerformanceRow & { spend: number | null; costPerEnquiry: number | null; costPerBooking: number | null; roiFromSpend: number | null })[]
+  // Revenue Attribution Priority 2 — WhatsApp/call/website click totals (trailing 30 days).
+  clickAnalytics: {
+    rangeStart: string
+    rangeEnd: string
+    totalClicks: number
+    rows: { type: string; totalClicks: number; byCampaign: { campaign: string; clicks: number }[] }[]
+  } | null
+  // End-to-End Campaign Attribution — null only on a hard failure; an empty
+  // {posts:[],byPlatform:[]} is the honest "nothing published yet" state.
+  socialAttribution: SocialAttribution | null
+  // Content Operations Priority 5 — AI recommendations, deterministic over this account's own published-post history.
+  bestContentFormat: { sampleSize: number; byFormat: { postType: string; avgEngagement: number; posts: number }[]; recommendation: string } | null
+  bestAudience: { sampleSize: number; byPlatform: { platform: string; avgEngagement: number; posts: number }[]; recommendation: string } | null
+  bestCTA: { sampleSize: number; byCTA: { label: string; avgEngagement: number; posts: number }[]; recommendation: string } | null
+}
+
+// Business Package Engine (migration 044) — mirrors computeBusinessPackagePerformance()'s
+// return shape (src/lib/business-packages/business-package-service.ts) 1:1.
+interface BusinessPackagePerformanceRow {
+  packageId: string
+  packageName: string
+  status: 'active' | 'inactive' | 'retired'
+  enquiries: number
+  convertedLeads: number
+  conversionPct: number
+  revenue: number
+  spend: number | null
+  roi: number | null
+  costPerLead: number | null
+  costPerBooking: number | null
+  repeatCustomers: number
+  reviewCount: number
+  avgRating: number | null
+  referralCount: number
+  referralsEarned: number
+}
+
+// End-to-End Campaign Attribution — mirrors social-attribution-service.ts's
+// SocialPostRevenueRow/SocialPlatformRevenueRow/SocialAttribution shapes 1:1.
+interface SocialPostRevenueRow {
+  postId: string
+  platform: string
+  content: string | null
+  publishedAt: string | null
+  businessPackageId: string | null
+  campaignId: string | null
+  clicks: number
+  estimatedRevenue: number
+  attributionBasis: 'click_share' | 'even_split' | 'unattributed'
+}
+interface SocialPlatformRevenueRow {
+  platform: string
+  postCount: number
+  totalClicks: number
+  estimatedRevenue: number
+}
+interface SocialAttribution {
+  posts: SocialPostRevenueRow[]
+  byPlatform: SocialPlatformRevenueRow[]
+  note: string
+}
+
+interface AdSpendRecord {
+  id: string
+  platform: string
+  campaign_name: string | null
+  spend_date: string
+  amount: number
+  currency: string
 }
 
 interface ScoredLead {
@@ -244,6 +335,80 @@ export default function MarketingDashboardPage() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Marketing Intelligence Priority 3 — Ad Spend entry (POST /api/marketing/
+  // ad-spend). Reloads the whole dashboard on save so channelPerformance
+  // WithSpend picks up the new figure immediately, same pattern as
+  // handleSyncRewards/handleSyncPoints below.
+  const [adSpendPlatform, setAdSpendPlatform] = useState('facebook')
+  const [adSpendCampaign, setAdSpendCampaign] = useState('')
+  const [adSpendDate, setAdSpendDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [adSpendAmount, setAdSpendAmount] = useState('')
+  const [adSpendSaving, setAdSpendSaving] = useState(false)
+  const [adSpendRecords, setAdSpendRecords] = useState<AdSpendRecord[]>([])
+
+  const loadAdSpend = useCallback(async () => {
+    try {
+      const res = await fetch('/api/marketing/ad-spend')
+      if (!res.ok) return
+      const json = await res.json()
+      setAdSpendRecords(Array.isArray(json.records) ? json.records.slice(0, 10) : [])
+    } catch { /* best-effort */ }
+  }, [])
+
+  useEffect(() => { loadAdSpend() }, [loadAdSpend])
+
+  // Business Package Engine — "Marketing Dashboard should display Business
+  // Package performance." Own loader/state (like ad spend above) since
+  // GET /api/dashboard/marketing's payload isn't touched — reuses the new
+  // GET /api/business-packages/analytics route instead.
+  const [businessPackagePerf, setBusinessPackagePerf] = useState<BusinessPackagePerformanceRow[]>([])
+  const [loadingBPP, setLoadingBPP] = useState(true)
+
+  const loadBusinessPackagePerf = useCallback(async () => {
+    setLoadingBPP(true)
+    try {
+      const res = await fetch('/api/business-packages/analytics')
+      if (!res.ok) return
+      const json = await res.json()
+      setBusinessPackagePerf(Array.isArray(json.performance) ? json.performance : [])
+    } catch { /* best-effort */ }
+    finally { setLoadingBPP(false) }
+  }, [])
+
+  useEffect(() => { loadBusinessPackagePerf() }, [loadBusinessPackagePerf])
+
+  async function handleAddAdSpend(e: React.FormEvent) {
+    e.preventDefault()
+    const amount = Number(adSpendAmount)
+    if (!amount || amount <= 0) { toast.error('Enter a valid amount'); return }
+    setAdSpendSaving(true)
+    try {
+      const res = await fetch('/api/marketing/ad-spend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          platform: adSpendPlatform,
+          campaignName: adSpendCampaign.trim() || null,
+          spendDate: adSpendDate,
+          amount,
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok) { toast.error(json.error || 'Failed to record ad spend'); return }
+      toast.success('Ad spend recorded.')
+      setAdSpendCampaign(''); setAdSpendAmount('')
+      await Promise.all([loadAdSpend(), load()])
+    } finally {
+      setAdSpendSaving(false)
+    }
+  }
+
+  async function handleDeleteAdSpend(id: string) {
+    const res = await fetch(`/api/marketing/ad-spend?id=${id}`, { method: 'DELETE' })
+    if (res.ok) await Promise.all([loadAdSpend(), load()])
+    else toast.error('Failed to delete record')
+  }
 
   async function handleSyncRewards() {
     setSyncingRewards(true)
@@ -433,6 +598,57 @@ export default function MarketingDashboardPage() {
           {/* ── Campaign Performance ─────────────────────────────────────── */}
           <PerformanceTable title="Campaign Performance" rows={data.campaignPerformance.rows} keyLabel="Campaign" />
 
+          {/* ── Business Package Performance (Business Package Engine) ──── */}
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100">
+              <h2 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5"><Target className="w-3.5 h-3.5" /> Business Package Performance</h2>
+              <p className="text-xs text-gray-400 mt-1">Enquiries, conversion, revenue, ROI, repeat customers, reviews and referrals — grouped by Business Package.</p>
+            </div>
+            {loadingBPP ? (
+              <p className="text-sm text-gray-400 px-6 py-8 text-center">Loading…</p>
+            ) : businessPackagePerf.length === 0 ? (
+              <p className="text-sm text-gray-400 px-6 py-8 text-center">No Business Packages yet — create one under Business Packages.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-gray-400 uppercase tracking-wide border-b border-gray-100">
+                    <th className="px-6 py-2.5 font-medium">Package</th>
+                    <th className="px-3 py-2.5 font-medium text-right">Enquiries</th>
+                    <th className="px-3 py-2.5 font-medium text-right">Conversion%</th>
+                    <th className="px-3 py-2.5 font-medium text-right">Revenue</th>
+                    <th className="px-3 py-2.5 font-medium text-right">ROI</th>
+                    <th className="px-3 py-2.5 font-medium text-right">Cost/Lead</th>
+                    <th className="px-3 py-2.5 font-medium text-right">Cost/Booking</th>
+                    <th className="px-3 py-2.5 font-medium text-right">Repeat</th>
+                    <th className="px-3 py-2.5 font-medium text-right">Reviews</th>
+                    <th className="px-6 py-2.5 font-medium text-right">Referrals</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {businessPackagePerf.map((r) => (
+                    <tr key={r.packageId} className="border-b border-gray-50 last:border-0 hover:bg-gray-50">
+                      <td className="px-6 py-3 text-gray-800 font-medium">
+                        {r.packageName}
+                        {r.status !== 'active' && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500">{r.status}</span>}
+                      </td>
+                      <td className="px-3 py-3 text-right text-gray-600">{r.enquiries}</td>
+                      <td className="px-3 py-3 text-right text-gray-600">{r.conversionPct}%</td>
+                      <td className="px-3 py-3 text-right text-emerald-600 font-medium">{fmtINR(r.revenue)}</td>
+                      <td className={`px-3 py-3 text-right font-medium ${r.roi != null && r.roi > 0 ? 'text-emerald-600' : r.roi != null ? 'text-red-600' : 'text-gray-400'}`}>
+                        {r.roi != null ? `${(r.roi * 100).toFixed(0)}%` : '—'}
+                      </td>
+                      <td className="px-3 py-3 text-right text-gray-600">{r.costPerLead != null ? fmtINR(r.costPerLead) : '—'}</td>
+                      <td className="px-3 py-3 text-right text-gray-600">{r.costPerBooking != null ? fmtINR(r.costPerBooking) : '—'}</td>
+                      <td className="px-3 py-3 text-right text-gray-600">{r.repeatCustomers}</td>
+                      <td className="px-3 py-3 text-right text-gray-600">{r.reviewCount}{r.avgRating != null ? ` (${r.avgRating}★)` : ''}</td>
+                      <td className="px-6 py-3 text-right text-gray-600">{r.referralCount}{r.referralsEarned > 0 ? ` (${r.referralsEarned} earned)` : ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
           {/* ── Campaign ROI (Growth Platform Phase 1) ───────────────────── */}
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
             <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
@@ -509,6 +725,8 @@ export default function MarketingDashboardPage() {
               <h2 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5"><Share2 className="w-3.5 h-3.5" /> Top Referrers</h2>
               <div className="flex items-center gap-3">
                 <p className="text-xs text-gray-400">{data.referralPerformance.attributedReferrals} attributed of {data.referralPerformance.totalLeadsWithReferralText} referral notes</p>
+                <p className="text-xs text-gray-400">Conversion: <span className="font-medium text-gray-600">{data.referralPerformance.referralConversionRate}%</span></p>
+                <p className="text-xs text-gray-400">Referral Revenue: <span className="font-medium text-emerald-600">{fmtINR(data.referralPerformance.totalReferralRevenue)}</span></p>
                 <p className="text-xs text-gray-400">Rewards: {data.referralRewards.pending} pending · {data.referralRewards.earned} earned · {data.referralRewards.redeemed} redeemed</p>
                 <button
                   onClick={() => void handleSyncRewards()}
@@ -568,6 +786,19 @@ export default function MarketingDashboardPage() {
                   </li>
                 ))}
               </ul>
+            )}
+            {data.revenueByLoyaltyTier.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-gray-100">
+                <p className="text-xs text-gray-400 uppercase tracking-wide mb-2">Revenue by Loyalty Tier</p>
+                <ul className="space-y-1.5">
+                  {data.revenueByLoyaltyTier.map((t) => (
+                    <li key={t.tier} className="flex items-center justify-between text-sm">
+                      <span className="text-gray-700">{t.tier} <span className="text-xs text-gray-400">({t.accountCount} {t.accountCount === 1 ? 'account' : 'accounts'})</span></span>
+                      <span className="text-emerald-600 font-medium">{fmtINR(t.revenue)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
           </div>
 
@@ -666,6 +897,59 @@ export default function MarketingDashboardPage() {
             </div>
           </div>
 
+          {/* Top Performing Content / Best Posting Time (Sprint 4 — Marketing Intelligence) */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+              <div className="px-5 py-3 border-b border-gray-100">
+                <h2 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5"><Award className="w-3.5 h-3.5" /> Top Performing Content</h2>
+              </div>
+              {data.topContent.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-6 px-4">No published posts with synced metrics yet.</p>
+              ) : (
+                <ul className="divide-y divide-gray-50">
+                  {data.topContent.slice(0, 5).map((c) => (
+                    <li key={c.postId} className="px-5 py-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-medium text-gray-500 capitalize">{c.platform.replace('_', ' ')}</span>
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-medium">{c.engagementScore} pts</span>
+                      </div>
+                      <p className="text-sm text-gray-700 mt-1 truncate">{c.content || <span className="text-gray-400 italic">Media-only post</span>}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="bg-white rounded-xl border border-gray-200 p-5">
+              <h2 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-1.5"><Sparkles className="w-3.5 h-3.5" /> AI: Best Posting Time</h2>
+              {!data.bestPostingTime || data.bestPostingTime.byHour.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-4">{data.bestPostingTime?.recommendation ?? 'Not enough data yet.'}</p>
+              ) : (
+                <>
+                  <p className="text-sm text-gray-700 mb-3">{data.bestPostingTime.recommendation}</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-xs text-gray-400 mb-1">Best hours</p>
+                      <ul className="space-y-1">
+                        {data.bestPostingTime.byHour.slice(0, 3).map((h) => (
+                          <li key={h.hour} className="text-xs text-gray-600 flex justify-between"><span>{h.hour}:00</span><span>{h.avgEngagement} avg</span></li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400 mb-1">Best days</p>
+                      <ul className="space-y-1">
+                        {data.bestPostingTime.byDayOfWeek.slice(0, 3).map((d) => (
+                          <li key={d.day} className="text-xs text-gray-600 flex justify-between"><span>{d.day}</span><span>{d.avgEngagement} avg</span></li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
           {/* Customers Likely To Book / Churn Risk / Next Best Action */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -729,6 +1013,203 @@ export default function MarketingDashboardPage() {
                   ))}
                 </ul>
               )}
+            </div>
+          </div>
+
+          {/* Marketing Intelligence Priority 3 — Ad Spend / Cost per Enquiry / Cost per Booking */}
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <h2 className="text-sm font-semibold text-gray-700 mb-1 flex items-center gap-1.5"><Wallet className="w-3.5 h-3.5" /> Ad Spend &amp; ROI</h2>
+            <p className="text-xs text-gray-500 mb-4">{data.roiNote}</p>
+
+            <form onSubmit={handleAddAdSpend} className="grid grid-cols-1 md:grid-cols-5 gap-3 mb-5 pb-5 border-b border-gray-100">
+              <select
+                value={adSpendPlatform}
+                onChange={(e) => setAdSpendPlatform(e.target.value)}
+                aria-label="Ad spend platform"
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {['facebook', 'instagram', 'linkedin', 'google_business', 'x', 'youtube', 'threads', 'google_ads', 'other'].map((p) => (
+                  <option key={p} value={p}>{p.replace('_', ' ')}</option>
+                ))}
+              </select>
+              <input
+                value={adSpendCampaign}
+                onChange={(e) => setAdSpendCampaign(e.target.value)}
+                placeholder="Campaign name (optional)"
+                aria-label="Ad spend campaign name"
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <input
+                type="date"
+                value={adSpendDate}
+                onChange={(e) => setAdSpendDate(e.target.value)}
+                aria-label="Spend date"
+                required
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={adSpendAmount}
+                onChange={(e) => setAdSpendAmount(e.target.value)}
+                placeholder="Amount (₹)"
+                aria-label="Spend amount"
+                required
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <button
+                type="submit"
+                disabled={adSpendSaving}
+                className="flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-60"
+              >
+                {adSpendSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : null} Add Spend
+              </button>
+            </form>
+
+            {data.channelPerformanceWithSpend.filter((r) => r.spend != null).length === 0 ? (
+              <p className="text-sm text-gray-400 text-center py-4">No spend recorded yet for any channel — add an entry above to see cost-per-enquiry, cost-per-booking, and ROI.</p>
+            ) : (
+              <table className="w-full text-sm mb-5">
+                <thead>
+                  <tr className="text-left text-xs text-gray-400 uppercase tracking-wide border-b border-gray-100">
+                    <th className="py-2 font-medium">Channel</th>
+                    <th className="py-2 font-medium text-right">Spend</th>
+                    <th className="py-2 font-medium text-right">Cost / Enquiry</th>
+                    <th className="py-2 font-medium text-right">Cost / Booking</th>
+                    <th className="py-2 font-medium text-right">ROI</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.channelPerformanceWithSpend.filter((r) => r.spend != null).map((r) => (
+                    <tr key={r.key} className="border-b border-gray-50 last:border-0">
+                      <td className="py-2.5 text-gray-800 font-medium">{r.key}</td>
+                      <td className="py-2.5 text-right text-gray-600">{fmtINR(r.spend as number)}</td>
+                      <td className="py-2.5 text-right text-gray-600">{r.costPerEnquiry != null ? fmtINR(r.costPerEnquiry) : '—'}</td>
+                      <td className="py-2.5 text-right text-gray-600">{r.costPerBooking != null ? fmtINR(r.costPerBooking) : '—'}</td>
+                      <td className={`py-2.5 text-right font-medium ${r.roiFromSpend != null && r.roiFromSpend > 0 ? 'text-emerald-600' : r.roiFromSpend != null ? 'text-red-600' : 'text-gray-400'}`}>
+                        {r.roiFromSpend != null ? `${(r.roiFromSpend * 100).toFixed(0)}%` : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {adSpendRecords.length > 0 && (
+              <>
+                <p className="text-xs text-gray-400 mb-2">Recent entries</p>
+                <ul className="divide-y divide-gray-50">
+                  {adSpendRecords.map((r) => (
+                    <li key={r.id} className="py-2 flex items-center justify-between text-sm">
+                      <span className="text-gray-600">
+                        <span className="capitalize font-medium text-gray-800">{r.platform.replace('_', ' ')}</span>
+                        {r.campaign_name ? ` · ${r.campaign_name}` : ''} · {r.spend_date}
+                      </span>
+                      <span className="flex items-center gap-3">
+                        <span className="text-gray-700 font-medium">{fmtINR(Number(r.amount))}</span>
+                        <button onClick={() => handleDeleteAdSpend(r.id)} className="text-xs text-red-500 hover:text-red-700">Delete</button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+
+          {/* Revenue Attribution Priority 2 — Click Analytics */}
+          {data.clickAnalytics && (
+            <div className="bg-white rounded-xl border border-gray-200 p-5">
+              <h2 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-1.5"><MousePointerClick className="w-3.5 h-3.5" /> Click Analytics (last 30 days) — {data.clickAnalytics.totalClicks} total clicks</h2>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {data.clickAnalytics.rows.map((row) => (
+                  <div key={row.type} className="border border-gray-100 rounded-lg p-3">
+                    <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">{row.type.replace('_click', '')}</p>
+                    <p className="text-xl font-semibold text-gray-800 mb-2">{row.totalClicks}</p>
+                    {row.byCampaign.slice(0, 3).map((c) => (
+                      <div key={c.campaign} className="flex justify-between text-xs text-gray-500">
+                        <span className="truncate">{c.campaign}</span><span>{c.clicks}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* End-to-End Campaign Attribution — Revenue by Social Platform / Revenue by Individual Social Post */}
+          {data.socialAttribution && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                <div className="px-5 py-3 border-b border-gray-100">
+                  <h2 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5"><Share2 className="w-3.5 h-3.5" /> Revenue by Social Platform</h2>
+                </div>
+                {data.socialAttribution.byPlatform.length === 0 ? (
+                  <p className="text-sm text-gray-400 text-center py-6 px-4">No published posts with Business Package attribution yet.</p>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs text-gray-400 uppercase tracking-wide border-b border-gray-100">
+                        <th className="px-5 py-2 font-medium">Platform</th>
+                        <th className="px-3 py-2 font-medium text-right">Posts</th>
+                        <th className="px-3 py-2 font-medium text-right">Clicks</th>
+                        <th className="px-5 py-2 font-medium text-right">Est. Revenue</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.socialAttribution.byPlatform.map((r) => (
+                        <tr key={r.platform} className="border-b border-gray-50 last:border-0">
+                          <td className="px-5 py-2.5 text-gray-800 font-medium capitalize">{r.platform.replace('_', ' ')}</td>
+                          <td className="px-3 py-2.5 text-right text-gray-600">{r.postCount}</td>
+                          <td className="px-3 py-2.5 text-right text-gray-600">{r.totalClicks}</td>
+                          <td className="px-5 py-2.5 text-right text-emerald-600 font-medium">{fmtINR(r.estimatedRevenue)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                <div className="px-5 py-3 border-b border-gray-100">
+                  <h2 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5"><Award className="w-3.5 h-3.5" /> Revenue by Individual Social Post</h2>
+                </div>
+                {data.socialAttribution.posts.length === 0 ? (
+                  <p className="text-sm text-gray-400 text-center py-6 px-4">No published posts yet.</p>
+                ) : (
+                  <ul className="divide-y divide-gray-50 max-h-80 overflow-y-auto">
+                    {data.socialAttribution.posts.slice(0, 10).map((p) => (
+                      <li key={p.postId} className="px-5 py-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-medium text-gray-500 capitalize">{p.platform.replace('_', ' ')}</span>
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${p.attributionBasis === 'unattributed' ? 'bg-gray-100 text-gray-500' : 'bg-emerald-50 text-emerald-700'}`}>
+                            {p.attributionBasis === 'unattributed' ? 'No package linked' : fmtINR(p.estimatedRevenue)}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-700 mt-1 truncate">{p.content || <span className="text-gray-400 italic">Media-only post</span>}</p>
+                        <p className="text-xs text-gray-400 mt-0.5">{p.clicks} clicks{p.attributionBasis === 'even_split' ? ' · split evenly (no click data yet)' : ''}</p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <p className="px-5 py-2.5 text-xs text-gray-400 border-t border-gray-100">{data.socialAttribution.note}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Content Operations Priority 5 — AI Recommendations (best CTA / format / audience) */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="bg-white rounded-xl border border-gray-200 p-5">
+              <h2 className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-1.5"><Sparkles className="w-3.5 h-3.5" /> Best CTA</h2>
+              <p className="text-xs text-gray-600">{data.bestCTA?.recommendation ?? 'Not enough data yet.'}</p>
+            </div>
+            <div className="bg-white rounded-xl border border-gray-200 p-5">
+              <h2 className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-1.5"><Sparkles className="w-3.5 h-3.5" /> Best Content Format</h2>
+              <p className="text-xs text-gray-600">{data.bestContentFormat?.recommendation ?? 'Not enough data yet.'}</p>
+            </div>
+            <div className="bg-white rounded-xl border border-gray-200 p-5">
+              <h2 className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-1.5"><Sparkles className="w-3.5 h-3.5" /> Best Audience (Platform)</h2>
+              <p className="text-xs text-gray-600">{data.bestAudience?.recommendation ?? 'Not enough data yet.'}</p>
             </div>
           </div>
         </>

@@ -33,7 +33,7 @@
       "maxDuration": 60
     },
     "src/app/api/cron/stay-lifecycle/route.ts": {
-      "maxDuration": 30
+      "maxDuration": 60
     },
     "src/app/api/cron/review-reminders/route.ts": {
       "maxDuration": 30
@@ -48,6 +48,9 @@
       "maxDuration": 60
     },
     "src/app/api/cron/ai-followup-assistant/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/cron/social-token-refresh/route.ts": {
       "maxDuration": 60
     }
   },
@@ -83,6 +86,14 @@
     {
       "path":     "/api/cron/ai-followup-assistant",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path":     "/api/cron/social-token-refresh",
+      "schedule": "0 5 * * *"
+    },
+    {
+      "path":     "/api/cron/campaign-queue",
+      "schedule": "0 12 * * *"
     }
   ]
 }

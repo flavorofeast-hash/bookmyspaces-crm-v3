@@ -186,11 +186,13 @@ function CampaignRow({
   onDelete,
   onAction,
   actionPending,
+  roi,
 }: {
   campaign: Campaign
   onDelete: (id: string) => void
   onAction: (id: string, action: 'send' | 'pause' | 'resume' | 'cancel') => void
   actionPending: boolean
+  roi?: CampaignROIRow
 }) {
   const cfg = STATUS_CONFIG[campaign.status]
   const Icon = cfg.icon
@@ -231,6 +233,16 @@ function CampaignRow({
       </td>
       <td className="px-4 py-3 text-sm text-gray-500 text-right">
         {campaign.reply_count}
+      </td>
+      <td className="px-4 py-3 text-right" title="Same Revenue Attribution figure shown on the Marketing Dashboard's Campaign Performance section">
+        {roi ? (
+          <>
+            <span className="text-sm font-medium text-gray-700">{roi.bookings}</span>
+            <span className="block text-xs text-gray-400">₹{roi.revenue.toLocaleString('en-IN')}{roi.roiAvailable ? ` · ${roi.roi}x ROI` : ''}</span>
+          </>
+        ) : (
+          <span className="text-sm text-gray-300">—</span>
+        )}
       </td>
       <td className="px-4 py-3">
         <div className="flex items-center justify-end gap-1">
@@ -817,12 +829,26 @@ function CreateModal({
 
 // Revenue Intelligence (Priority 2) — Marketing Analytics. Mirrors
 // src/lib/campaigns.ts's MarketingPerformance exactly.
+interface CampaignROIRow {
+  campaignId: string
+  campaignName: string
+  budget: number | null
+  revenue: number
+  leadsReached: number
+  bookings: number
+  roi: number | null
+  roiAvailable: boolean
+}
+
 interface MarketingPerformance {
   byType: Array<{ type: string; campaigns: number; sent: number; delivered: number; failed: number; replies: number; replyRatePct: number }>
   bySource: Array<{ source: string; count: number; confirmedCount: number; conversionPct: number }>
   whatsappConversionPct: number
   acquisitionByMonth: Array<{ month: string; count: number }>
-  conversionTrackingAvailable: false
+  // Per-campaign conversion (bookings/revenue/ROI) — same computeCampaignROI()
+  // result the Marketing Dashboard's Campaign Performance section shows.
+  campaignROI: { rows: CampaignROIRow[]; degraded: boolean; note: string }
+  conversionTrackingAvailable: boolean
   conversionTrackingNote: string
 }
 
@@ -924,6 +950,9 @@ export default function CampaignsPage() {
   const totalDelivered = campaigns.reduce((s, c) => s + c.delivered_count, 0)
   const totalReplies = campaigns.reduce((s, c) => s + c.reply_count, 0)
   const activeCampaigns = campaigns.filter((c) => c.status === 'running' || c.status === 'scheduled').length
+  // Per-campaign conversion (bookings/revenue/ROI) — same computeCampaignROI()
+  // rows the Marketing Dashboard shows, keyed for the table below.
+  const campaignROIById = new Map((performance?.campaignROI?.rows ?? []).map((r) => [r.campaignId, r]))
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -1075,6 +1104,7 @@ export default function CampaignsPage() {
                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wide">Sent</th>
                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wide">Delivery</th>
                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wide">Replies</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wide">Conversions</th>
                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wide">Actions</th>
                   </tr>
                 </thead>
@@ -1086,6 +1116,7 @@ export default function CampaignsPage() {
                       onDelete={handleDelete}
                       onAction={handleAction}
                       actionPending={actioningId === c.id}
+                      roi={campaignROIById.get(c.id)}
                     />
                   ))}
                 </tbody>

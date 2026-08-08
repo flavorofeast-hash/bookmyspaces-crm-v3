@@ -16,7 +16,14 @@ import { toast } from 'sonner'
 import {
   PenSquare, Plus, X, Save, RefreshCw, AlertCircle, CalendarClock,
   FileText, Image as ImageIcon, Hash, Sparkles, Loader2, Link2, BarChart3,
+  ShieldCheck, Upload,
 } from 'lucide-react'
+import { filterConnectedAccountsForPlatform, toAccountIdField } from './social-post-form-helpers'
+
+// Social Connectivity Priority 1 — platforms with a real OAuth flow
+// (src/lib/social/oauth/oauth-config.ts's OAUTH_CONFIGS keys). youtube/
+// threads have no OAuth config yet, so they keep the manual-token form only.
+const OAUTH_CAPABLE_PLATFORMS = new Set(['facebook', 'instagram', 'linkedin', 'google_business', 'x'])
 
 interface SocialPost {
   id: string
@@ -26,13 +33,19 @@ interface SocialPost {
   content: string | null
   media: { url: string; type: string }[]
   hashtags: string[]
-  status: 'draft' | 'approved' | 'scheduled' | 'publishing' | 'published' | 'failed'
+  status: 'draft' | 'approved' | 'scheduled' | 'publishing' | 'published' | 'failed' | 'failed_permanent'
   scheduled_at: string | null
   published_at: string | null
   created_by: string | null
   // Growth Engine Epic 5 — Social Publishing.
   failure_reason: string | null
   publish_attempts: number
+  // Sprint 1 (Social Publishing) — backoff-scheduled auto-retry time.
+  next_retry_at: string | null
+  // Content Operations Priority 5 — approval gate (migration 041). Only
+  // meaningful for status='scheduled' (a 'draft' post's approval is the
+  // status==='approved' transition itself).
+  approved_at: string | null
 }
 
 interface MessageTemplate {
@@ -71,11 +84,43 @@ const STATUS_STYLES: Record<SocialPost['status'], string> = {
   publishing: 'bg-purple-50 text-purple-700',
   published: 'bg-green-50 text-green-700',
   failed: 'bg-red-50 text-red-700',
+  failed_permanent: 'bg-red-100 text-red-800',
 }
+
+// Sprint 2 (AI Content Studio) — length/tone variants + occasion templates.
+const CONTENT_VARIANTS = [
+  { value: 'standard', label: 'Standard' },
+  { value: 'short', label: 'Short' },
+  { value: 'long', label: 'Long' },
+  { value: 'emoji', label: 'Emoji' },
+]
+const CONTENT_TEMPLATES = [
+  { value: '', label: 'No template' },
+  { value: 'wedding', label: 'Wedding' },
+  { value: 'birthday', label: 'Birthday' },
+  { value: 'corporate', label: 'Corporate' },
+  { value: 'rooftop', label: 'Rooftop' },
+  { value: 'restaurant', label: 'Restaurant' },
+  { value: 'weekend_stay', label: 'Weekend Stay' },
+  { value: 'festival', label: 'Festivals' },
+  { value: 'offer', label: 'Offers' },
+]
 
 const STATUS_FILTERS = ['', 'draft', 'scheduled', 'published', 'failed'] as const
 
 export default function ContentStudioPage() {
+  // Social Connectivity Priority 1 — the OAuth callback redirects here with
+  // ?oauth=success|error (see src/app/api/social/oauth/[platform]/callback/
+  // route.ts). Read directly from window.location instead of
+  // next/navigation's useSearchParams() so this page doesn't need a
+  // Suspense boundary just for a one-time toast-on-mount — this is plain
+  // client-side-only logic ('use client' page, runs after mount).
+  useEffect(() => {
+    const oauthResult = new URLSearchParams(window.location.search).get('oauth')
+    if (oauthResult === 'success') toast.success('Account connected.')
+    else if (oauthResult === 'error') toast.error('Could not connect that account — see server logs for details.')
+  }, [])
+
   const [posts, setPosts] = useState<SocialPost[]>([])
   const [statusFilter, setStatusFilter] = useState<(typeof STATUS_FILTERS)[number]>('')
   const [loading, setLoading] = useState(true)
@@ -85,6 +130,11 @@ export default function ContentStudioPage() {
 
   // form state
   const [platform, setPlatform] = useState('facebook')
+  // Social OAuth Account Selection fix — which connected social_accounts row
+  // (of possibly several for this platform) the post publishes from. Reset
+  // whenever platform changes, since the previous selection belongs to a
+  // different platform's account list.
+  const [selectedAccountId, setSelectedAccountId] = useState('')
   const [content, setContent] = useState('')
   const [mediaUrl, setMediaUrl] = useState('')
   const [hashtags, setHashtags] = useState('')
@@ -94,6 +144,48 @@ export default function ContentStudioPage() {
   // Generator + Social Media Content Generator). Drafts only, never posts.
   const [aiGoal, setAiGoal] = useState('')
   const [aiGenerating, setAiGenerating] = useState(false)
+  // Sprint 2 (AI Content Studio) — length/tone variant + occasion template,
+  // plus the title/CTA fields the generator now returns alongside content.
+  const [aiVariant, setAiVariant] = useState('standard')
+  const [aiTemplate, setAiTemplate] = useState('')
+  const [aiTitle, setAiTitle] = useState('')
+  const [aiCta, setAiCta] = useState('')
+
+  // Business Package Engine — picking a package prefills the AI Goal +
+  // hashtags from its stored ai_prompt/hashtags (reusing generateSocialPostDraft
+  // via the existing /api/social/generate call below, no new generator) and
+  // tags the created post with business_package_id for later attribution.
+  const [businessPackages, setBusinessPackages] = useState<{ id: string; name: string; aiPrompt: string | null; hashtags: string[]; recommendedMedia: string | null; recommendedPostingTime: string | null }[]>([])
+  const [selectedPackageId, setSelectedPackageId] = useState('')
+
+  useEffect(() => {
+    fetch('/api/business-packages?status=active')
+      .then((res) => res.json())
+      .then((data) => setBusinessPackages(Array.isArray(data.packages) ? data.packages.map((p: { id: string; name: string; aiPrompt: string | null; hashtags: string[]; recommendedMedia: string | null; recommendedPostingTime: string | null }) => p) : []))
+      .catch(() => setBusinessPackages([]))
+  }, [])
+
+  // End-to-End Campaign Attribution — tags the created post with the
+  // outbound broadcast_campaigns row it promotes (migration 045), so Revenue
+  // by Campaign can roll up the social side too. Reuses the existing GET
+  // /api/campaigns list (no new endpoint).
+  const [campaigns, setCampaigns] = useState<{ id: string; name: string }[]>([])
+  const [selectedCampaignId, setSelectedCampaignId] = useState('')
+
+  useEffect(() => {
+    fetch('/api/campaigns')
+      .then((res) => res.json())
+      .then((data) => setCampaigns(Array.isArray(data.campaigns) ? data.campaigns.map((c: { id: string; name: string }) => ({ id: c.id, name: c.name })) : []))
+      .catch(() => setCampaigns([]))
+  }, [])
+
+  function handleSelectPackage(id: string) {
+    setSelectedPackageId(id)
+    const pkg = businessPackages.find((p) => p.id === id)
+    if (!pkg) return
+    if (pkg.aiPrompt) setAiGoal(pkg.aiPrompt)
+    if (pkg.hashtags.length) setHashtags(pkg.hashtags.join(', '))
+  }
 
   async function handleAiGenerate() {
     if (!aiGoal.trim()) return
@@ -102,7 +194,11 @@ export default function ContentStudioPage() {
       const res = await fetch('/api/social/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ platform, goal: aiGoal.trim() }),
+        body: JSON.stringify({
+          platform, goal: aiGoal.trim(),
+          variant: aiVariant !== 'standard' ? aiVariant : undefined,
+          template: aiTemplate || undefined,
+        }),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -111,6 +207,8 @@ export default function ContentStudioPage() {
       }
       setContent(data.draft.content)
       setHashtags(data.draft.hashtags.join(', '))
+      setAiTitle(data.draft.title || '')
+      setAiCta(data.draft.cta || '')
     } catch {
       toast.error('Failed to generate draft')
     } finally {
@@ -193,7 +291,11 @@ export default function ContentStudioPage() {
       })
       const json = await res.json()
       if (!res.ok) {
-        toast.error(json.error || `Failed to ${action} post`)
+        // Content Operations Priority 5 — the approval-gate rejection comes
+        // back as the raw error code 'approval_required' (publish-
+        // service.ts); humanize it here rather than showing that literal
+        // string. Every other error code is shown as-is, unchanged.
+        toast.error(json.error === 'approval_required' ? 'This post needs approval before it can publish — click Approve first.' : (json.error || `Failed to ${action} post`))
         await load() // refresh — a failed publish attempt still updates status/failure_reason
         return
       }
@@ -208,6 +310,7 @@ export default function ContentStudioPage() {
 
   function resetForm() {
     setPlatform('facebook'); setContent(''); setMediaUrl(''); setHashtags(''); setScheduleAt('')
+    setAiTitle(''); setAiCta(''); setSelectedPackageId(''); setSelectedCampaignId(''); setSelectedAccountId('')
   }
 
   // Growth Platform Phase 3 — Message Templates (WhatsApp + Email). Content-
@@ -302,6 +405,32 @@ export default function ContentStudioPage() {
     }
   }
 
+  // Content Operations Priority 5 — actual file upload
+  // (POST /api/social/media-library/upload, Supabase Storage). Previously
+  // this form only accepted a pasted, already-hosted URL — this adds a real
+  // upload path alongside it, writing the same media_library row shape so
+  // every existing reader (this picker, AI recommendations) is unaffected.
+  const [uploadingFile, setUploadingFile] = useState(false)
+
+  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploadingFile(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await fetch('/api/social/media-library/upload', { method: 'POST', body: formData })
+      const data = await res.json()
+      if (!res.ok) { toast.error(data.error || 'Upload failed'); return }
+      setMediaUrl(data.media.url)
+      setMediaLibrary((p) => [data.media, ...p])
+      toast.success('File uploaded.')
+    } finally {
+      setUploadingFile(false)
+      e.target.value = ''
+    }
+  }
+
   // Phase 2 (Social Growth) — Multi-account management (social_accounts,
   // migration 014). Credential entry only — connecting a real OAuth flow
   // per platform is a future step; this lets an operator register an
@@ -336,6 +465,12 @@ export default function ContentStudioPage() {
     }
   }, [])
 
+  // Account Selection fix — the New Post form's Account selector needs the
+  // connected-accounts list even when the "Connected Accounts" panel itself
+  // is closed, so this now also loads once on mount (same pattern as
+  // businessPackages/campaigns/mediaLibrary above). The accountsOpen-gated
+  // load is kept as-is so opening that panel still refreshes it.
+  useEffect(() => { loadAccounts() }, [loadAccounts])
   useEffect(() => { if (accountsOpen) loadAccounts() }, [accountsOpen, loadAccounts])
 
   async function handleSaveAccount(e: React.FormEvent) {
@@ -371,6 +506,41 @@ export default function ContentStudioPage() {
     })
     if (res.ok) await loadAccounts()
     else toast.error('Failed to update account')
+  }
+
+  // Content Operations Priority 5 — approval-gate toggle
+  // (GET/PATCH /api/social/publish-config). Loaded alongside the accounts
+  // panel since it lives in the same "publishing workflow settings" area.
+  const [requireApproval, setRequireApproval] = useState(false)
+  const [approvalLoading, setApprovalLoading] = useState(false)
+
+  const loadPublishConfig = useCallback(async () => {
+    try {
+      const res = await fetch('/api/social/publish-config')
+      if (!res.ok) return
+      const data = await res.json()
+      setRequireApproval(Boolean(data.config?.requireApproval))
+    } catch { /* best-effort — default (false) already matches server default */ }
+  }, [])
+
+  useEffect(() => { if (accountsOpen) loadPublishConfig() }, [accountsOpen, loadPublishConfig])
+
+  async function handleToggleRequireApproval() {
+    const next = !requireApproval
+    setApprovalLoading(true)
+    try {
+      const res = await fetch('/api/social/publish-config', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requireApproval: next }),
+      })
+      const data = await res.json()
+      if (!res.ok) { toast.error(data.error || 'Failed to update setting'); return }
+      setRequireApproval(Boolean(data.config?.requireApproval))
+      toast.success(next ? 'Draft posts now require approval before publishing.' : 'Approval requirement turned off — drafts can publish directly again.')
+    } finally {
+      setApprovalLoading(false)
+    }
   }
 
   // Phase 2 (Social Growth) — Engagement Analytics, fetched lazily per post
@@ -419,6 +589,11 @@ export default function ContentStudioPage() {
   // data, just a second rendering mode grouped by scheduled date instead
   // of a flat list.
   const [calendarView, setCalendarView] = useState(false)
+  // Sprint 1 (Social Publishing) — Calendar: monthly/weekly/daily. Monthly
+  // keeps its own month-cursor (calendarMonth, below); week/day share a
+  // single anchor date they step by 7/1 days.
+  const [calendarGranularity, setCalendarGranularity] = useState<'month' | 'week' | 'day'>('month')
+  const [calendarAnchor, setCalendarAnchor] = useState(() => new Date())
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const d = new Date()
     return { year: d.getFullYear(), month: d.getMonth() }
@@ -437,9 +612,12 @@ export default function ContentStudioPage() {
         platform,
         post_type: mediaUrl.trim() ? 'image' : 'text',
         content: content.trim() || null,
+        account_id: toAccountIdField(selectedAccountId),
         ...(mediaUrl.trim() ? { media: [{ url: mediaUrl.trim(), type: 'image' }] } : {}),
         ...(tags.length ? { hashtags: tags } : {}),
         ...(scheduleAt ? { scheduled_at: new Date(scheduleAt).toISOString() } : {}),
+        ...(selectedPackageId ? { business_package_id: selectedPackageId } : {}),
+        ...(selectedCampaignId ? { campaign_id: selectedCampaignId } : {}),
       }
 
       const res = await fetch('/api/social/posts', {
@@ -467,6 +645,11 @@ export default function ContentStudioPage() {
       setSaving(false)
     }
   }
+
+  // Account Selection fix — the New Post form's Account dropdown and the
+  // "no connected account" disable/validation both derive from this same
+  // filtered list, recomputed whenever `accounts` or `platform` changes.
+  const accountsForPlatform = filterConnectedAccountsForPlatform(accounts, platform)
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -592,9 +775,38 @@ export default function ContentStudioPage() {
           <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
             <h2 className="text-base font-semibold text-gray-900 mb-1">Connected Accounts</h2>
             <p className="text-xs text-gray-500 mb-4">
-              Register an account per platform. Facebook/Instagram publish live once META_PAGE_ACCESS_TOKEN is set in env; LinkedIn/X/Google Business are credential-ready — connecting an account here + the matching env vars enables real publishing and analytics for that platform.
+              Connect a platform via OAuth (recommended — Facebook/Instagram/LinkedIn/Google Business/X), or register an account manually below with a pasted token. OAuth requires that platform&apos;s app credentials to be set in env first; if they aren&apos;t, the Connect button will show an error explaining what&apos;s missing.
             </p>
 
+            <div className="flex flex-wrap gap-2 mb-5 pb-5 border-b border-gray-100">
+              {PLATFORMS.filter((p) => OAUTH_CAPABLE_PLATFORMS.has(p.value)).map((p) => (
+                <a
+                  key={p.value}
+                  href={`/api/social/oauth/${p.value}/start`}
+                  className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  <Link2 className="w-4 h-4" /> Connect {p.label}
+                </a>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-between gap-4 mb-5 pb-5 border-b border-gray-100">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-gray-800 flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-gray-400" /> Require approval before publishing</p>
+                <p className="text-xs text-gray-500 mt-0.5">When on, a draft post cannot be published (manually or via schedule) until it&apos;s explicitly marked Approved.</p>
+              </div>
+              <button
+                type="button"
+                onClick={handleToggleRequireApproval}
+                disabled={approvalLoading}
+                aria-pressed={requireApproval}
+                className={`shrink-0 relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-60 ${requireApproval ? 'bg-blue-600' : 'bg-gray-200'}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${requireApproval ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-500 mb-3">Or register manually with a pasted token:</p>
             <form onSubmit={handleSaveAccount} className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5 pb-5 border-b border-gray-100">
               <select
                 value={acctPlatform}
@@ -657,12 +869,29 @@ export default function ContentStudioPage() {
                       </div>
                       {a.external_account_id && <p className="text-xs text-gray-400 mt-0.5">ID: {a.external_account_id}</p>}
                     </div>
-                    <button
-                      onClick={() => handleToggleAccountActive(a.id, a.is_active)}
-                      className="shrink-0 text-xs text-gray-500 hover:text-gray-800"
-                    >
-                      {a.is_active ? 'Deactivate' : 'Activate'}
-                    </button>
+                    <div className="shrink-0 flex items-center gap-3">
+                      {/* Social Connectivity Priority 1 — connection health.
+                          Re-running OAuth for the same platform upserts the
+                          same social_accounts row (onConflict platform,
+                          external_account_id in the callback route), so this
+                          is the same Connect link as above, just surfaced
+                          inline on the specific unhealthy account instead of
+                          only in the generic per-platform list. */}
+                      {(a.status === 'error' || a.status === 'token_expired') && OAUTH_CAPABLE_PLATFORMS.has(a.platform) && (
+                        <a
+                          href={`/api/social/oauth/${a.platform}/start`}
+                          className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                        >
+                          Reconnect
+                        </a>
+                      )}
+                      <button
+                        onClick={() => handleToggleAccountActive(a.id, a.is_active)}
+                        className="text-xs text-gray-500 hover:text-gray-800"
+                      >
+                        {a.is_active ? 'Deactivate' : 'Activate'}
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -705,17 +934,35 @@ export default function ContentStudioPage() {
               </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Platform<span className="text-red-500 ml-0.5">*</span></label>
                 <select
                   value={platform}
-                  onChange={(e) => setPlatform(e.target.value)}
+                  onChange={(e) => { setPlatform(e.target.value); setSelectedAccountId('') }}
                   aria-label="Platform"
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   {PLATFORMS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
                 </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Account<span className="text-red-500 ml-0.5">*</span></label>
+                <select
+                  value={selectedAccountId}
+                  onChange={(e) => setSelectedAccountId(e.target.value)}
+                  aria-label="Account"
+                  disabled={accountsForPlatform.length === 0}
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+                >
+                  <option value="">Select an account…</option>
+                  {accountsForPlatform.map((a) => <option key={a.id} value={a.id}>{a.display_name}</option>)}
+                </select>
+                {accountsForPlatform.length === 0 && (
+                  <p className="text-xs text-red-600 mt-1 flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3 shrink-0" /> No connected {PLATFORMS.find((p) => p.value === platform)?.label ?? platform} account.
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -738,6 +985,40 @@ export default function ContentStudioPage() {
               <label className="block text-xs font-semibold text-violet-700 mb-1.5 flex items-center gap-1">
                 <Sparkles className="w-3.5 h-3.5" /> AI Content Generator — describe the post
               </label>
+              {businessPackages.length > 0 && (
+                <select
+                  value={selectedPackageId}
+                  onChange={(e) => handleSelectPackage(e.target.value)}
+                  aria-label="Use a Business Package"
+                  className="w-full mb-2 px-2 py-1.5 border border-violet-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-violet-400"
+                >
+                  <option value="">Use a Business Package (optional)…</option>
+                  {businessPackages.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              )}
+              {selectedPackageId && (() => {
+                const pkg = businessPackages.find((p) => p.id === selectedPackageId)
+                return pkg && (pkg.recommendedMedia || pkg.recommendedPostingTime) ? (
+                  <p className="text-xs text-violet-600 mb-2">
+                    {pkg.recommendedMedia && <>📷 {pkg.recommendedMedia} </>}
+                    {pkg.recommendedPostingTime && <>· ⏰ {pkg.recommendedPostingTime}</>}
+                  </p>
+                ) : null
+              })()}
+              {/* End-to-End Campaign Attribution — optional link to an
+                  outbound campaign, so Revenue by Campaign includes this
+                  post's contribution alongside WhatsApp sends. */}
+              {campaigns.length > 0 && (
+                <select
+                  value={selectedCampaignId}
+                  onChange={(e) => setSelectedCampaignId(e.target.value)}
+                  aria-label="Attribute to a Campaign"
+                  className="w-full mb-2 px-2 py-1.5 border border-violet-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-violet-400"
+                >
+                  <option value="">Attribute to a Campaign (optional)…</option>
+                  {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              )}
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -755,7 +1036,31 @@ export default function ContentStudioPage() {
                   {aiGenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Draft'}
                 </button>
               </div>
+              <div className="flex gap-2 mt-2">
+                <select
+                  value={aiVariant}
+                  onChange={(e) => setAiVariant(e.target.value)}
+                  aria-label="Content variant"
+                  className="px-2 py-1.5 border border-violet-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-violet-400"
+                >
+                  {CONTENT_VARIANTS.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
+                </select>
+                <select
+                  value={aiTemplate}
+                  onChange={(e) => setAiTemplate(e.target.value)}
+                  aria-label="Content template"
+                  className="px-2 py-1.5 border border-violet-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-violet-400"
+                >
+                  {CONTENT_TEMPLATES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
               <p className="mt-1.5 text-xs text-violet-600">Drafts copy + hashtags for the platform selected above. Review and edit before saving.</p>
+              {(aiTitle || aiCta) && (
+                <div className="mt-2 text-xs text-violet-700 space-y-0.5">
+                  {aiTitle && <p><span className="font-semibold">Suggested title:</span> {aiTitle}</p>}
+                  {aiCta && <p><span className="font-semibold">Suggested CTA:</span> {aiCta}</p>}
+                </div>
+              )}
 
               <div className="flex flex-wrap gap-2 mt-2">
                 <button
@@ -812,11 +1117,16 @@ export default function ContentStudioPage() {
                     ))}
                   </select>
                 )}
+                <label className="flex items-center justify-center gap-2 w-full mb-1.5 px-3 py-2 border border-dashed border-gray-300 rounded-lg text-xs text-gray-600 hover:bg-gray-50 cursor-pointer">
+                  {uploadingFile ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                  {uploadingFile ? 'Uploading…' : 'Upload an image or video'}
+                  <input type="file" accept="image/*,video/*" onChange={handleFileUpload} disabled={uploadingFile} className="hidden" />
+                </label>
                 <input
                   type="url"
                   value={mediaUrl}
                   onChange={(e) => setMediaUrl(e.target.value)}
-                  placeholder="https://…"
+                  placeholder="…or paste an already-hosted URL"
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
                 {mediaUrl.trim() && (
@@ -845,7 +1155,8 @@ export default function ContentStudioPage() {
               </button>
               <button
                 type="submit"
-                disabled={saving}
+                disabled={saving || accountsForPlatform.length === 0}
+                title={accountsForPlatform.length === 0 ? `No connected ${PLATFORMS.find((p) => p.value === platform)?.label ?? platform} account.` : undefined}
                 className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-60"
               >
                 {saving
@@ -857,28 +1168,64 @@ export default function ContentStudioPage() {
           </form>
         )}
 
-        {/* Content Calendar (Growth Platform Phase 4) — same `posts` data as
-            the list below, grouped by scheduled_at day instead of flat. */}
+        {/* Content Calendar (Growth Platform Phase 4 + Sprint 1 week/day
+            views) — same `posts` data as the list below, grouped by
+            scheduled_at instead of flat. */}
         {calendarView ? (
           <div className="bg-white rounded-xl border border-gray-200 p-5">
             <div className="flex items-center justify-between mb-4">
-              <button
-                onClick={() => setCalendarMonth((p) => p.month === 0 ? { year: p.year - 1, month: 11 } : { year: p.year, month: p.month - 1 })}
-                className="px-2 py-1 text-sm text-gray-500 hover:text-gray-800"
-              >
-                ←
-              </button>
-              <h3 className="text-sm font-semibold text-gray-800">
-                {new Date(calendarMonth.year, calendarMonth.month, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' })}
-              </h3>
-              <button
-                onClick={() => setCalendarMonth((p) => p.month === 11 ? { year: p.year + 1, month: 0 } : { year: p.year, month: p.month + 1 })}
-                className="px-2 py-1 text-sm text-gray-500 hover:text-gray-800"
-              >
-                →
-              </button>
+              <div className="flex gap-1">
+                {(['month', 'week', 'day'] as const).map((g) => (
+                  <button
+                    key={g}
+                    onClick={() => setCalendarGranularity(g)}
+                    className={`px-2.5 py-1 rounded-full text-xs font-medium capitalize ${calendarGranularity === g ? 'bg-violet-600 text-white' : 'bg-gray-50 border border-gray-200 text-gray-500 hover:bg-gray-100'}`}
+                  >
+                    {g}
+                  </button>
+                ))}
+              </div>
+              {calendarGranularity === 'month' ? (
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setCalendarMonth((p) => p.month === 0 ? { year: p.year - 1, month: 11 } : { year: p.year, month: p.month - 1 })}
+                    className="px-2 py-1 text-sm text-gray-500 hover:text-gray-800"
+                  >
+                    ←
+                  </button>
+                  <h3 className="text-sm font-semibold text-gray-800">
+                    {new Date(calendarMonth.year, calendarMonth.month, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' })}
+                  </h3>
+                  <button
+                    onClick={() => setCalendarMonth((p) => p.month === 11 ? { year: p.year + 1, month: 0 } : { year: p.year, month: p.month + 1 })}
+                    className="px-2 py-1 text-sm text-gray-500 hover:text-gray-800"
+                  >
+                    →
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setCalendarAnchor((d) => { const n = new Date(d); n.setDate(n.getDate() - (calendarGranularity === 'week' ? 7 : 1)); return n })}
+                    className="px-2 py-1 text-sm text-gray-500 hover:text-gray-800"
+                  >
+                    ←
+                  </button>
+                  <h3 className="text-sm font-semibold text-gray-800">
+                    {calendarGranularity === 'day'
+                      ? calendarAnchor.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+                      : `Week of ${new Date(calendarAnchor.getFullYear(), calendarAnchor.getMonth(), calendarAnchor.getDate() - calendarAnchor.getDay()).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
+                  </h3>
+                  <button
+                    onClick={() => setCalendarAnchor((d) => { const n = new Date(d); n.setDate(n.getDate() + (calendarGranularity === 'week' ? 7 : 1)); return n })}
+                    className="px-2 py-1 text-sm text-gray-500 hover:text-gray-800"
+                  >
+                    →
+                  </button>
+                </div>
+              )}
             </div>
-            {(() => {
+            {calendarGranularity === 'month' && (() => {
               const { year, month } = calendarMonth
               const firstDay = new Date(year, month, 1).getDay()
               const daysInMonth = new Date(year, month + 1, 0).getDate()
@@ -913,6 +1260,52 @@ export default function ContentStudioPage() {
                     </div>
                   ))}
                 </div>
+              )
+            })()}
+            {calendarGranularity === 'week' && (() => {
+              const weekStart = new Date(calendarAnchor.getFullYear(), calendarAnchor.getMonth(), calendarAnchor.getDate() - calendarAnchor.getDay())
+              const days = Array.from({ length: 7 }, (_, i) => {
+                const d = new Date(weekStart); d.setDate(d.getDate() + i); return d
+              })
+              return (
+                <div className="grid grid-cols-7 gap-1.5 text-xs">
+                  {days.map((d) => {
+                    const dayPosts = posts.filter((p) => p.scheduled_at && new Date(p.scheduled_at).toDateString() === d.toDateString())
+                    return (
+                      <div key={d.toISOString()} className="min-h-[120px] rounded-lg border border-gray-100 p-1.5">
+                        <p className="text-gray-400 mb-1">{d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric' })}</p>
+                        {dayPosts.map((p) => (
+                          <p key={p.id} className={`truncate rounded px-1 py-0.5 mb-0.5 ${STATUS_STYLES[p.status]}`} title={p.content ?? ''}>
+                            {new Date(p.scheduled_at as string).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} · {PLATFORMS.find((pl) => pl.value === p.platform)?.label ?? p.platform}
+                          </p>
+                        ))}
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })()}
+            {calendarGranularity === 'day' && (() => {
+              const dayPosts = posts
+                .filter((p) => p.scheduled_at && new Date(p.scheduled_at).toDateString() === calendarAnchor.toDateString())
+                .sort((a, b) => new Date(a.scheduled_at as string).getTime() - new Date(b.scheduled_at as string).getTime())
+              return dayPosts.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-8">No posts scheduled for this day.</p>
+              ) : (
+                <ul className="divide-y divide-gray-50">
+                  {dayPosts.map((p) => (
+                    <li key={p.id} className="py-2.5 flex items-center gap-3">
+                      <span className="text-xs text-gray-400 w-14 shrink-0">
+                        {new Date(p.scheduled_at as string).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      <span className="text-xs font-medium text-gray-500 w-24 shrink-0">
+                        {PLATFORMS.find((pl) => pl.value === p.platform)?.label ?? p.platform}
+                      </span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${STATUS_STYLES[p.status]}`}>{p.status}</span>
+                      <span className="text-sm text-gray-700 truncate flex-1">{p.content}</span>
+                    </li>
+                  ))}
+                </ul>
               )
             })()}
           </div>
@@ -984,7 +1377,7 @@ export default function ContentStudioPage() {
                         <FileText className="w-3 h-3" /> {new Date(post.created_at).toLocaleDateString()}
                       </p>
                       {post.created_by && <p className="text-[11px] text-gray-300 mt-0.5">{post.created_by}</p>}
-                      {(post.status === 'draft' || post.status === 'scheduled') && (
+                      {(post.status === 'draft' || (post.status === 'scheduled' && !post.approved_at)) && (
                         <button
                           onClick={() => handlePostAction(post.id, 'approve')}
                           disabled={actioningId === post.id}
@@ -992,6 +1385,11 @@ export default function ContentStudioPage() {
                         >
                           {actioningId === post.id ? 'Approving…' : 'Approve'}
                         </button>
+                      )}
+                      {post.status === 'scheduled' && post.approved_at && (
+                        <span className="mt-2 inline-block text-xs px-2 py-1 rounded bg-emerald-50 text-emerald-700">
+                          Approved — will publish at schedule
+                        </span>
                       )}
                       {(post.status === 'draft' || post.status === 'approved' || post.status === 'scheduled' || post.status === 'failed') && (
                         <button

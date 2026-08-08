@@ -26,7 +26,7 @@
 // in Notes/Preferred Channel by the person filling it in.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { X, AlertTriangle } from 'lucide-react'
 
 export interface SourceOption {
@@ -66,13 +66,17 @@ interface FormState {
   preferredChannel: string
   sourceLabel: string
   notes: string
+  // Business Package Engine (migration 044) — '' means "none selected".
+  businessPackageId: string
 }
 
 const EMPTY_FORM: FormState = {
   name: '', phone: '', email: '', eventType: '', eventDate: '', guests: '',
   budget: '', company: '', city: '', state: '', preferredChannel: '',
-  sourceLabel: SOURCE_OPTIONS[0].label, notes: '',
+  sourceLabel: SOURCE_OPTIONS[0].label, notes: '', businessPackageId: '',
 }
+
+interface BusinessPackageOption { id: string; name: string }
 
 const inputClass = 'mt-1 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900/10'
 const labelClass = 'text-xs font-medium text-gray-500'
@@ -88,6 +92,19 @@ export function NewLeadModal({
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [duplicate, setDuplicate] = useState<{ leadId: string } | null>(null)
+  const [businessPackages, setBusinessPackages] = useState<BusinessPackageOption[]>([])
+
+  // Business Package Engine — "reusable everywhere instead of manually
+  // selecting categories." Reuses the existing GET /api/business-packages
+  // list route (active only); best-effort, never blocks lead creation.
+  useEffect(() => {
+    fetch('/api/business-packages?status=active')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.packages) setBusinessPackages(data.packages.map((p: any) => ({ id: p.id, name: p.name })))
+      })
+      .catch(() => {})
+  }, [])
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }))
@@ -128,6 +145,7 @@ export function NewLeadModal({
           preferred_channel: form.preferredChannel.trim() || null,
           source: source.dbValue,
           notes: form.notes.trim() || null,
+          business_package_id: form.businessPackageId || null,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -242,6 +260,16 @@ export function NewLeadModal({
             <select value={form.sourceLabel} onChange={(e) => set('sourceLabel', e.target.value)} className={inputClass}>
               {SOURCE_OPTIONS.map((o) => (
                 <option key={o.label} value={o.label}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className={labelClass}>Business Package</label>
+            <select value={form.businessPackageId} onChange={(e) => set('businessPackageId', e.target.value)} className={inputClass}>
+              <option value="">— None —</option>
+              {businessPackages.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
           </div>

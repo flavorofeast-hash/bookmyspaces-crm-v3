@@ -23,6 +23,7 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { sendWhatsAppText } from '@/lib/whatsapp/send-message'
 import { logJourneyEvent } from '@/lib/customers/journey'
 import { logger } from '@/lib/logger'
+import { canSendAutomatedMessage } from '@/lib/messaging/orchestrator'
 
 type Result<T> = { ok: true; value: T } | { ok: false; error: string }
 
@@ -58,7 +59,11 @@ export interface DripEnrollmentRow {
 // reached one of these reservation statuses no longer needs nurturing.
 const CONVERTED_RESERVATION_STATUSES = ['confirmed', 'checked_in', 'checked_out']
 
-function renderTemplate(template: string, name: string | null): string {
+// Exported so other template-rendering call sites (e.g. the Business
+// Package Engine's WhatsApp/email templates — src/lib/business-packages/
+// business-package-service.ts) reuse the exact same {{name}} token
+// convention instead of a second implementation.
+export function renderTemplate(template: string, name: string | null): string {
   return template.replace(/\{\{\s*name\s*\}\}/gi, name || 'there')
 }
 
@@ -242,6 +247,15 @@ export async function advanceDueDripSteps(limit = 20): Promise<AdvanceResult> {
       const { data: lead } = await db.from('leads').select('id, name, phone, whatsapp_opted_in').eq('id', enrollment.lead_id).maybeSingle()
 
       if (step.channel === 'whatsapp' && lead?.phone && lead.whatsapp_opted_in) {
+        // Production Stabilization (Priority 2) — Messaging Orchestrator:
+        // defer this step (leave current_step/next_send_at untouched, so
+        // the next advanceDueDripSteps() run retries it) if a higher-or-
+        // equal priority automated message already went out to this lead
+        // recently via Marketing Automations or the AI Follow-up Assistant.
+        if (!(await canSendAutomatedMessage(enrollment.lead_id, 'drip_sequence'))) {
+          result.skipped++
+          continue
+        }
         const message = renderTemplate(step.message_template, lead.name)
         const sendResult = await sendWhatsAppText(lead.phone, message, { leadId: enrollment.lead_id })
         if (sendResult.success) {

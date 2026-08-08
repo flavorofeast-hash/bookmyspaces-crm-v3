@@ -18,7 +18,7 @@
 
 import type {
   SocialAdapter, NormalizedInteraction, PublishInput,
-  PublishResult, ReplyResult, MetricsResult,
+  PublishResult, ReplyResult, MetricsResult, PublishCredentials,
 } from '@/lib/social/types'
 
 const API = 'https://api.linkedin.com/v2'
@@ -47,15 +47,24 @@ export class LinkedInAdapter implements SocialAdapter {
     return []
   }
 
-  async publishPost(input: PublishInput): Promise<PublishResult> {
-    if (!this.isConfigured()) return notConfigured()
+  async publishPost(input: PublishInput, credentials?: PublishCredentials): Promise<PublishResult> {
+    // OAuth-connected account's token takes priority over the static env
+    // fallback. LINKEDIN_ORGANIZATION_URN stays env-configured regardless of
+    // credentials source: fetchConnectedIdentity() stores the connected
+    // MEMBER's identity (from /v2/userinfo), not the organization/Company
+    // Page URN a post is authored as — a different concept (would need the
+    // organizationAcls endpoint to resolve, not implemented today; see this
+    // file's header comment).
+    const accessToken = credentials?.accessToken ?? process.env.LINKEDIN_ACCESS_TOKEN
+    if (!accessToken) return notConfigured()
     const author = process.env.LINKEDIN_ORGANIZATION_URN
+    if (!author) return { ok: false, error: 'linkedin_not_configured: set LINKEDIN_ORGANIZATION_URN env var' }
     try {
       const res = await fetch(`${API}/ugcPosts`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.LINKEDIN_ACCESS_TOKEN}`,
+          Authorization: `Bearer ${accessToken}`,
           'X-Restli-Protocol-Version': '2.0.0',
         },
         body: JSON.stringify({

@@ -50,6 +50,10 @@ const links = [
   { href: '/whatsapp/drip-sequences', label: 'Drip Sequences' },
   { href: '/proposals', label: 'Proposals' },
   { href: '/campaigns', label: 'Campaigns' },
+  // Business Package Engine — configurable marketing packages (replaces
+  // hardcoded campaign templates). Same "add it to the nav at build time"
+  // discipline as every other page in this list.
+  { href: '/business-packages', label: 'Business Packages' },
   { href: '/social', label: 'Social' },
   { href: '/content-studio', label: 'Content Studio' },
   // Growth Engine Epic 1 — Review Engine. Same "add it to the nav at build

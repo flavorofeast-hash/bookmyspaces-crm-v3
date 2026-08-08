@@ -11,7 +11,16 @@
 // NOT this adapter's parseWebhook), so verifyWebhook/parseWebhook are
 // intentionally inert here.
 //
-// Required env when connecting for real:
+// Location resolution (Social OAuth -> Publishing credential fix, Google
+// Business follow-up): oauth-service.ts's fetchConnectedIdentity() now
+// discovers the connected Business Account's Location(s) at OAuth-connect
+// time and persists the resolved "accounts/{accountId}/locations/{id}" into
+// social_accounts.external_account_id — resolvePublishCredentials() (see
+// refresh-service.ts) surfaces that as credentials.externalAccountId, which
+// publishPost() below prefers. GOOGLE_BUSINESS_LOCATION_ID remains only as a
+// legacy fallback for a post with no selected account_id.
+//
+// Required env for the legacy (no OAuth account selected) fallback path:
 //   GOOGLE_BUSINESS_ACCESS_TOKEN — OAuth 2.0 access token (refreshed
 //                                  out-of-band; this adapter does not
 //                                  manage the refresh-token flow itself)
@@ -20,7 +29,7 @@
 
 import type {
   SocialAdapter, NormalizedInteraction, PublishInput,
-  PublishResult, ReplyResult, MetricsResult,
+  PublishResult, ReplyResult, MetricsResult, PublishCredentials,
 } from '@/lib/social/types'
 
 const MYBUSINESS_API = 'https://mybusinessbusinessinformation.googleapis.com/v1'
@@ -47,15 +56,21 @@ export class GoogleBusinessAdapter implements SocialAdapter {
     return []
   }
 
-  async publishPost(input: PublishInput): Promise<PublishResult> {
-    if (!this.isConfigured()) return notConfigured()
-    const location = process.env.GOOGLE_BUSINESS_LOCATION_ID
+  async publishPost(input: PublishInput, credentials?: PublishCredentials): Promise<PublishResult> {
+    // OAuth-connected account's token AND resolved Location id both take
+    // priority over the static env fallback — see this file's header
+    // comment. GOOGLE_BUSINESS_LOCATION_ID is only consulted for a post with
+    // no selected account_id (legacy/backward-compatible path).
+    const accessToken = credentials?.accessToken ?? process.env.GOOGLE_BUSINESS_ACCESS_TOKEN
+    if (!accessToken) return notConfigured()
+    const location = credentials?.externalAccountId ?? process.env.GOOGLE_BUSINESS_LOCATION_ID
+    if (!location) return { ok: false, error: 'google_business_not_configured: set GOOGLE_BUSINESS_LOCATION_ID env var' }
     try {
       const res = await fetch(`${MYBUSINESS_API}/${location}/localPosts`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.GOOGLE_BUSINESS_ACCESS_TOKEN}`,
+          Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
           languageCode: 'en-US',

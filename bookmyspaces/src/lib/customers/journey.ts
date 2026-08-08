@@ -30,7 +30,67 @@ export const JOURNEY_ACTIONS = {
   REFERRAL_ATTRIBUTED: 'referral_attributed',
   REPEAT_BOOKING: 'repeat_booking_reached',
   VIP_REACHED: 'vip_tier_reached',
+  // Event Post-Experience Lifecycle (non-reservation bookings — accepted
+  // proposals with no linked reservation: weddings, birthdays, corporate,
+  // rooftop events). Mirrors the reservation journey's stages so the
+  // Timeline reads consistently regardless of booking type.
+  EVENT_THANK_YOU_SENT: 'event_thank_you_sent',
+  EVENT_REFERRAL_INVITED: 'event_referral_invited',
+  EVENT_LOYALTY_AWARDED: 'event_loyalty_awarded',
+  // Business Package Engine — logged wherever a lead/proposal/reservation
+  // is tagged with (or inherits) a business_package_id, so the Customer
+  // Timeline shows package attribution without any new UI (activity_logs
+  // rows with an unrecognized action already render generically — see this
+  // file's header comment).
+  BUSINESS_PACKAGE_ASSIGNED: 'business_package_assigned',
+  // Customer Loyalty & Referral Experience — logged whenever awardPoints()
+  // (loyalty.ts) actually sends the customer a WhatsApp update. Distinct
+  // from EVENT_LOYALTY_AWARDED below (which documents WHY points were
+  // given, from the event-lifecycle cron specifically) — this documents
+  // that the customer was notified, regardless of which caller triggered
+  // the award (reservation sync, event-lifecycle, or a manual admin
+  // adjustment).
+  LOYALTY_POINTS_AWARDED: 'loyalty_points_awarded',
+  // Generalizes VIP_REACHED to any tier transition (Bronze->Silver->Gold),
+  // logged in addition to VIP_REACHED (kept as-is, unchanged) when the tier
+  // reached is VIP specifically.
+  LOYALTY_TIER_UPGRADED: 'loyalty_tier_upgraded',
+  // Referral Engine — a reward's status changed (created as 'earned',
+  // promoted from 'pending', or an operator's manual PATCH), so the
+  // Timeline shows the referrer's reward history without new UI.
+  REFERRAL_REWARD_STATUS_CHANGED: 'referral_reward_status_changed',
+  // Messaging Orchestrator (Production Stabilization) — these three sends
+  // previously logged nothing to activity_logs at all, leaving the shared
+  // orchestrator with no way to observe them. Added purely so
+  // canSendAutomatedMessage() (src/lib/messaging/orchestrator.ts) has a
+  // record to check against; no new send/track behavior otherwise.
+  PRE_ARRIVAL_SENT: 'whatsapp_pre_arrival_sent',
+  POST_STAY_THANK_YOU_SENT: 'whatsapp_post_stay_thank_you_sent',
+  REVIEW_REMINDER_SENT: 'whatsapp_review_reminder_sent',
 } as const
+
+/**
+ * Cooldown/dedup guard shared by every automated WhatsApp trigger that fires
+ * off a recurring cron (birthday, win-back, referral request, event
+ * lifecycle, ...): has this exact action already been logged for this lead
+ * within the last N days? Extracted from marketing-automations/route.ts
+ * (was a private, duplicated-in-spirit helper) so the new Event
+ * Post-Experience Lifecycle can reuse the identical idiom — including
+ * reusing the SAME action name where appropriate (e.g.
+ * 'whatsapp_referral_request_sent') so two different triggers never double-
+ * ask the same lead within the cooldown window.
+ */
+export async function alreadySentWithin(leadId: string, action: string, cooldownDays: number): Promise<boolean> {
+  const db = getSupabaseAdmin()
+  const since = new Date(Date.now() - cooldownDays * 86400000).toISOString()
+  const { count } = await db
+    .from('activity_logs')
+    .select('id', { count: 'exact', head: true })
+    .eq('lead_id', leadId)
+    .eq('action', action)
+    .gte('created_at', since)
+  return (count ?? 0) > 0
+}
 
 /**
  * Logs a journey event onto the lead's existing activity trail. Same

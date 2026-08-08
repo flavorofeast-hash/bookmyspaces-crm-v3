@@ -4,6 +4,7 @@ import { getSupabaseAdmin } from './supabase'
 import { logger } from './logger'
 import { getActivePrompt } from '@/lib/ai/prompt-service'
 import { getSettingsSection } from '@/lib/settings/settings-service'
+import { retrieveKnowledgeByVector, formatKnowledgeResults } from '@/lib/knowledge/knowledge-retrieval'
 
 // Lazy initialization — prevents build-time crashes
 let _anthropic: Anthropic | null = null
@@ -260,12 +261,10 @@ async function retrieveFromKnowledgeSources(keywords: string[], limit: number): 
 
 export async function retrieveRelevantKnowledge(query: string, limit = 4): Promise<string> {
   try {
-    const supabaseAdmin = getSupabaseAdmin()
-
     // SECURITY (RC hardening): these keywords are built directly from raw
     // customer chat text (this function is reachable from the public,
     // unauthenticated /api/chat route) and get interpolated into a
-    // PostgREST .or() filter string below and in retrieveFromKnowledgeSources().
+    // PostgREST .or() filter string in retrieveFromKnowledgeSources().
     // Comma/paren are that filter language's clause-separator/grouping
     // syntax, so an unescaped keyword could inject extra clauses (e.g. widen
     // the match to the whole table). Stripping them keeps every keyword a
@@ -282,32 +281,19 @@ export async function retrieveRelevantKnowledge(query: string, limit = 4): Promi
 
     if (!keywords.length) return ''
 
-    // Simple text search instead of vector search
-    const { data, error } = await supabaseAdmin
-      .from('knowledge_chunks')
-      .select('content, source_file, category')
-      .or(
-        keywords
-          .map(k => `content.ilike.%${k}%`)
-          .join(',')
-      )
-      .limit(limit)
-
-    const chunksContext = (!error && data?.length)
-      ? data
-          .map(
-            (c: {
-              content: string
-              source_file: string
-              category: string
-            }) =>
-              `[${(c.category || 'INFO').toUpperCase()} — ${c.source_file}]\n${c.content}`
-          )
-          .join('\n\n---\n\n')
-      : ''
+    // Production Stabilization (Priority 1) — knowledge_chunks now uses the
+    // real vector-search implementation (src/lib/knowledge/knowledge-
+    // retrieval.ts, the existing match_knowledge_chunks RPC) instead of the
+    // former ILIKE keyword fallback. Same degrade-to-empty-string contract
+    // on any failure (missing OPENAI_API_KEY, RPC error), so this route's
+    // existing error handling is unchanged.
+    const vectorResults = await retrieveKnowledgeByVector(query, { matchCount: limit })
+    const chunksContext = formatKnowledgeResults(vectorResults)
 
     // Curated CRM-edited entries rank first — they are operator-maintained
-    // truth (pricing, policies), ahead of document-derived chunks.
+    // truth (pricing, policies), ahead of document-derived chunks. Left on
+    // its existing ILIKE lookup — a distinct table (knowledge_sources) with
+    // no embedding column, out of scope for this RPC.
     const sourcesContext = await retrieveFromKnowledgeSources(keywords, limit)
     return [sourcesContext, chunksContext].filter(Boolean).join('\n\n---\n\n')
   } catch {

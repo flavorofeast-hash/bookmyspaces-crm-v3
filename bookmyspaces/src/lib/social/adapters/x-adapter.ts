@@ -16,7 +16,7 @@
 import crypto from 'crypto'
 import type {
   SocialAdapter, NormalizedInteraction, PublishInput,
-  PublishResult, ReplyResult, MetricsResult,
+  PublishResult, ReplyResult, MetricsResult, PublishCredentials,
 } from '@/lib/social/types'
 
 const API = 'https://api.twitter.com/2'
@@ -54,14 +54,19 @@ export class XAdapter implements SocialAdapter {
     return []
   }
 
-  async publishPost(input: PublishInput): Promise<PublishResult> {
-    if (!this.isConfigured()) return notConfigured()
+  async publishPost(input: PublishInput, credentials?: PublishCredentials): Promise<PublishResult> {
+    // OAuth-connected account's token takes priority over the static env
+    // fallback. X posts as whoever the bearer token belongs to — no separate
+    // target id needed (unlike Meta's page/IG id), so externalAccountId is
+    // unused here.
+    const accessToken = credentials?.accessToken ?? process.env.X_ACCESS_TOKEN
+    if (!accessToken) return notConfigured()
     try {
       const res = await fetch(`${API}/tweets`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.X_ACCESS_TOKEN}`,
+          Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({ text: input.content ?? '' }),
       })

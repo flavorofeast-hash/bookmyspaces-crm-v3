@@ -35,6 +35,7 @@ import { checkAvailability, type AvailabilityCheckResult } from './availability-
 import { createReservation, transitionReservationStatus, getReservationByProposalId, type CreateReservationInput, type CreateReservationResult, type TransitionResult, type PricedAddonLine } from './reservation-service'
 import { getInventoryItemRate } from '@/lib/pricing/pricing-service'
 import { getMealPlanById, getAddonServicesByIds } from './property-service'
+import { logJourneyEvent, JOURNEY_ACTIONS } from '@/lib/customers/journey'
 
 export interface PriceQuote {
   inventoryItemId: string
@@ -315,12 +316,20 @@ export async function createReservationWithQuote(
   // stays immutable. NULL for a walk-in reservation with no proposalId.
   let packageName = input.packageName ?? null
   let venue = input.venue ?? null
+  // Business Package Engine (migration 044) — same inherit-at-creation-time
+  // snapshot as packageName/venue above, not a separate lookup: whichever
+  // Business Package the originating proposal was tagged with (directly, or
+  // itself inherited from the lead at proposal-creation time) carries
+  // forward onto the reservation, so "every reservation/event should
+  // inherit the Business Package" holds without reservation-workflow.ts
+  // needing its own resolution logic.
+  let businessPackageId = input.businessPackageId ?? null
 
   if (input.proposalId) {
     const supabase = getSupabaseAdmin()
     const { data: proposal } = await supabase
       .from('proposals')
-      .select('status, total_price, base_price, package_name, venue')
+      .select('status, total_price, base_price, package_name, venue, business_package_id')
       .eq('id', input.proposalId)
       .maybeSingle()
 
@@ -332,6 +341,7 @@ export async function createReservationWithQuote(
     if (proposal) {
       packageName = proposal.package_name ?? packageName
       venue = proposal.venue ?? venue
+      businessPackageId = proposal.business_package_id ?? businessPackageId
     }
   }
 
@@ -374,6 +384,7 @@ export async function createReservationWithQuote(
     addonLines: quote.addonLines,
     packageName,
     venue,
+    businessPackageId,
   })
 
   let proposalLinkError: string | undefined
@@ -385,6 +396,19 @@ export async function createReservationWithQuote(
       `Reservation created for ${input.checkInDate} -> ${input.checkOutDate}`,
       { reservationId: reservationResult.reservation.id, subtotal: quote.subtotal, finalRoomRate, pricingSource, mealPlanCharge: quote.mealPlanCharge, addonsCharge: quote.addonsCharge, isComplete: quote.isComplete }
     )
+
+    // Business Package Engine — Customer Timeline requirement ("Timeline
+    // should record Business Package events"). Best-effort, same
+    // never-blocks-the-caller contract as logActivity()/logJourneyEvent()
+    // everywhere else in this codebase.
+    if (businessPackageId) {
+      await logJourneyEvent(
+        input.crmLeadId ?? input.customerId ?? null,
+        JOURNEY_ACTIONS.BUSINESS_PACKAGE_ASSIGNED,
+        'Reservation inherited Business Package',
+        { reservationId: reservationResult.reservation.id, businessPackageId }
+      )
+    }
 
     // Production fix: proposals.reservation_id link-back. Root cause — the
     // accepted-proposal -> reservation flow has only ever set

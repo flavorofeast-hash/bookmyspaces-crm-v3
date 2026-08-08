@@ -14,8 +14,27 @@ import Link from 'next/link'
 import {
   MessageSquare, Globe, Mail, Phone, Bot, User, Send, RefreshCw,
   AlertCircle, PauseCircle, PlayCircle, CheckCircle2, Inbox as InboxIcon,
-  Sparkles, FileText, CalendarPlus,
+  Sparkles, FileText, CalendarPlus, Layers, Star, MessageCircle,
 } from 'lucide-react'
+
+// Social Operations Priority 4 — Unified Feed tab. Merges social_interactions
+// + reviews + this same unified_conversations list (GET /api/social/
+// unified-inbox) into one recency-sorted read-only feed, sitting alongside
+// (not replacing) the existing WhatsApp/website conversation list above —
+// same page, an additional tab, not a second Inbox route.
+interface UnifiedFeedItem {
+  source: 'social_interaction' | 'review' | 'conversation'
+  id: string
+  platform: string
+  kind: string
+  authorName: string | null
+  preview: string | null
+  status: string | null
+  sentiment: string | null
+  intent: string | null
+  customerId: string | null
+  createdAt: string
+}
 
 interface LeadInfo { id?: string; name: string | null; phone: string | null; email: string | null; status?: string | null }
 interface ChannelInfo { channelType: string; identity: string }
@@ -86,6 +105,29 @@ export default function InboxPage() {
   const [suggesting, setSuggesting] = useState(false)
   const [suggestError, setSuggestError] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  // Social Operations Priority 4 — Unified Feed tab (separate from the
+  // status filter tabs above; toggling it swaps the left list's content,
+  // the thread panel on the right is unaffected/untouched).
+  const [feedMode, setFeedMode] = useState(false)
+  const [feedItems, setFeedItems] = useState<UnifiedFeedItem[]>([])
+  const [feedLoading, setFeedLoading] = useState(false)
+
+  const loadFeed = useCallback(async () => {
+    setFeedLoading(true)
+    try {
+      const res = await fetch('/api/social/unified-inbox?limit=50')
+      if (!res.ok) throw new Error(String(res.status))
+      const json = await res.json()
+      setFeedItems(Array.isArray(json.items) ? json.items : [])
+    } catch {
+      setFeedItems([])
+    } finally {
+      setFeedLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { if (feedMode) loadFeed() }, [feedMode, loadFeed])
 
   const loadList = useCallback(async () => {
     setError(null)
@@ -205,6 +247,37 @@ export default function InboxPage() {
     if (res.ok) { await loadThread(selectedId); await loadList() }
   }
 
+  // Production Stabilization (Priority 5) — Inbox Conversation Assignment.
+  // Reuses leads.assigned_to via the new PATCH /api/inbox/[id] handler; the
+  // existing conversation list/detail refresh (loadThread/loadList) already
+  // re-pulls assignedOwner, so no separate local-state patch is needed.
+  const [assignError, setAssignError] = useState<string | null>(null)
+  async function assignConversation() {
+    if (!selectedId) return
+    const current = selected?.assignedOwner ?? ''
+    const input = window.prompt('Assign this conversation to (leave blank to unassign):', current)
+    if (input === null) return // cancelled
+    const assigned_to = input.trim() || null
+    setAssignError(null)
+    try {
+      const res = await fetch(`/api/inbox/${selectedId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assigned_to }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok) throw new Error(json?.error || 'Failed to update assignment')
+      // Update the open thread's header immediately rather than relying on
+      // loadThread()'s list-merge (GET /api/inbox/[id] doesn't itself return
+      // assignedOwner — only the list endpoint does); loadList() below keeps
+      // the left-hand conversation list in sync too.
+      setSelected((prev) => (prev ? { ...prev, assignedOwner: json?.lead?.assigned_to ?? null } : prev))
+      await loadList()
+    } catch (err) {
+      setAssignError(err instanceof Error ? err.message : 'Failed to update assignment')
+    }
+  }
+
   return (
     <div className="h-[calc(100vh-56px)] flex bg-gray-50">
       {/* Conversation list */}
@@ -215,19 +288,94 @@ export default function InboxPage() {
           </h1>
           <button onClick={loadList} className="text-gray-400 hover:text-gray-700"><RefreshCw className="w-4 h-4" /></button>
         </div>
-        <div className="px-3 py-2 border-b border-gray-100 flex gap-1">
+        <div className="px-3 py-2 border-b border-gray-100 flex gap-1 flex-wrap">
           {([['', 'All'], ['open', 'Open'], ['escalated', 'Escalated'], ['closed', 'Closed']] as const).map(([v, label]) => (
             <button
               key={v}
-              onClick={() => setStatusFilter(v)}
-              className={`px-3 py-1 rounded-full text-xs font-medium ${statusFilter === v ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+              onClick={() => { setFeedMode(false); setStatusFilter(v) }}
+              className={`px-3 py-1 rounded-full text-xs font-medium ${!feedMode && statusFilter === v ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
             >
               {label}
             </button>
           ))}
+          <button
+            onClick={() => setFeedMode(true)}
+            title="Merged comments, mentions, reviews, and DMs across every platform"
+            className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium ${feedMode ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+          >
+            <Layers className="w-3 h-3" /> Feed
+          </button>
         </div>
         <div className="flex-1 overflow-y-auto">
-          {loading ? (
+          {feedMode ? (
+            feedLoading ? (
+              <div className="p-6 text-center text-sm text-gray-400">Loading…</div>
+            ) : feedItems.length === 0 ? (
+              <div className="p-6 text-center text-sm text-gray-400">
+                No social comments, mentions, reviews, or conversations yet.
+              </div>
+            ) : (
+              feedItems.map((item) => {
+                // Reuses the existing per-source reply surfaces (Social CRM
+                // page for interactions, Reviews page for reviews) rather
+                // than building a second reply UI here — this feed is a
+                // merged read model; conversations are the one source this
+                // same page already handles, so those jump straight into
+                // the existing thread panel below instead of navigating away.
+                const isConversation = item.source === 'conversation'
+                const content = (
+                  <>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        {item.source === 'review' ? (
+                          <Star className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                        ) : item.source === 'conversation' ? (
+                          <MessageCircle className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                        ) : (
+                          <ChannelIcon type={item.platform} className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                        )}
+                        <span className="text-sm font-medium text-gray-900 truncate">
+                          {item.authorName || item.platform}
+                        </span>
+                        <span className="text-xs text-gray-400 capitalize shrink-0">{item.kind.replace('_', ' ')}</span>
+                      </div>
+                      <span className="text-xs text-gray-400 shrink-0">{timeAgo(item.createdAt)}</span>
+                    </div>
+                    {item.preview && <p className="text-xs text-gray-500 mt-1 truncate">{item.preview}</p>}
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                      {item.intent && <span className="text-xs px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 capitalize">{item.intent.replace('_', ' ')}</span>}
+                      {item.sentiment && <span className={`text-xs px-1.5 py-0.5 rounded capitalize ${item.sentiment === 'positive' ? 'bg-emerald-50 text-emerald-700' : item.sentiment === 'negative' ? 'bg-red-50 text-red-700' : 'bg-gray-100 text-gray-500'}`}>{item.sentiment}</span>}
+                      {item.status && <span className="text-xs text-gray-400 capitalize">{item.status.replace('_', ' ')}</span>}
+                      {item.customerId && <span className="text-xs text-blue-600">Linked to CRM</span>}
+                      <span className="text-xs text-blue-500 ml-auto">
+                        {isConversation ? 'Open thread →' : item.source === 'review' ? 'Respond in Reviews →' : 'Respond in Social →'}
+                      </span>
+                    </div>
+                  </>
+                )
+                if (isConversation) {
+                  return (
+                    <button
+                      key={`${item.source}-${item.id}`}
+                      onClick={() => { setFeedMode(false); setSelectedId(item.id) }}
+                      className="w-full text-left px-4 py-3 border-b border-gray-50 hover:bg-gray-50"
+                    >
+                      {content}
+                    </button>
+                  )
+                }
+                return (
+                  <Link
+                    key={`${item.source}-${item.id}`}
+                    href={item.source === 'review' ? '/reviews' : '/social'}
+                    className="block px-4 py-3 border-b border-gray-50 hover:bg-gray-50"
+                  >
+                    {content}
+                  </Link>
+                )
+              })
+            )
+          ) : loading ? (
             <div className="p-6 text-center text-sm text-gray-400">Loading…</div>
           ) : conversations.length === 0 ? (
             <div className="p-6 text-center text-sm text-gray-400">
@@ -315,8 +463,16 @@ export default function InboxPage() {
                 <p className="text-xs text-gray-500 truncate">
                   {selected?.channels?.map((ch) => `${ch.channelType}: ${ch.identity}`).join(' · ')}
                 </p>
+                {assignError && <p className="text-xs text-red-600 mt-0.5">{assignError}</p>}
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => void assignConversation()}
+                  title="Assign this conversation's lead to a team member"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-violet-50 text-violet-700 hover:bg-violet-100"
+                >
+                  <User className="w-3.5 h-3.5" /> {selected?.assignedOwner ? `Assigned: ${selected.assignedOwner}` : 'Assign'}
+                </button>
                 {(() => {
                   const lead = leadOf(selected ?? ({} as Conversation))
                   const params = new URLSearchParams()

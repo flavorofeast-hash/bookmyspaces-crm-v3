@@ -59,6 +59,8 @@ export interface CreateReservationInput {
   /** Reservation commercial snapshot (migration 029). Copied from the originating proposal's package_name/venue by reservation-workflow.ts's createReservationWithQuote() when proposalId resolves to an accepted proposal — createReservation() itself just persists whatever it's given, same as every other field here. */
   packageName?: string | null
   venue?: string | null
+  /** Business Package Engine (migration 044). Same inherit-at-creation-time convention as packageName/venue above — createReservationWithQuote() copies it from the originating proposal; createReservation() itself just persists whatever it's given. */
+  businessPackageId?: string | null
 }
 
 export type CreateReservationResult =
@@ -122,6 +124,8 @@ export async function createReservation(input: CreateReservationInput): Promise<
       // Reservation commercial snapshot (migration 029) — see CreateReservationInput comment above.
       package_name: input.packageName ?? null,
       venue: input.venue ?? null,
+      // Business Package Engine (migration 044) — see CreateReservationInput comment above.
+      business_package_id: input.businessPackageId ?? null,
     })
     .select('*')
     .single()
@@ -363,5 +367,6 @@ function mapRow(row: Record<string, any>): Reservation {
     invoiceId: row.invoice_id,
     packageName: row.package_name ?? null,
     venue: row.venue ?? null,
+    businessPackageId: row.business_package_id ?? null,
   }
 }

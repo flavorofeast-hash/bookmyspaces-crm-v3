@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getSupabaseAdmin } from './supabase'
+import { getCampaignROI, type CampaignROI } from './analytics/revenue-intelligence'
 
 let _anthropic: Anthropic | null = null
 function getAnthropic() {
@@ -316,17 +317,39 @@ export async function buildSegment(filter: SegmentFilter) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Marketing Analytics (Revenue Intelligence, Priority 2).
 //
-// AUDIT NOTE: broadcast_campaigns.conversion_count exists in the schema
-// (migration 004) but is never written by any code path — confirmed by a
-// full-repo grep before writing this function. Attributing a booking back
-// to a specific campaign send would need some join key (e.g. a
-// campaign_id on leads/proposals, or a time-window "last campaign touched"
-// rule) that doesn't exist anywhere in this codebase today. Rather than
-// invent an attribution model, campaign-level ROI/conversion stays
-// explicitly unavailable (see `conversionTrackingAvailable: false` below)
-// until someone makes that call. Everything else here is real, already-
-// stored data: send/delivery/reply counts, and lead source -> pipeline
-// outcome using leads.source + leads.lead_stage (both live).
+// SCOPE (Production Stabilization, Priority 4 — updated note): byType/
+// bySource below are grained on campaign TYPE (birthday/winback/festival/...)
+// delivery+reply health and lead-SOURCE conversion — they do not, and were
+// never meant to, attribute revenue to an individual campaign send.
+// broadcast_campaigns.conversion_count still exists in the schema
+// (migration 004) and is confirmed dead — never read or written by any code
+// path anywhere in this codebase (verified by a full-repo search before this
+// pass). It is not dropped here (no destructive migration for an unused,
+// harmless column) but per-campaign conversion tracking below no longer
+// depends on it or reports it as unavailable — see campaignROI below.
+//
+// That said, the original comment here ("no join key exists anywhere in
+// this codebase") is now stale: message_queue.metadata.campaign_id (set by
+// scheduleCampaignSend(), src/lib/campaign-scheduler.ts) IS that join key,
+// and src/lib/analytics/revenue-intelligence.ts's computeCampaignROI()
+// already uses it to attribute real revenue/ROI to individual outbound
+// campaigns — surfaced on the Marketing Dashboard's Campaign Performance
+// section. THAT remains the authoritative CALCULATION for per-campaign
+// revenue/ROI; this function remains the authoritative source for
+// delivery/reply health and lead-source conversion, which
+// computeCampaignROI() does not compute. The two are complementary, not
+// duplicates — do not merge the calculations.
+//
+// Production Stabilization (Priority 3 — Campaign Conversion Consistency):
+// the Campaigns page previously showed NO per-campaign conversion figure at
+// all (only reply-rate-by-type and lead-source conversion above), while the
+// Marketing Dashboard showed real per-campaign bookings/revenue/ROI from
+// computeCampaignROI() — two screens with no way to cross-check one against
+// the other. Fix: this function now also returns getCampaignROI()'s rows
+// verbatim (same fetchRawData()/computeCampaignROI() call the Marketing
+// Dashboard uses — not a second calculation), so the Campaigns page can
+// display real per-campaign conversion (bookings) figures that are
+// identical to Revenue Attribution by construction.
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface CampaignRow {
@@ -367,16 +390,23 @@ export interface MarketingPerformance {
   bySource: LeadSourcePerformance[]
   whatsappConversionPct: number
   acquisitionByMonth: Array<{ month: string; count: number }>
-  conversionTrackingAvailable: false
+  // Per-campaign conversion (bookings/revenue/ROI) — the exact same
+  // computeCampaignROI() result the Marketing Dashboard shows (via
+  // getCampaignROI()), not a second calculation. conversionTrackingAvailable
+  // reflects whether THIS data source (message_queue) is available, same
+  // meaning computeCampaignROI() itself already uses for `degraded`.
+  campaignROI: CampaignROI
+  conversionTrackingAvailable: boolean
   conversionTrackingNote: string
 }
 
 export async function getMarketingPerformance(): Promise<MarketingPerformance> {
   const supabaseAdmin = getSupabaseAdmin()
 
-  const [campaignsResult, leadsResult] = await Promise.all([
+  const [campaignsResult, leadsResult, campaignROI] = await Promise.all([
     supabaseAdmin.from('broadcast_campaigns').select('type, status, sent_count, delivered_count, failed_count, reply_count, recipient_count'),
     supabaseAdmin.from('leads').select('source, lead_stage, created_at'),
+    getCampaignROI(),
   ])
 
   const campaigns = (campaignsResult.data ?? []) as unknown as CampaignRow[]
@@ -435,9 +465,11 @@ export async function getMarketingPerformance(): Promise<MarketingPerformance> {
     bySource,
     whatsappConversionPct,
     acquisitionByMonth,
-    conversionTrackingAvailable: false,
-    conversionTrackingNote:
-      'Campaign ROI and per-campaign conversion counts are not available — broadcast_campaigns.conversion_count exists in the schema but nothing attributes a booking back to a specific campaign send (no campaign_id on leads/proposals, no attribution window). Adding that is a tracking-design decision, not something inferred here.',
+    campaignROI,
+    conversionTrackingAvailable: !campaignROI.degraded,
+    conversionTrackingNote: campaignROI.degraded
+      ? campaignROI.note
+      : 'byType/bySource above report delivery/reply health and lead-source conversion only — broadcast_campaigns.conversion_count itself is still never written. Per-campaign conversion (bookings/revenue/ROI) is in campaignROI below, computed the same way as the Marketing Dashboard\'s Campaign Performance section (revenue-intelligence.ts\'s computeCampaignROI(), attributed via message_queue.metadata.campaign_id) — the two are guaranteed to match since this calls the identical function.',
   }
 }
 

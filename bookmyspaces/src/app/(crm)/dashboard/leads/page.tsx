@@ -24,7 +24,7 @@ import { useRouter } from 'next/navigation'
 import {
   Search, RefreshCw, Upload, Plus, AlertTriangle, ChevronLeft, ChevronRight,
   ArrowUpDown, ArrowUp, ArrowDown, Phone, Mail, FileText, Share2, Download,
-  MapPinned, BedDouble, MessageSquare, RotateCcw, CheckCircle2,
+  MapPinned, BedDouble, MessageSquare, RotateCcw, CheckCircle2, GitMerge, X, Loader2,
 } from 'lucide-react'
 import { fmtINR, fmtDate } from '@/lib/format'
 import {
@@ -100,11 +100,12 @@ function visitHref(lead: LeadWithPipeline): string {
 //   - "Open Reservation" links to the existing /reservations/[id] page.
 
 function QuickActionsCell({
-  lead, onRefresh, router,
+  lead, onRefresh, router, onMergeClick,
 }: {
   lead: LeadWithPipeline
   onRefresh: () => void
   router: RouterInstance
+  onMergeClick: (lead: LeadWithPipeline) => void
 }) {
   const [busy, setBusy] = useState<string | null>(null)
   const btnClass =
@@ -273,6 +274,134 @@ function QuickActionsCell({
           <BedDouble className="w-3 h-3" /> Open Reservation
         </Link>
       )}
+
+      {/* Social Operations Priority 4 — duplicate lead prevention. Opens
+          MergeLeadModal below, reusing this same page's GET /api/leads/
+          pipeline search for finding the duplicate and the existing
+          POST /api/leads/[id]/merge API (no new endpoint). */}
+      <button
+        type="button"
+        onClick={() => onMergeClick(lead)}
+        className={`${btnClass} border-gray-200 text-gray-500 hover:bg-gray-50`}
+      >
+        <GitMerge className="w-3 h-3" /> Merge Duplicate
+      </button>
+    </div>
+  )
+}
+
+// Social Operations Priority 4 — duplicate lead merge modal. Reuses GET
+// /api/leads/pipeline (this page's own search endpoint) to find the
+// duplicate lead by name/phone/email, then POST /api/leads/[id]/merge to
+// merge it into `primary`. No new search API, no new merge API — this is
+// purely a UI trigger for logic that already existed server-side with zero
+// UI before this pass.
+function MergeLeadModal({
+  primary, onClose, onMerged,
+}: {
+  primary: LeadWithPipeline
+  onClose: () => void
+  onMerged: () => void
+}) {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<LeadWithPipeline[]>([])
+  const [searching, setSearching] = useState(false)
+  const [selected, setSelected] = useState<LeadWithPipeline | null>(null)
+  const [merging, setMerging] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleSearch(e: React.FormEvent) {
+    e.preventDefault()
+    if (!query.trim()) return
+    setSearching(true)
+    setError(null)
+    try {
+      const params = new URLSearchParams({ limit: '10', offset: '0', search: query.trim() })
+      const res = await fetch(`/api/leads/pipeline?${params.toString()}`)
+      const json = await res.json()
+      setResults((json.leads ?? []).filter((l: LeadWithPipeline) => l.id !== primary.id))
+    } catch {
+      setError('Search failed — please try again.')
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  async function handleConfirmMerge() {
+    if (!selected) return
+    setMerging(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/leads/${primary.id}/merge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ duplicateLeadId: selected.id }),
+      })
+      const json = await res.json()
+      if (!res.ok) { setError(json.error || 'Merge failed'); return }
+      onMerged()
+      onClose()
+    } catch {
+      setError('Merge failed — please try again.')
+    } finally {
+      setMerging(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-base font-semibold text-gray-900 flex items-center gap-2"><GitMerge className="w-4 h-4" /> Merge Duplicate Lead</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700"><X className="w-4 h-4" /></button>
+        </div>
+        <p className="text-xs text-gray-500 mb-4">
+          Merging into <span className="font-medium text-gray-700">{primary.name || 'this lead'}</span>{primary.phone ? ` (${primary.phone})` : ''}.
+          The duplicate is never deleted — its activity, social interactions, reviews, and proposals are reassigned here, and any missing name/phone/email/notes are filled in.
+        </p>
+
+        <form onSubmit={handleSearch} className="flex gap-2 mb-3">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search the duplicate by name, phone, or email…"
+            className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-900/10"
+          />
+          <button type="submit" disabled={searching} className="px-3 py-2 rounded-lg text-sm font-medium bg-gray-900 text-white hover:bg-gray-800 disabled:opacity-50">
+            {searching ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Search'}
+          </button>
+        </form>
+
+        {results.length > 0 && (
+          <ul className="max-h-56 overflow-y-auto divide-y divide-gray-50 border border-gray-100 rounded-lg mb-4">
+            {results.map((r) => (
+              <li key={r.id}>
+                <button
+                  type="button"
+                  onClick={() => setSelected(r)}
+                  className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${selected?.id === r.id ? 'bg-blue-50' : ''}`}
+                >
+                  <span className="font-medium text-gray-800">{r.name || 'Unnamed lead'}</span>
+                  <span className="text-xs text-gray-400 ml-2">{r.phone || r.email || '—'}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {error && <p className="text-xs text-red-600 mb-3">{error}</p>}
+
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium border border-gray-200 text-gray-600 hover:bg-gray-50">Cancel</button>
+          <button
+            onClick={handleConfirmMerge}
+            disabled={!selected || merging}
+            className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+          >
+            {merging ? <Loader2 className="w-4 h-4 animate-spin inline" /> : `Merge into ${primary.name || 'this lead'}`}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -289,6 +418,7 @@ export default function LeadManagementPage() {
   const [sortKey, setSortKey] = useState<SortKey>('created_at')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [showNewLeadModal, setShowNewLeadModal] = useState(false)
+  const [mergeLeadSource, setMergeLeadSource] = useState<LeadWithPipeline | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -379,6 +509,14 @@ export default function LeadManagementPage() {
             setShowNewLeadModal(false)
             router.push(leadWorkspaceHref(leadId))
           }}
+        />
+      )}
+
+      {mergeLeadSource && (
+        <MergeLeadModal
+          primary={mergeLeadSource}
+          onClose={() => setMergeLeadSource(null)}
+          onMerged={load}
         />
       )}
 
@@ -510,7 +648,7 @@ export default function LeadManagementPage() {
                     {lead.pipelineValue ? fmtINR(lead.pipelineValue) : '—'}
                   </td>
                   <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{fmtDate(lead.lastActivityAt)}</td>
-                  <td className="px-4 py-3"><QuickActionsCell lead={lead} onRefresh={load} router={router} /></td>
+                  <td className="px-4 py-3"><QuickActionsCell lead={lead} onRefresh={load} router={router} onMergeClick={setMergeLeadSource} /></td>
                 </tr>
               ))
             )}

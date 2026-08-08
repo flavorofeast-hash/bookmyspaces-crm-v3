@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin }          from '@/lib/supabase'
 import { smartSend }                 from '@/lib/queue'
 import { WHATSAPP_MESSAGES }         from '@/lib/templates'
+import { logJourneyEvent }           from '@/lib/customers/journey'
 
 export const dynamic     = 'force-dynamic'
 export const runtime     = 'nodejs'
@@ -90,6 +91,15 @@ export async function GET(request: NextRequest) {
     if (ok) {
       await db.from('follow_ups').update({ status: 'sent', sent_at: now }).eq('id', row.id)
       await db.from('leads').update({ last_contacted_at: now, whatsapp_last_message_at: now }).eq('id', lead.id)
+      // Production Stabilization (Priority 2) — Messaging Orchestrator:
+      // only the ai_followup_assistant-triggered rows are an "automated
+      // engine" send the shared orchestrator (src/lib/messaging/
+      // orchestrator.ts) needs to see; an operator's manually-scheduled
+      // follow-up is a deliberate human action, not something the
+      // cross-system cooldown should suppress or be suppressed by.
+      if (row2.trigger_reason === 'ai_followup_assistant') {
+        await logJourneyEvent(lead.id, 'whatsapp_ai_followup_sent', 'AI-drafted follow-up sent', { followUpId: row.id })
+      }
       sent++
     } else {
       failed++

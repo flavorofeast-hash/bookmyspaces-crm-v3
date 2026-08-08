@@ -44,24 +44,14 @@ import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { buildSegment } from '@/lib/campaigns'
 import { sendWhatsAppText } from '@/lib/whatsapp/send-message'
-import { logJourneyEvent } from '@/lib/customers/journey'
+import { logJourneyEvent, alreadySentWithin } from '@/lib/customers/journey'
 import { WHATSAPP_MESSAGES } from '@/lib/templates'
-import { getOrCreateReferralCode, buildReferralLink } from '@/lib/customers/referrals'
+import { buildReferralInvitationMessage } from '@/lib/customers/referrals'
 import { computeProposalUrgency, LeadSnapshot, ProposalSnapshot } from '@/lib/proposal-intelligence'
+import { listBusinessPackages, resolveBusinessPackageAudience, renderPackageWhatsAppMessage } from '@/lib/business-packages/business-package-service'
+import { canSendAutomatedMessage } from '@/lib/messaging/orchestrator'
 
 const MAX_PER_TRIGGER = 25
-
-async function alreadySentWithin(leadId: string, action: string, cooldownDays: number): Promise<boolean> {
-  const db = getSupabaseAdmin()
-  const since = new Date(Date.now() - cooldownDays * 86400000).toISOString()
-  const { count } = await db
-    .from('activity_logs')
-    .select('id', { count: 'exact', head: true })
-    .eq('lead_id', leadId)
-    .eq('action', action)
-    .gte('created_at', since)
-  return (count ?? 0) > 0
-}
 
 interface AutomationCounts {
   birthday: number
@@ -71,6 +61,7 @@ interface AutomationCounts {
   repeatBooking: number
   referralRequest: number
   proposalNudge: number
+  businessPackagePromo: number
 }
 
 async function runBirthday(): Promise<number> {
@@ -78,6 +69,7 @@ async function runBirthday(): Promise<number> {
   let sent = 0
   for (const lead of leads.slice(0, MAX_PER_TRIGGER)) {
     if (await alreadySentWithin(lead.id, 'whatsapp_birthday_sent', 300)) continue
+    if (!(await canSendAutomatedMessage(lead.id, 'birthday'))) continue
     const result = await sendWhatsAppText(lead.phone!, WHATSAPP_MESSAGES.birthdayWish(lead.name ?? undefined), { leadId: lead.id })
     if (result.success) {
       sent++
@@ -92,6 +84,7 @@ async function runAnniversary(): Promise<number> {
   let sent = 0
   for (const lead of leads.slice(0, MAX_PER_TRIGGER)) {
     if (await alreadySentWithin(lead.id, 'whatsapp_anniversary_sent', 300)) continue
+    if (!(await canSendAutomatedMessage(lead.id, 'anniversary'))) continue
     const result = await sendWhatsAppText(lead.phone!, WHATSAPP_MESSAGES.anniversaryWish(lead.name ?? undefined), { leadId: lead.id })
     if (result.success) {
       sent++
@@ -106,6 +99,7 @@ async function runWinBack(): Promise<number> {
   let sent = 0
   for (const lead of leads.slice(0, MAX_PER_TRIGGER)) {
     if (await alreadySentWithin(lead.id, 'whatsapp_winback_sent', 60)) continue
+    if (!(await canSendAutomatedMessage(lead.id, 'winback'))) continue
     const result = await sendWhatsAppText(lead.phone!, WHATSAPP_MESSAGES.winBack(lead.name ?? undefined), { leadId: lead.id })
     if (result.success) {
       sent++
@@ -120,6 +114,7 @@ async function runRepeatBooking(): Promise<number> {
   let sent = 0
   for (const lead of leads.slice(0, MAX_PER_TRIGGER)) {
     if (await alreadySentWithin(lead.id, 'whatsapp_repeat_booking_sent', 90)) continue
+    if (!(await canSendAutomatedMessage(lead.id, 'repeat_booking'))) continue
     const result = await sendWhatsAppText(lead.phone!, WHATSAPP_MESSAGES.repeatBookingInvite({ name: lead.name ?? undefined }), { leadId: lead.id })
     if (result.success) {
       sent++
@@ -134,13 +129,13 @@ async function runReferralRequest(): Promise<number> {
   let sent = 0
   for (const lead of leads.slice(0, MAX_PER_TRIGGER)) {
     if (await alreadySentWithin(lead.id, 'whatsapp_referral_request_sent', 120)) continue
+    if (!(await canSendAutomatedMessage(lead.id, 'referral_request'))) continue
     try {
-      const code = await getOrCreateReferralCode(lead.id)
-      const link = buildReferralLink(code)
-      const result = await sendWhatsAppText(lead.phone!, WHATSAPP_MESSAGES.referralRequestMessage({ name: lead.name ?? undefined, referralLink: link }), { leadId: lead.id })
+      const { message, referralCode } = await buildReferralInvitationMessage({ id: lead.id, name: lead.name })
+      const result = await sendWhatsAppText(lead.phone!, message, { leadId: lead.id })
       if (result.success) {
         sent++
-        await logJourneyEvent(lead.id, 'whatsapp_referral_request_sent', 'Referral request sent', { referralCode: code })
+        await logJourneyEvent(lead.id, 'whatsapp_referral_request_sent', 'Referral request sent', { referralCode })
       }
     } catch (err) {
       logger.error('marketing-automations', 'Referral request failed for lead', err, { leadId: lead.id })
@@ -183,6 +178,7 @@ async function runProposalExpiry(): Promise<number> {
 
     const { data: lead } = await db.from('leads').select('id, name, phone, whatsapp_opted_in').eq('id', proposal.lead_id).maybeSingle()
     if (!lead?.phone || !lead.whatsapp_opted_in || !proposal.share_token) continue
+    if (!(await canSendAutomatedMessage(lead.id, 'proposal_expiry'))) continue
 
     const shareUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://bookmyspaces.in'}/proposals/share/${proposal.share_token}`
     const result = await sendWhatsAppText(
@@ -218,10 +214,13 @@ async function runProposalNudge(): Promise<number> {
 
   const { data: proposals, error } = await db
     .from('proposals')
+    // A single literal (not string-concatenated with `+`) so supabase-js can
+    // infer the joined row shape from this literal instead of falling back
+    // to a generic error type — pre-existing runtime behavior is unchanged.
     .select(
-      'id, status, total_price, package_name, guest_count, event_type, sent_at, first_viewed_at, ' +
-      'last_viewed_at, followed_up_at, viewed_count, engagement_score, created_at, proposal_number, share_token, lead_id, ' +
-      'leads(id, name, phone, whatsapp_opted_in, ai_score, lead_temperature, urgency_level, lead_stage, estimated_revenue, budget, event_type, venue, email, event_date, guest_count)'
+      `id, status, total_price, package_name, guest_count, event_type, sent_at, first_viewed_at,
+      last_viewed_at, followed_up_at, viewed_count, engagement_score, created_at, proposal_number, share_token, lead_id,
+      leads(id, name, phone, whatsapp_opted_in, ai_score, lead_temperature, urgency_level, lead_stage, estimated_revenue, budget, event_type, venue, email, event_date, guest_count)`
     )
     .in('status', ['sent', 'viewed'])
     .limit(MAX_PER_TRIGGER * 3) // headroom — most scanned proposals won't need a nudge this run
@@ -297,6 +296,7 @@ async function runProposalNudge(): Promise<number> {
       .eq('action', 'whatsapp_proposal_nudge_sent')
       .contains('metadata', { proposalId: proposal.id })
     if ((count ?? 0) > 0) continue
+    if (!(await canSendAutomatedMessage(lead.id, 'proposal_nudge'))) continue
 
     const shareUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://bookmyspaces.in'}/proposals/share/${proposal.share_token}`
     const result = await sendWhatsAppText(
@@ -316,6 +316,55 @@ async function runProposalNudge(): Promise<number> {
   return sent
 }
 
+// Business Package Engine — "WhatsApp Automation" integration requirement.
+// Reuses resolveBusinessPackageAudience() (= buildSegment(pkg.marketingSegment),
+// same audience engine every other trigger in this file is built on) and
+// renderPackageWhatsAppMessage() (this package's own stored template) — no
+// new segmentation or messaging logic. Per-lead cooldown via
+// alreadySentWithin(), same idiom as birthday/anniversary/winBack/repeatBooking
+// above, since this is a per-lead promo cadence, not a per-item event like
+// proposal expiry/nudge.
+async function runBusinessPackagePromo(): Promise<number> {
+  let packages
+  try {
+    packages = await listBusinessPackages({ status: 'active' })
+  } catch (err) {
+    logger.error('marketing-automations', 'Failed to load active business packages', err)
+    return 0
+  }
+
+  let sent = 0
+  for (const pkg of packages) {
+    if (sent >= MAX_PER_TRIGGER) break
+    if (!pkg.whatsappTemplate) continue
+
+    let leads
+    try {
+      leads = await resolveBusinessPackageAudience(pkg)
+    } catch (err) {
+      logger.error('marketing-automations', 'Failed to resolve business package audience', err, { packageId: pkg.id })
+      continue
+    }
+
+    for (const lead of leads) {
+      if (sent >= MAX_PER_TRIGGER) break
+      if (!lead.phone) continue
+      if (await alreadySentWithin(lead.id, 'whatsapp_business_package_promo_sent', 14)) continue
+      if (!(await canSendAutomatedMessage(lead.id, 'business_package_promo'))) continue
+
+      const message = renderPackageWhatsAppMessage(pkg, lead.name ?? null)
+      if (!message) continue
+
+      const result = await sendWhatsAppText(lead.phone, message, { leadId: lead.id })
+      if (result.success) {
+        sent++
+        await logJourneyEvent(lead.id, 'whatsapp_business_package_promo_sent', `Business Package promo sent: ${pkg.name}`, { businessPackageId: pkg.id })
+      }
+    }
+  }
+  return sent
+}
+
 export async function POST(req: NextRequest) {
   const cronSecret = process.env.CRON_SECRET
   if (cronSecret) {
@@ -326,7 +375,7 @@ export async function POST(req: NextRequest) {
   }
 
   const counts: AutomationCounts = {
-    birthday: 0, anniversary: 0, winBack: 0, proposalExpiry: 0, repeatBooking: 0, referralRequest: 0, proposalNudge: 0,
+    birthday: 0, anniversary: 0, winBack: 0, proposalExpiry: 0, repeatBooking: 0, referralRequest: 0, proposalNudge: 0, businessPackagePromo: 0,
   }
 
   try {
@@ -356,6 +405,10 @@ export async function POST(req: NextRequest) {
   try {
     counts.proposalNudge = await runProposalNudge()
   } catch (err) { logger.error('marketing-automations', 'Proposal nudge trigger failed', err) }
+
+  try {
+    counts.businessPackagePromo = await runBusinessPackagePromo()
+  } catch (err) { logger.error('marketing-automations', 'Business package promo trigger failed', err) }
 
   return NextResponse.json({ sent: counts })
 }

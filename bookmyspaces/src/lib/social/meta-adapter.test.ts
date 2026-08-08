@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { MetaAdapter } from './adapters/meta-adapter'
 import { classifySentiment } from './interaction-service'
 
@@ -43,6 +43,31 @@ describe('MetaAdapter.parseWebhook', () => {
     const result = await adapter.publishPost({ postType: 'text', content: 'hi', media: [] })
     expect(result.ok).toBe(false)
     expect(result.error).toContain('meta_not_configured')
+  })
+
+  // Social OAuth -> Publishing credential fix — an OAuth-resolved credential
+  // must let publishing succeed even with NO env vars set at all (isConfigured()
+  // stays env-only/false; publishPost() must not gate on it once credentials
+  // are supplied).
+  it('publishes using a supplied OAuth credential even when env vars are entirely unset', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: 'ext_post_123' }),
+    } as Response)
+    try {
+      expect(adapter.isConfigured()).toBe(false)
+      const result = await adapter.publishPost(
+        { postType: 'text', content: 'hi', media: [] },
+        { accessToken: 'oauth-page-token', externalAccountId: 'oauth-page-id' }
+      )
+      expect(result.ok).toBe(true)
+      expect(result.externalPostId).toBe('ext_post_123')
+      const [url, options] = fetchSpy.mock.calls[0]
+      expect(String(url)).toContain('oauth-page-id')
+      expect(JSON.parse((options as RequestInit).body as string).access_token).toBe('oauth-page-token')
+    } finally {
+      fetchSpy.mockRestore()
+    }
   })
 })
 

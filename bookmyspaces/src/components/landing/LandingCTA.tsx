@@ -7,6 +7,7 @@
 
 import { Phone, MessageCircle } from 'lucide-react'
 import { useCampaignAttribution } from './CampaignAttribution'
+import { trackClick } from '@/lib/social/click-tracker-client'
 
 export function LandingCTA({
   whatsappNumber,
@@ -45,6 +46,7 @@ export function LandingCTA({
         href={whatsappHref}
         target="_blank"
         rel="noopener noreferrer"
+        onClick={() => trackClick({ type: 'whatsapp', target: whatsappHref, campaign: attribution?.utmCampaign ?? attribution?.slug ?? null, businessPackageId: attribution?.businessPackageId ?? null })}
         className="inline-flex items-center justify-center gap-2 px-8 py-4 text-white font-medium rounded-lg transition-all"
         style={{ background: '#25D366' }}
       >

@@ -1,4 +1,20 @@
 // src/modules/followups/followup-rules.ts
+//
+// ⚠️ DEPRECATED — DEAD CODE, CONFIRMED UNREFERENCED (Production
+// Stabilization, Priority 3, verified via repo-wide grep for
+// `followup-rules`/`modules/followups` before this note was added: zero
+// `import` statements anywhere in src/, only a handful of comments in
+// unrelated files mentioning it historically). Never wired to any live
+// route or cron. Superseded by three real, live systems: the AI Follow-up
+// Assistant (src/app/api/cron/ai-followup-assistant/route.ts + its drain
+// cron src/app/api/cron/followups/route.ts), Marketing Automations
+// (src/app/api/cron/marketing-automations/route.ts), and WhatsApp Drip
+// Sequences (src/lib/whatsapp/drip-service.ts) — all three now coordinated
+// by the shared Messaging Orchestrator (src/lib/messaging/orchestrator.ts).
+// This file could not be deleted in this environment (no file-delete
+// permission on the mounted repo) — safe to remove entirely in a follow-up
+// change; do not import from it.
+//
 // Defines follow-up cadence rules per lead temperature.
 // Pure data — no side effects. Import into scheduler and engine.
 

@@ -20,7 +20,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
-import { getOrCreateReferralCode, buildReferralLink, syncReferralRewards } from '@/lib/customers/referrals'
+import { getOrCreateReferralCode, buildReferralLink, syncReferralRewards, notifyReferralRewardStatusChange } from '@/lib/customers/referrals'
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth()
@@ -29,8 +29,23 @@ export async function GET(req: NextRequest) {
   try {
     const leadId = req.nextUrl.searchParams.get('leadId')
     if (leadId) {
-      const code = await getOrCreateReferralCode(leadId)
-      return NextResponse.json({ code, link: buildReferralLink(code) })
+      const [code, rewardsAsReferrerResult, rewardsAsReferredResult] = await Promise.all([
+        getOrCreateReferralCode(leadId),
+        db.from('referral_rewards').select('*').eq('referrer_lead_id', leadId).order('created_at', { ascending: false }),
+        db.from('referral_rewards').select('*').eq('referred_lead_id', leadId).order('created_at', { ascending: false }),
+      ])
+      // Customer Loyalty & Referral Experience — "referral statistics" for
+      // the Lead page card: this lead's own referral code/link plus every
+      // reward they've earned as a referrer (or received as someone else's
+      // referral), reusing the same referral_rewards rows the dashboard
+      // already reads — no new table/query shape.
+      return NextResponse.json({
+        code,
+        link: buildReferralLink(code),
+        rewardsAsReferrer: rewardsAsReferrerResult.data ?? [],
+        rewardsAsReferred: rewardsAsReferredResult.data ?? [],
+        referredCount: (rewardsAsReferrerResult.data ?? []).length,
+      })
     }
 
     const { data, error } = await db.from('referral_rewards').select('*').order('created_at', { ascending: false }).limit(200)
@@ -100,6 +115,11 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'No updatable fields provided (status, reward_type, reward_value, notes)' }, { status: 400 })
     }
 
+    // Customer Loyalty & Referral Experience — "notify when reward status
+    // changes": only fire when this PATCH actually changes `status`, not on
+    // every notes/reward_type edit.
+    const { data: before } = await db.from('referral_rewards').select('status').eq('id', id).maybeSingle()
+
     const { data, error } = await db
       .from('referral_rewards')
       .update({ ...updates, updated_at: new Date().toISOString() })
@@ -107,6 +127,16 @@ export async function PATCH(req: NextRequest) {
       .select('*')
       .single()
     if (error) throw error
+
+    if ('status' in updates && before && before.status !== data.status) {
+      await notifyReferralRewardStatusChange({
+        referrerLeadId: data.referrer_lead_id,
+        status: data.status,
+        rewardType: data.reward_type,
+        rewardValue: data.reward_value,
+      })
+    }
+
     return NextResponse.json({ reward: data })
   } catch (err) {
     logger.error('referrals', 'PATCH failed', err)

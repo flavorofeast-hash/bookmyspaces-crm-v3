@@ -8,6 +8,11 @@
 // platform adapter when configured; unconfigured platforms save the reply
 // as a draft and report cleanly, so operators can work today and the send
 // happens once credentials exist.
+//
+// Sprint 3 (Social CRM) added { action: 'suggest_reply' } — a read-only
+// action (no DB write) that returns an AI-drafted reply suggestion for the
+// operator to review/edit before using it with action:'reply'. Same route,
+// same auth/validation conventions — not a new endpoint.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const dynamic = 'force-dynamic'
@@ -20,16 +25,17 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
 import { parseBody } from '@/lib/validation'
 import { getSocialAdapter } from '@/lib/social/adapter-registry'
+import { generateInteractionReplySuggestion } from '@/lib/social/content-generator'
 
 const idSchema = z.string().uuid()
 const patchSchema = z.object({
   status: z.enum(['new', 'replied', 'escalated', 'archived']).optional(),
   reply_draft: z.string().trim().max(4000).optional(),
-  action: z.literal('reply').optional(),
+  action: z.enum(['reply', 'suggest_reply']).optional(),
   message: z.string().trim().min(1).max(4000).optional(),
 }).strict().refine(
-  (v) => v.status !== undefined || v.reply_draft !== undefined || v.action === 'reply',
-  { message: 'Provide status, reply_draft, or action:reply with message' }
+  (v) => v.status !== undefined || v.reply_draft !== undefined || v.action === 'reply' || v.action === 'suggest_reply',
+  { message: 'Provide status, reply_draft, action:reply with message, or action:suggest_reply' }
 ).refine(
   (v) => v.action !== 'reply' || !!v.message,
   { message: 'action:reply requires message' }
@@ -47,6 +53,24 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const supabase = getSupabaseAdmin()
 
   try {
+    if (parsed.data.action === 'suggest_reply') {
+      const { data: interaction } = await supabase
+        .from('social_interactions')
+        .select('platform, interaction_type, content, intent')
+        .eq('id', params.id)
+        .maybeSingle()
+      if (!interaction) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
+      const { reply } = await generateInteractionReplySuggestion(
+        interaction.platform,
+        interaction.interaction_type,
+        interaction.content,
+        interaction.intent
+      )
+      if (!reply) return NextResponse.json({ error: 'AI reply suggestion failed — try again.' }, { status: 502 })
+      return NextResponse.json({ suggestion: reply })
+    }
+
     if (parsed.data.action === 'reply' && parsed.data.message) {
       const { data: interaction } = await supabase
         .from('social_interactions')

@@ -43,7 +43,7 @@ import Link from 'next/link'
 import {
   ArrowLeft, Phone, Mail, Calendar, RefreshCw, AlertTriangle,
   MapPin, Building2, Gift, MessageCircle, PhoneCall, MessageSquareText,
-  FileText, MapPinned, BedDouble,
+  FileText, MapPinned, BedDouble, Award, Users,
 } from 'lucide-react'
 import { type Lead, STAGE_PIPELINE, effectiveStage } from '@/modules/leads/types'
 import { fmtINR, fmtDate } from '@/lib/format'
@@ -142,10 +142,24 @@ function QuickActions({ lead }: { lead: Lead }) {
   )
 }
 
+interface LoyaltyCardData {
+  account: { points_balance: number; tier: string } | null
+  nextTierTarget: { tierName: string; pointsNeeded: number } | null
+}
+
+interface ReferralCardData {
+  code: string
+  link: string
+  referredCount: number
+  rewardsAsReferrer: Array<{ id: string; status: string; reward_type: string | null; reward_value: number | null }>
+}
+
 export default function LeadDetailPage({ params }: { params: { id: string } }) {
   const [lead, setLead] = useState<Lead | null>(null)
   const [timeline, setTimeline] = useState<CustomerTimeline | null>(null)
   const [proposals, setProposals] = useState<ProposalSummary[]>([])
+  const [loyalty, setLoyalty] = useState<LoyaltyCardData | null>(null)
+  const [referral, setReferral] = useState<ReferralCardData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -155,11 +169,14 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
     try {
       // Same pattern as src/app/(crm)/customers/[id]/page.tsx's load(): fetch
       // the lead plus its timeline and proposals in parallel, from the exact
-      // same existing endpoints.
-      const [leadRes, timelineRes, proposalsRes] = await Promise.all([
+      // same existing endpoints. Loyalty/referral reuse the existing
+      // GET ?leadId= variants of /api/loyalty and /api/referrals unchanged.
+      const [leadRes, timelineRes, proposalsRes, loyaltyRes, referralRes] = await Promise.all([
         fetch(`/api/customers/${params.id}`),
         fetch(`/api/customers/${params.id}/timeline`),
         fetch(`/api/proposals?lead_id=${params.id}`),
+        fetch(`/api/loyalty?leadId=${params.id}`),
+        fetch(`/api/referrals?leadId=${params.id}`),
       ])
 
       if (!leadRes.ok) throw new Error(leadRes.status === 404 ? 'Lead not found' : 'Failed to load lead')
@@ -175,6 +192,9 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
         const proposalsJson = await proposalsRes.json()
         setProposals(proposalsJson.proposals ?? proposalsJson ?? [])
       }
+
+      if (loyaltyRes.ok) setLoyalty(await loyaltyRes.json())
+      if (referralRes.ok) setReferral(await referralRes.json())
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load lead')
     } finally {
@@ -301,6 +321,31 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
             <div className="text-xs text-gray-400 uppercase tracking-wide">Notes</div>
             <div className="text-sm text-gray-700 mt-1 whitespace-pre-wrap">{lead.notes || '—'}</div>
           </div>
+        </div>
+
+        {/* ── Loyalty & Referral (Customer Loyalty & Referral Experience) ── */}
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <h2 className="text-sm font-semibold text-gray-700 mb-4 flex items-center gap-1.5">
+            <Award className="w-4 h-4 text-gray-400" /> Loyalty &amp; Referral
+          </h2>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Loyalty Tier" value={loyalty?.account?.tier ?? '—'} />
+            <Field label="Points Balance" value={loyalty?.account ? loyalty.account.points_balance.toLocaleString('en-IN') : '—'} />
+            <Field
+              label="Next Tier"
+              value={loyalty?.nextTierTarget ? `${loyalty.nextTierTarget.tierName} (${loyalty.nextTierTarget.pointsNeeded.toLocaleString('en-IN')} pts to go)` : 'Top tier reached'}
+            />
+            <Field label="Referral Code" value={referral?.code} />
+          </div>
+          {referral && (
+            <div className="mt-4 pt-4 border-t border-gray-100 flex items-center gap-2 text-sm text-gray-600">
+              <Users className="w-3.5 h-3.5 text-gray-400" />
+              Referred {referral.referredCount} {referral.referredCount === 1 ? 'customer' : 'customers'}
+              {referral.rewardsAsReferrer.some((r) => r.status === 'earned') && (
+                <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">Reward earned</span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

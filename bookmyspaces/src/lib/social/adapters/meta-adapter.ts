@@ -21,7 +21,7 @@
 import crypto from 'crypto'
 import type {
   SocialAdapter, SocialPlatform, NormalizedInteraction, PublishInput,
-  PublishResult, ReplyResult, MetricsResult,
+  PublishResult, ReplyResult, MetricsResult, PublishCredentials,
 } from '@/lib/social/types'
 
 const GRAPH = 'https://graph.facebook.com/v23.0'
@@ -87,9 +87,15 @@ export class MetaAdapter implements SocialAdapter {
     return out
   }
 
-  async publishPost(input: PublishInput): Promise<PublishResult> {
-    if (!this.isConfigured()) return notConfigured()
-    const pageId = this.platform === 'facebook' ? process.env.META_PAGE_ID : process.env.META_IG_ID
+  async publishPost(input: PublishInput, credentials?: PublishCredentials): Promise<PublishResult> {
+    // OAuth-connected account's stored token/page id take priority over the
+    // static env fallback — see PublishCredentials header comment (types.ts).
+    // Meta is the one platform where the connected identity IS the correct
+    // publish target (fetchConnectedIdentity stores the Page id / IG business
+    // account id, and the Page Access Token, exactly what publishing needs).
+    const accessToken = credentials?.accessToken ?? process.env.META_PAGE_ACCESS_TOKEN
+    if (!accessToken) return notConfigured()
+    const pageId = credentials?.externalAccountId ?? (this.platform === 'facebook' ? process.env.META_PAGE_ID : process.env.META_IG_ID)
     if (!pageId) return { ok: false, error: `meta_not_configured: missing ${this.platform === 'facebook' ? 'META_PAGE_ID' : 'META_IG_ID'}` }
 
     try {
@@ -105,7 +111,7 @@ export class MetaAdapter implements SocialAdapter {
         body: JSON.stringify({
           message: input.content ?? '',
           ...(input.media[0]?.url ? { url: input.media[0].url, image_url: input.media[0].url } : {}),
-          access_token: process.env.META_PAGE_ACCESS_TOKEN,
+          access_token: accessToken,
         }),
       })
       const json = (await res.json()) as { id?: string; error?: { message?: string } }

@@ -300,12 +300,33 @@ Reply here or call us to check availability for your next celebration or stay. �
 📞 9051459463 | 🌐 www.bookmyspaces.in`,
 
   // ── CUSTOMER JOURNEY: POST-STAY ───────────────────────
-  postStayThankYou: (params: { name?: string; venue?: string }) =>
+  // Customer Loyalty & Referral Experience — loyaltyPoints/loyaltyTier are
+  // this lead's CURRENT standing (fetched via getLoyaltyAccount() before
+  // this stay's own points are awarded), so the thank-you message can
+  // "include loyalty information" without waiting on the separate
+  // loyaltyPointsUpdate notification awardPoints() sends moments later
+  // with the freshly-updated balance. Omitted entirely (no loyalty line)
+  // when the lead has no loyalty account yet.
+  postStayThankYou: (params: { name?: string; venue?: string; loyaltyPoints?: number | null; loyaltyTier?: string | null }) =>
     `🙏 Thank you${params.name ? ` ${params.name}` : ''} for staying with *BookMySpaces*${params.venue ? ` at ${params.venue}` : ''}!
 
 We hope you had a wonderful experience. It was a pleasure hosting you. 🎉
-
+${params.loyaltyPoints != null ? `\n💰 You have *${params.loyaltyPoints.toLocaleString('en-IN')}* loyalty points (*${params.loyaltyTier ?? 'Bronze'}* tier).\n` : ''}
 Come back and see us again soon! 😊`,
+
+  // ── EVENT POST-EXPERIENCE LIFECYCLE: THANK YOU ────────
+  // Fires the day after an accepted proposal's event_date (weddings,
+  // birthdays, corporate, rooftop events — no linked reservation) via
+  // src/lib/customers/event-lifecycle.ts. Distinct wording from
+  // postStayThankYou (which says "staying with") since these guests didn't
+  // stay overnight — they celebrated an event. Same loyaltyPoints/
+  // loyaltyTier convention as postStayThankYou above.
+  eventThankYou: (params: { name?: string; venue?: string; eventType?: string; loyaltyPoints?: number | null; loyaltyTier?: string | null }) =>
+    `🙏 Thank you${params.name ? ` ${params.name}` : ''} for celebrating your ${params.eventType ? params.eventType.toLowerCase() : 'event'} with *BookMySpaces*${params.venue ? ` at ${params.venue}` : ''}!
+
+We hope it was everything you dreamed of. It was a pleasure hosting you. 🎉
+${params.loyaltyPoints != null ? `\n💰 You have *${params.loyaltyPoints.toLocaleString('en-IN')}* loyalty points (*${params.loyaltyTier ?? 'Bronze'}* tier).\n` : ''}
+Come celebrate with us again soon! 😊`,
 
   // ── CUSTOMER JOURNEY: REVIEW REQUEST ──────────────────
   reviewRequestMessage: (params: { name?: string; reviewLink?: string }) =>
@@ -366,6 +387,65 @@ Know someone planning an event, a stay, or a celebration? Share your link — yo
 👉 ${params.referralLink}
 
 Thank you for spreading the word! 💛`,
+
+  // ── CUSTOMER LOYALTY & REFERRAL EXPERIENCE ────────────
+  // Sent by awardPoints() (src/lib/customers/loyalty.ts) after EVERY
+  // eligible booking/event that earns points — reservations (via
+  // syncLoyaltyPointsFromBookings), events (via event-lifecycle.ts), and
+  // manual admin adjustments alike, one template for all three so there is
+  // no per-source duplicate. `upgradedTo` is set only when this award
+  // pushed the account into a new (higher) tier — folds "notify on tier
+  // upgrade" into the same message rather than sending a second one for
+  // the same event, since a tier change can only happen alongside an
+  // actual points award.
+  loyaltyPointsUpdate: (params: {
+    name?: string
+    pointsEarned: number
+    balance: number
+    tier: string
+    upgradedTo?: string | null
+    nextTierName?: string | null
+    pointsToNextTier?: number | null
+  }) =>
+    `🎁 Hi${params.name ? ` ${params.name}` : ''}! You just earned *${params.pointsEarned.toLocaleString('en-IN')} points* with *BookMySpaces*.${
+      params.upgradedTo ? `\n\n🎉 Congratulations — you've been upgraded to *${params.upgradedTo}* tier!` : ''
+    }
+
+💰 Points balance: *${params.balance.toLocaleString('en-IN')}*
+🏆 Current tier: *${params.tier}*
+${params.nextTierName && params.pointsToNextTier != null
+  ? `📈 ${params.pointsToNextTier.toLocaleString('en-IN')} points to *${params.nextTierName}* tier`
+  : '🌟 You\'re at our top tier — thank you for being a loyal guest!'}
+
+Thank you for choosing us! 💛`,
+
+  // Sent whenever a referral_rewards row is created as 'earned' or changes
+  // status (syncReferralRewards()/PATCH /api/referrals — see referrals.ts's
+  // notifyReferralRewardStatusChange()). One template for every status so
+  // the referrer always hears about their reward, not just when it's paid.
+  referralRewardUpdate: (params: {
+    name?: string
+    status: 'pending' | 'earned' | 'redeemed' | 'cancelled'
+    rewardType?: string | null
+    rewardValue?: number | null
+    totalReferrals?: number
+  }) => {
+    const statusLine: Record<typeof params.status, string> = {
+      pending: 'is *pending* — it\'ll be confirmed once your referral completes their first booking.',
+      earned: 'has been *earned*! 🎉',
+      redeemed: 'has been *redeemed*. Thank you!',
+      cancelled: 'was cancelled.',
+    }
+    const rewardDetail = params.rewardType && params.rewardType !== 'unspecified' && params.rewardValue
+      ? `\n🎁 Reward: ${params.rewardType.replace(/_/g, ' ')} — ${params.rewardValue}`
+      : ''
+    const statsLine = params.totalReferrals != null && params.totalReferrals > 0
+      ? `\n👥 You've referred ${params.totalReferrals} ${params.totalReferrals === 1 ? 'customer' : 'customers'} to us so far — thank you!`
+      : ''
+    return `🙌 Hi${params.name ? ` ${params.name}` : ''}! Your referral reward ${statusLine[params.status]}${rewardDetail}${statsLine}
+
+Keep sharing — every friend you refer earns you more! 💛`
+  },
 }
 
 // ─────────────────────────────────────────

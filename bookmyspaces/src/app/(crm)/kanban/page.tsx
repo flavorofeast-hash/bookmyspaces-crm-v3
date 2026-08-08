@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   RefreshCw, Phone, Calendar, Users, Star,
-  Brain, FileText, Sparkles, Clock, AlarmClock,
+  Brain, FileText, Sparkles, Clock, AlarmClock, Tag,
 } from 'lucide-react'
 import { format, parseISO } from 'date-fns'
 import { LEAD_STAGES, VALID_TRANSITIONS, type LeadStage } from '@/modules/leads/types'
@@ -77,6 +77,10 @@ export default function KanbanPage() {
   const [isScoringAll,        setIsScoringAll]        = useState(false)
   const [scoreResult,         setScoreResult]         = useState<string | null>(null)
   const [stageError,          setStageError]          = useState<string | null>(null)
+  // Business Package Engine — id -> name, for the card badge below. Fetched
+  // once (not per-lead) and looked up client-side, same "one bounded fetch"
+  // posture as everywhere else this engine touches the UI.
+  const [packageNameById,     setPackageNameById]     = useState<Record<string, string>>({})
 
   // ── Data fetching ────────────────────────────────────────────────────────
 
@@ -95,6 +99,16 @@ export default function KanbanPage() {
   }, [])
 
   useEffect(() => { fetchLeads() }, [fetchLeads])
+
+  useEffect(() => {
+    fetch('/api/business-packages')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data?.packages) return
+        setPackageNameById(Object.fromEntries(data.packages.map((p: any) => [p.id, p.name])))
+      })
+      .catch(() => {})
+  }, [])
 
   // ── Actions ──────────────────────────────────────────────────────────────
 
@@ -282,6 +296,7 @@ export default function KanbanPage() {
                       key={lead.id}
                       lead={lead}
                       accentColor={col.color}
+                      packageName={lead.business_package_id ? packageNameById[lead.business_package_id] : undefined}
                       onDragStart={() => setDraggedId(lead.id)}
                       onClick={() => setSelectedLead(lead)}
                     />
@@ -685,10 +700,11 @@ export default function KanbanPage() {
 // ─── Lead card ────────────────────────────────────────────────────────────────
 
 function LeadCard({
-  lead, accentColor, onDragStart, onClick,
+  lead, accentColor, packageName, onDragStart, onClick,
 }: {
   lead       : any
   accentColor: string
+  packageName?: string
   onDragStart: () => void
   onClick    : () => void
 }) {
@@ -743,6 +759,16 @@ function LeadCard({
             : isDueToday
             ? 'Due today'
             : new Date(lead.followup_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+        </div>
+      )}
+
+      {/* Business Package badge */}
+      {packageName && (
+        <div
+          className="mb-1 inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full"
+          style={{ background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a' }}
+        >
+          <Tag size={8} /> {packageName}
         </div>
       )}
 

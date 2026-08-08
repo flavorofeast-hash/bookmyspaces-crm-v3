@@ -1,5 +1,7 @@
 # 10 — Social Media Command Center
 
+> **Status update (2026-08-07, `docs/sprints/2026-08-07_social-growth-platform-phase4.md`):** the "Verified this pass" note below (`post-service.ts` is "list + create only, no publish, no AI captioning, no cron scheduler") is now STALE — migrations 036/037 and the Social Growth Platform Phase 4 sprint added a real publish pipeline with retry/backoff (`publish-service.ts`), AI caption/hashtag/image-prompt/title/CTA generation with occasion templates (`content-generator.ts`), a cron scheduler (`/api/cron/social-publish`), intent classification + auto-lead-linking on the Unified Social Inbox, and weekly/daily calendar views. This file is left as historical context for the reuse/risk analysis below (still largely accurate) — see the sprint record for current, code-verified status.
+
 This module operationalizes `SOCIAL_MEDIA_ARCHITECTURE.md`, which is already a complete design document — this doc translates it into the business-objective/journey/reuse/risk format used across this set and states current build status precisely (verified against actual service files, not assumed from the architecture doc alone).
 
 ## Business Objective

@@ -1,16 +1,26 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Sprint 1 — Campaign Landing Page System.
-// Dynamic route serving the 5 campaign landing pages (/wedding, /birthday,
-// /corporate, /airport-stay, /staycation) from one shared template + config
-// (src/lib/campaigns/campaign-config.ts), per "reuse existing architecture,
-// do not duplicate components." `dynamicParams = false` + generateStaticParams
-// restrict this catch-all segment to exactly those 5 slugs — any other path
-// 404s instead of silently rendering a blank campaign page.
+// Dynamic route serving the 5 hardcoded campaign landing pages (/wedding,
+// /birthday, /corporate, /airport-stay, /staycation) from one shared
+// template + config (src/lib/campaigns/campaign-config.ts), per "reuse
+// existing architecture, do not duplicate components."
+//
+// Business Package Engine (migration 043) extension: any slug NOT in the 5
+// hardcoded ones now falls back to an ACTIVE business_packages row with a
+// matching landing_page_slug, rendered through the exact same components
+// via toCampaignConfig() — so operators get a working landing page for a
+// newly created package with zero code changes. `dynamicParams` must be
+// true for this fallback to ever be reachable (a statically-unknown slug
+// would otherwise 404 before this component's body even runs); the 5
+// hardcoded slugs are still returned by generateStaticParams so they keep
+// being pre-rendered at build time exactly as before — this is additive,
+// not a behavior change for any existing campaign.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { notFound } from 'next/navigation'
-import { CAMPAIGN_SLUGS, getCampaignConfig } from '@/lib/campaigns/campaign-config'
+import { CAMPAIGN_SLUGS, getCampaignConfig, type CampaignConfig } from '@/lib/campaigns/campaign-config'
 import { listPackages } from '@/lib/packages/package-service'
+import { getActiveBusinessPackageBySlug, toCampaignConfig } from '@/lib/business-packages/business-package-service'
 import { CampaignAttribution } from '@/components/landing/CampaignAttribution'
 import { LandingHero } from '@/components/landing/LandingHero'
 import { LandingPackages } from '@/components/landing/LandingPackages'
@@ -20,18 +30,28 @@ import { LandingFAQ } from '@/components/landing/LandingFAQ'
 import { LandingCTA } from '@/components/landing/LandingCTA'
 import { CampaignChatLauncher } from '@/components/landing/CampaignChatLauncher'
 
-export const dynamicParams = false
+export const dynamicParams = true
 
 export function generateStaticParams() {
   return CAMPAIGN_SLUGS.map((campaign) => ({ campaign }))
 }
 
+/** Resolves a slug to a CampaignConfig-shaped object from either source, plus the originating business_packages.id (null for the 5 hardcoded campaigns) so the caller can pass it through to attribution. */
+async function resolveConfig(slug: string): Promise<{ config: CampaignConfig | NonNullable<ReturnType<typeof toCampaignConfig>>; businessPackageId: string | null } | null> {
+  const hardcoded = getCampaignConfig(slug)
+  if (hardcoded) return { config: hardcoded, businessPackageId: null }
+  const pkg = await getActiveBusinessPackageBySlug(slug)
+  if (!pkg) return null
+  const config = toCampaignConfig(pkg)
+  return config ? { config, businessPackageId: pkg.id } : null
+}
+
 export async function generateMetadata({ params }: { params: { campaign: string } }) {
-  const config = getCampaignConfig(params.campaign)
-  if (!config) return {}
+  const resolved = await resolveConfig(params.campaign)
+  if (!resolved) return {}
   return {
-    title: `${config.label} — BookMySpaces`,
-    description: config.heroSubheadline,
+    title: `${resolved.config.label} — BookMySpaces`,
+    description: resolved.config.heroSubheadline,
   }
 }
 
@@ -42,8 +62,9 @@ export default async function CampaignLandingPage({
   params: { campaign: string }
   searchParams: { [key: string]: string | string[] | undefined }
 }) {
-  const config = getCampaignConfig(params.campaign)
-  if (!config) notFound()
+  const resolved = await resolveConfig(params.campaign)
+  if (!resolved) notFound()
+  const { config, businessPackageId } = resolved
 
   const utmSource = typeof searchParams.utm_source === 'string' ? searchParams.utm_source : null
   const utmMedium = typeof searchParams.utm_medium === 'string' ? searchParams.utm_medium : null
@@ -75,6 +96,7 @@ export default async function CampaignLandingPage({
       utmCampaign={utmCampaign}
       referral={referral}
       landingPage={`/${config.slug}`}
+      businessPackageId={businessPackageId}
     >
       <main className="min-h-screen" style={{ background: 'var(--warm-white)' }}>
         <LandingHero headline={config.heroHeadline} subheadline={config.heroSubheadline} />

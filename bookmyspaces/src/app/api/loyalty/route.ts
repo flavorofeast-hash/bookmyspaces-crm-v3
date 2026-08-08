@@ -17,7 +17,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
-import { awardPoints, getLoyaltyAccount, syncLoyaltyPointsFromBookings, computeLoyaltyOverview } from '@/lib/customers/loyalty'
+import { awardPoints, getLoyaltyAccount, syncLoyaltyPointsFromBookings, computeLoyaltyOverview, computeNextTierTarget } from '@/lib/customers/loyalty'
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth()
@@ -26,11 +26,15 @@ export async function GET(req: NextRequest) {
   try {
     const leadId = req.nextUrl.searchParams.get('leadId')
     if (leadId) {
-      const [account, transactionsResult] = await Promise.all([
+      const [account, transactionsResult, tierRulesResult] = await Promise.all([
         getLoyaltyAccount(leadId),
         db.from('loyalty_transactions').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }).limit(50),
+        db.from('loyalty_tier_rules').select('tier_name, min_points'),
       ])
-      return NextResponse.json({ account, transactions: transactionsResult.data ?? [] })
+      // Customer Loyalty & Referral Experience — "Next tier target" for the
+      // Lead page card, computed via the same helper awardPoints() uses.
+      const nextTierTarget = computeNextTierTarget(account?.points_balance ?? 0, tierRulesResult.data ?? [])
+      return NextResponse.json({ account, transactions: transactionsResult.data ?? [], nextTierTarget })
     }
 
     return NextResponse.json({ overview: await computeLoyaltyOverview() })

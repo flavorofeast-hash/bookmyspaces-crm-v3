@@ -15,6 +15,17 @@
 // used by this codebase's other date-driven crons — a once-daily run only
 // ever finds a given reservation on the one day that condition is true, so
 // no separate "already sent" tracking column is needed.
+//
+// EVENT POST-EXPERIENCE LIFECYCLE (extends this same cron, not a parallel
+// system): the branches below are reservations-only (room stays). Accepted
+// event proposals (weddings, birthdays, corporate, rooftop events — no
+// linked reservation) are handled by processEventPostExperienceLifecycle()
+// (src/lib/customers/event-lifecycle.ts), which mirrors this exact
+// pattern (exact-date matching, enqueueMessage, review_requests insert,
+// logJourneyEvent) for that booking type. Kept in its own module rather
+// than inlined here so it has its own unit tests (this route, like every
+// other cron route in this codebase, has none) — the route below stays a
+// thin composition of both.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -23,16 +34,13 @@ import { enqueueMessage } from '@/lib/queue'
 import { WHATSAPP_MESSAGES } from '@/lib/templates'
 import { logger } from '@/lib/logger'
 import { logJourneyEvent, JOURNEY_ACTIONS } from '@/lib/customers/journey'
+import { isoDateDaysFromNow, processEventPostExperienceLifecycle } from '@/lib/customers/event-lifecycle'
+import { getLoyaltyAccount } from '@/lib/customers/loyalty'
+import { canSendAutomatedMessage } from '@/lib/messaging/orchestrator'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
-export const maxDuration = 30
-
-function isoDateDaysFromNow(days: number): string {
-  const d = new Date()
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
-}
+export const maxDuration = 60
 
 interface StayRow {
   id: string
@@ -73,12 +81,14 @@ export async function GET(request: NextRequest) {
 
     for (const row of (arriving ?? []) as unknown as StayRow[]) {
       if (!row.guest_mobile) continue
+      if (row.customer_id && !(await canSendAutomatedMessage(row.customer_id, 'pre_arrival'))) continue
       await enqueueMessage({
         phone: row.guest_mobile,
         message: WHATSAPP_MESSAGES.preArrivalReminder({ name: row.guest_name ?? undefined, checkInDate: row.check_in_date, venue: propertyName(row) }),
         type: 'session',
         metadata: { journey: 'pre_arrival', reservation_id: row.id, lead_id: row.customer_id },
       })
+      await logJourneyEvent(row.customer_id, JOURNEY_ACTIONS.PRE_ARRIVAL_SENT, 'Pre-arrival reminder sent via WhatsApp', { reservationId: row.id })
       preArrival++
     }
 
@@ -92,12 +102,25 @@ export async function GET(request: NextRequest) {
 
     for (const row of (departedYesterday ?? []) as unknown as StayRow[]) {
       if (!row.guest_mobile) continue
+      if (row.customer_id && !(await canSendAutomatedMessage(row.customer_id, 'post_stay_thank_you'))) continue
+      let loyaltyPoints: number | null = null
+      let loyaltyTier: string | null = null
+      if (row.customer_id) {
+        try {
+          const account = await getLoyaltyAccount(row.customer_id)
+          loyaltyPoints = account?.points_balance ?? null
+          loyaltyTier = account?.tier ?? null
+        } catch {
+          // non-fatal — thank-you send must not depend on loyalty lookup
+        }
+      }
       await enqueueMessage({
         phone: row.guest_mobile,
-        message: WHATSAPP_MESSAGES.postStayThankYou({ name: row.guest_name ?? undefined, venue: propertyName(row) }),
+        message: WHATSAPP_MESSAGES.postStayThankYou({ name: row.guest_name ?? undefined, venue: propertyName(row), loyaltyPoints, loyaltyTier }),
         type: 'session',
         metadata: { journey: 'post_stay_thank_you', reservation_id: row.id, lead_id: row.customer_id },
       })
+      await logJourneyEvent(row.customer_id, JOURNEY_ACTIONS.POST_STAY_THANK_YOU_SENT, 'Post-stay thank-you sent via WhatsApp', { reservationId: row.id })
       postStay++
     }
 
@@ -111,6 +134,7 @@ export async function GET(request: NextRequest) {
 
     for (const row of (departed3DaysAgo ?? []) as unknown as StayRow[]) {
       if (!row.guest_mobile) continue
+      if (row.customer_id && !(await canSendAutomatedMessage(row.customer_id, 'review_request'))) continue
       await enqueueMessage({
         phone: row.guest_mobile,
         message: WHATSAPP_MESSAGES.reviewRequestMessage({ name: row.guest_name ?? undefined }),
@@ -145,7 +169,13 @@ export async function GET(request: NextRequest) {
       reviewRequests++
     }
 
-    return NextResponse.json({ preArrival, postStay, reviewRequests })
+    // Event Post-Experience Lifecycle — independent booking type
+    // (proposals with no linked reservation), own internal try/catch per
+    // stage, never allowed to fail the reservation branches above or vice
+    // versa.
+    const eventCounts = await processEventPostExperienceLifecycle()
+
+    return NextResponse.json({ preArrival, postStay, reviewRequests, ...eventCounts })
   } catch (err) {
     logger.error('cron', 'stay-lifecycle journey error', err)
     return NextResponse.json({ error: 'Stay lifecycle journey failed', preArrival, postStay, reviewRequests }, { status: 500 })

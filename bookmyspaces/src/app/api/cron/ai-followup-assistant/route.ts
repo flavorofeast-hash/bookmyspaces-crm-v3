@@ -30,6 +30,7 @@ import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { buildAIContext } from '@/lib/ai/context-builder'
 import { runOperatorAssist } from '@/lib/ai/operator-assistant'
+import { canSendAutomatedMessage } from '@/lib/messaging/orchestrator'
 
 const MAX_LEADS = 15
 const NURTURE_GAP_DAYS = 3
@@ -48,6 +49,7 @@ export async function POST(req: NextRequest) {
   let drafted = 0
   let skipped = 0
   let failed = 0
+  let orchestrationSkipped = 0
 
   try {
     const cutoff = new Date(Date.now() - NURTURE_GAP_DAYS * 86400000).toISOString()
@@ -69,6 +71,14 @@ export async function POST(req: NextRequest) {
 
     for (const lead of toProcess) {
       try {
+        // Production Stabilization (Priority 2) — Messaging Orchestrator:
+        // skip drafting (saves the Anthropic call too) if a higher-or-equal
+        // priority automated message already went out to this lead
+        // recently via Marketing Automations or Drip Sequences.
+        if (!(await canSendAutomatedMessage(lead.id, 'ai_followup'))) {
+          orchestrationSkipped++
+          continue
+        }
         const context = await buildAIContext({ leadId: lead.id, query: '', conversationId: null })
         const result = await runOperatorAssist('recommended_follow_up', context, lead.id, null)
 
@@ -111,8 +121,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    skipped = (candidates?.length ?? 0) - toProcess.length
-    return NextResponse.json({ drafted, skipped, failed, candidatesConsidered: candidates?.length ?? 0 })
+    skipped = (candidates?.length ?? 0) - toProcess.length + orchestrationSkipped
+    return NextResponse.json({ drafted, skipped, failed, orchestrationSkipped, candidatesConsidered: candidates?.length ?? 0 })
   } catch (err) {
     logger.error('ai-followup-assistant', 'Cron run failed', err)
     return NextResponse.json({ error: 'Failed to run AI follow-up assistant' }, { status: 500 })
