@@ -20,7 +20,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth-guard'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { logger } from '@/lib/logger'
-import { isOAuthCapablePlatform, OAUTH_CONFIGS } from '@/lib/social/oauth/oauth-config'
+import { isOAuthCapablePlatform, OAUTH_CONFIGS, isAppBaseUrlConfigured, getAppBaseUrl } from '@/lib/social/oauth/oauth-config'
 import { decodeOAuthState } from '@/lib/social/oauth/oauth-state'
 import { exchangeCodeForToken, fetchConnectedIdentity } from '@/lib/social/oauth/oauth-service'
 import { encryptToken, isTokenCipherConfigured } from '@/lib/social/token-cipher'
@@ -34,8 +34,18 @@ function redirectWithBanner(appBaseUrl: string, status: 'success' | 'error', pla
 }
 
 export async function GET(req: NextRequest, { params }: { params: { platform: string } }) {
-  const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://bookmyspaces.in'
   const platform = params.platform
+
+  // RC blocker fix — no fallback to any hardcoded domain; the redirect_uri
+  // used here must exactly match what the start route sent to the provider
+  // (see oauth-config.ts). A plain JSON error, not redirectWithBanner(),
+  // because redirectWithBanner() itself needs a correct appBaseUrl to build
+  // a safe redirect target — there is nothing safe to redirect to yet.
+  if (!isAppBaseUrlConfigured()) {
+    logger.error('social-oauth', `GET /api/social/oauth/${platform}/callback failed: NEXT_PUBLIC_APP_URL is not set`)
+    return NextResponse.json({ error: 'oauth_not_configured: NEXT_PUBLIC_APP_URL is not set' }, { status: 503 })
+  }
+  const appBaseUrl = getAppBaseUrl()
 
   const auth = await requireRole(['admin', 'manager'])
   if (!auth.ok) return auth.response

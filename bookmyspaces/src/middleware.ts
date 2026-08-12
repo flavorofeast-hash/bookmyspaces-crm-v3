@@ -11,9 +11,12 @@
 // "logged-out API sweep" expects a 401 JSON body, not a redirect).
 //
 // Public pages (no session required): the landing page, the auth flow itself,
-// and the proposal share-token page (customers reach this via a link with no
+// the proposal share-token page (customers reach this via a link with no
 // login — same intentionally-public design as the RLS "public share-token
-// read" policy already on `proposals`, see LIVE_SCHEMA_AUDIT.md).
+// read" policy already on `proposals`, see LIVE_SCHEMA_AUDIT.md), and the
+// Legal & Compliance pages (Meta App Review requires the Privacy Policy,
+// Terms of Service, and Data Deletion Instructions URLs to return HTTP 200
+// with no login redirect — see src/lib/legal.ts).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { NextResponse } from 'next/server'
@@ -23,6 +26,9 @@ import { createMiddlewareAuthClient } from '@/lib/supabase-middleware'
 const PUBLIC_PAGE_PREFIXES = [
   '/auth',            // /auth/login, /auth/callback, /auth/auth-code-error
   '/proposals/share',  // public, share-token-gated proposal view
+  '/privacy',          // Legal & Compliance — Meta App Review
+  '/terms',            // Legal & Compliance — Meta App Review
+  '/data-deletion',    // Legal & Compliance — Meta App Review
 ]
 
 function isPublicPage(pathname: string): boolean {

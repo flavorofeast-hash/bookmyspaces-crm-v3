@@ -46,9 +46,27 @@ export const OAUTH_CONFIGS: Record<OAuthCapablePlatform, OAuthPlatformConfig> = 
     platform: 'facebook',
     clientIdEnv: 'META_APP_ID',
     clientSecretEnv: 'META_APP_SECRET',
-    authorizeUrl: 'https://www.facebook.com/v19.0/dialog/oauth',
-    tokenUrl: 'https://graph.facebook.com/v19.0/oauth/access_token',
-    scopes: ['pages_show_list', 'pages_manage_posts', 'pages_read_engagement', 'pages_messaging', 'leads_retrieval'],
+    // Graph API v19.0 expired 2026-05-21 per developers.facebook.com/docs/
+    // graph-api/changelog (confirmed live during this audit, today's date is
+    // past that cutoff) — bumped to v23.0 to match meta-adapter.ts's own
+    // GRAPH constant (adapters/meta-adapter.ts line 27), so the OAuth
+    // endpoints and the Graph API calls made with the resulting token are on
+    // the same, still-current (valid until 2027-10-08) version.
+    authorizeUrl: 'https://www.facebook.com/v23.0/dialog/oauth',
+    tokenUrl: 'https://graph.facebook.com/v23.0/oauth/access_token',
+    // RC fix — "Invalid Scopes" from Facebook's OAuth dialog: pages_messaging
+    // (needs pages_manage_metadata as a co-requisite) and leads_retrieval
+    // (needs Ads Management Standard Access + ads_management/ads_read/
+    // business_management/pages_manage_ads — the Marketing API product,
+    // which this app has not added and doesn't need) are not requestable by
+    // this app's current Meta App Dashboard configuration. Neither is a
+    // stated CRM requirement (no Lead Ads, no Messenger inbox), so both are
+    // dropped rather than pursuing product/App Review setup for unused
+    // scopes. pages_manage_metadata added in leads_retrieval's place — it's
+    // the actual permission Meta's docs list for "receive page webhooks"
+    // (one of this app's real requirements), and pages_show_list is already
+    // its only dependency, already present below.
+    scopes: ['pages_show_list', 'pages_read_engagement', 'pages_manage_posts', 'pages_manage_metadata'],
     usesPkce: false,
     supportsRefresh: false, // Meta: no refresh_token grant — short-lived token is exchanged for a long-lived one instead (see refresh-service.ts).
   },
@@ -56,8 +74,10 @@ export const OAUTH_CONFIGS: Record<OAuthCapablePlatform, OAuthPlatformConfig> = 
     platform: 'instagram',
     clientIdEnv: 'META_APP_ID',
     clientSecretEnv: 'META_APP_SECRET',
-    authorizeUrl: 'https://www.facebook.com/v19.0/dialog/oauth',
-    tokenUrl: 'https://graph.facebook.com/v19.0/oauth/access_token',
+    // Same expired-v19.0 -> v23.0 fix as facebook above (shared Meta Login /
+    // Graph API OAuth endpoint, see this file's header comment).
+    authorizeUrl: 'https://www.facebook.com/v23.0/dialog/oauth',
+    tokenUrl: 'https://graph.facebook.com/v23.0/oauth/access_token',
     scopes: ['instagram_basic', 'instagram_content_publish', 'instagram_manage_comments', 'instagram_manage_messages', 'pages_show_list'],
     usesPkce: false,
     supportsRefresh: false,
@@ -108,6 +128,28 @@ export function isOAuthConfigured(platform: OAuthCapablePlatform): boolean {
 
 export function getRedirectUri(platform: OAuthCapablePlatform, appBaseUrl: string): string {
   return `${appBaseUrl.replace(/\/$/, '')}/api/social/oauth/${platform}/callback`
+}
+
+// RC blocker fix — the redirect_uri sent to Facebook/Instagram (Meta),
+// Google Business, LinkedIn, and X's authorize endpoint MUST byte-for-byte
+// match the redirect_uri sent again during the token exchange, and must be
+// the URL those apps are actually registered under. NEXT_PUBLIC_APP_URL is
+// the only source for this — no hardcoded domain fallback, because a silent
+// fallback to the wrong domain (e.g. bookmyspaces.in instead of the real
+// crm.bookmyspaces.in production host) produces a redirect_uri mismatch
+// error from the provider, or worse, silently registers/exchanges against
+// a domain nobody controls.
+
+/** True when NEXT_PUBLIC_APP_URL is set — gates the OAuth start/callback routes the same way isOAuthConfigured()/isOAuthStateConfigured() do. */
+export function isAppBaseUrlConfigured(): boolean {
+  return Boolean(process.env.NEXT_PUBLIC_APP_URL)
+}
+
+/** The one and only source for the OAuth redirect_uri's base — throws rather than falling back to any hardcoded domain. Callers must check isAppBaseUrlConfigured() first and fail gracefully (matching every other "not configured" check in this file) instead of letting this throw reach the user. */
+export function getAppBaseUrl(): string {
+  const url = process.env.NEXT_PUBLIC_APP_URL
+  if (!url) throw new Error('oauth_not_configured: NEXT_PUBLIC_APP_URL is not set')
+  return url
 }
 
 /** Maps a platform key back to the SocialPlatform union used elsewhere in src/lib/social/**. Same set of 5 by construction — kept as a function (not a cast) so a future platform addition fails loudly if the union and this config drift. */

@@ -39,6 +39,22 @@ const OPTIONAL_VARS: Record<string, string[]> = {
   'Cron endpoint authentication'            : ['CRON_SECRET'],
   'Transactional email (Resend)'            : ['RESEND_API_KEY', 'EMAIL_FROM'],
   'Secondary WhatsApp subsystem (Wati)'     : ['WATI_BASE_URL', 'WATI_API_TOKEN'],
+  // RC blocker fix — Social OAuth connect flow (Facebook/Instagram share
+  // META_APP_ID/META_APP_SECRET via Meta Login; Google Business/LinkedIn/X
+  // each have their own client id/secret env vars, already validated
+  // per-platform at request time by isOAuthConfigured() in oauth-config.ts).
+  // Same graceful-degradation posture as every other integration here: the
+  // rest of the CRM works fine without these, only the OAuth connect
+  // buttons are disabled/degraded until they're set — so this warns at
+  // startup rather than throwing, consistent with WhatsApp/Resend/Wati
+  // above, not the hard-required Supabase/Anthropic vars.
+  'Social OAuth connect flow (Facebook/Instagram)': ['META_APP_ID', 'META_APP_SECRET'],
+  'Social OAuth state signing (all platforms)'    : ['SOCIAL_OAUTH_STATE_SECRET'],
+  // RC Phase 2 (environment audit) — this was previously read by the OAuth
+  // routes and share-link generators with no startup diagnostic at all, so
+  // its absence only surfaced as a request-time 503/wrong-link. Same
+  // graceful-warn posture as everything else in this list.
+  'App base URL (OAuth redirects, share links)'   : ['NEXT_PUBLIC_APP_URL'],
 }
 
 let validated = false

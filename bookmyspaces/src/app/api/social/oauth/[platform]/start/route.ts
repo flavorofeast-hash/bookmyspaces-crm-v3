@@ -14,7 +14,7 @@ export const runtime = 'nodejs'
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth-guard'
 import { logger } from '@/lib/logger'
-import { isOAuthCapablePlatform, isOAuthConfigured } from '@/lib/social/oauth/oauth-config'
+import { isOAuthCapablePlatform, isOAuthConfigured, isAppBaseUrlConfigured, getAppBaseUrl } from '@/lib/social/oauth/oauth-config'
 import { isOAuthStateConfigured, encodeOAuthState, generatePkcePair } from '@/lib/social/oauth/oauth-state'
 import { buildAuthorizationUrl } from '@/lib/social/oauth/oauth-service'
 
@@ -32,9 +32,14 @@ export async function GET(req: NextRequest, { params }: { params: { platform: st
   if (!isOAuthConfigured(platform)) {
     return NextResponse.json({ error: `oauth_not_configured: client id/secret env vars are not set for ${platform}` }, { status: 503 })
   }
+  // RC blocker fix — no fallback to any hardcoded domain; the redirect_uri
+  // must always come from NEXT_PUBLIC_APP_URL (see oauth-config.ts).
+  if (!isAppBaseUrlConfigured()) {
+    return NextResponse.json({ error: 'oauth_not_configured: NEXT_PUBLIC_APP_URL is not set' }, { status: 503 })
+  }
 
   try {
-    const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://bookmyspaces.in'
+    const appBaseUrl = getAppBaseUrl()
     const pkce = platform === 'x' ? generatePkcePair() : null
 
     const state = encodeOAuthState({
