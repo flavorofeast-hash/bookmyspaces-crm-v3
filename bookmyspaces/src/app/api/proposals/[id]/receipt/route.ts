@@ -38,6 +38,20 @@ function modeIcon(mode: string): string {
   return map[mode] ?? '💰'
 }
 
+// SECURITY: same fix as src/app/api/proposals/[id]/invoice/route.ts — this
+// route interpolates proposal/payment fields (client name, transaction ref,
+// notes, etc.) into a raw HTML string. Escaped for consistency, protecting
+// the authenticated staff session behind requireAuth() above.
+function escapeHtml(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 // ─── Amount in words ──────────────────────────────────────────────────────────
 
 function amountInWords(amount: number): string {
@@ -73,12 +87,22 @@ function buildReceiptHTML(proposal: any, payment: any): string {
   const words       = amountInWords(amt)
   const payType     = (payment.payment_type || 'advance').replace('_', ' ')
 
+  const receiptNumber   = escapeHtml(payment.receipt_number)
+  const clientName      = escapeHtml(proposal.client_name)
+  const clientPhone     = escapeHtml(proposal.client_phone)
+  const proposalNumber  = escapeHtml(proposal.proposal_number)
+  const eventType       = escapeHtml(proposal.event_type)
+  const paymentMode     = escapeHtml(payment.payment_mode)
+  const transactionRef  = escapeHtml(payment.transaction_ref)
+  const notes           = escapeHtml(payment.notes)
+  const payTypeEsc      = escapeHtml(payType)
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Receipt ${payment.receipt_number} — BookMySpaces</title>
+<title>Receipt ${receiptNumber} — BookMySpaces</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&family=DM+Sans:wght@300;400;500;600&display=swap');
 *{margin:0;padding:0;box-sizing:border-box}
@@ -178,7 +202,7 @@ body{font-family:'DM Sans',system-ui,sans-serif;color:#1a1a1a;background:#fff;fo
   </div>
   <div class="receipt-badge">
     <div class="receipt-type">Money Receipt</div>
-    <div class="receipt-num">${payment.receipt_number}</div>
+    <div class="receipt-num">${receiptNumber}</div>
     <div class="receipt-date">${fmtDate(payment.payment_date)}</div>
   </div>
 </div>
@@ -199,7 +223,7 @@ body{font-family:'DM Sans',system-ui,sans-serif;color:#1a1a1a;background:#fff;fo
   </div>
   <div class="mode-pill">
     <div class="mode-icon">${modeIcon(payment.payment_mode)}</div>
-    <div class="mode-lbl">${modeLabel(payment.payment_mode)}</div>
+    <div class="mode-lbl">${modeLabel(paymentMode)}</div>
   </div>
 </div>
 
@@ -207,19 +231,19 @@ body{font-family:'DM Sans',system-ui,sans-serif;color:#1a1a1a;background:#fff;fo
 <div class="detail-grid">
   <div class="d-item">
     <div class="d-lbl">Received From</div>
-    <div class="d-val">${proposal.client_name}</div>
+    <div class="d-val">${clientName}</div>
   </div>
   <div class="d-item">
     <div class="d-lbl">Contact</div>
-    <div class="d-val">${proposal.client_phone || '—'}</div>
+    <div class="d-val">${clientPhone || '—'}</div>
   </div>
   <div class="d-item">
     <div class="d-lbl">Proposal Reference</div>
-    <div class="d-val">${proposal.proposal_number}</div>
+    <div class="d-val">${proposalNumber}</div>
   </div>
   <div class="d-item">
     <div class="d-lbl">Event</div>
-    <div class="d-val">${proposal.event_type || '—'}</div>
+    <div class="d-val">${eventType || '—'}</div>
   </div>
   <div class="d-item">
     <div class="d-lbl">Payment Date</div>
@@ -227,7 +251,7 @@ body{font-family:'DM Sans',system-ui,sans-serif;color:#1a1a1a;background:#fff;fo
   </div>
   <div class="d-item">
     <div class="d-lbl">Payment Type</div>
-    <div class="d-val" style="text-transform:capitalize">${payType}</div>
+    <div class="d-val" style="text-transform:capitalize">${payTypeEsc}</div>
   </div>
 </div>
 
@@ -236,7 +260,7 @@ body{font-family:'DM Sans',system-ui,sans-serif;color:#1a1a1a;background:#fff;fo
   <div class="purpose-icon">✓</div>
   <div>
     <div class="purpose-label">Purpose</div>
-    <div class="purpose-text">${payType.charAt(0).toUpperCase()+payType.slice(1)} payment received against Proposal ${proposal.proposal_number}</div>
+    <div class="purpose-text">${payTypeEsc.charAt(0).toUpperCase()+payTypeEsc.slice(1)} payment received against Proposal ${proposalNumber}</div>
   </div>
 </div>
 
@@ -266,16 +290,16 @@ body{font-family:'DM Sans',system-ui,sans-serif;color:#1a1a1a;background:#fff;fo
 </div>
 
 <!-- Transaction ref -->
-${payment.transaction_ref ? `
+${transactionRef ? `
 <div class="ref-box">
   <span class="ref-lbl">Transaction Reference</span>
-  <span class="ref-val">${payment.transaction_ref}</span>
+  <span class="ref-val">${transactionRef}</span>
 </div>` : ''}
 
 <!-- Notes -->
-${payment.notes ? `
+${notes ? `
 <div class="notes-box">
-  <span style="font-size:8px;text-transform:uppercase;letter-spacing:.12em;color:#c9a84c;font-weight:600">Notes · </span>${payment.notes}
+  <span style="font-size:8px;text-transform:uppercase;letter-spacing:.12em;color:#c9a84c;font-weight:600">Notes · </span>${notes}
 </div>` : ''}
 
 <!-- Footer -->
@@ -302,7 +326,7 @@ ${payment.notes ? `
     This receipt has been generated through the BookMySpaces system and is valid without a physical signature.<br>
     <em style="color:#b0a080">Thank you for choosing BookMySpaces. We look forward to hosting your celebration.</em>
   </div>
-  <div class="closing-ref">Receipt No: ${payment.receipt_number}</div>
+  <div class="closing-ref">Receipt No: ${receiptNumber}</div>
 </div>
 
 </div>

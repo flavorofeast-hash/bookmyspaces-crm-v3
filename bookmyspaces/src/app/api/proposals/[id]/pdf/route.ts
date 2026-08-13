@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { generateProposalHTML } from '@/lib/proposal-pdf'
+import { requireAuth } from '@/lib/auth-guard'
 
 export async function GET(
   req: NextRequest,
@@ -14,6 +15,16 @@ export async function GET(
   // Previously a failure inside generateProposalHTML or getSupabaseAdmin
   // would return a generic 500 with no diagnostic info.
   // Now errors log the exact failure point so you can see it in Vercel logs.
+
+  // SECURITY: this route was previously unauthenticated — any caller who
+  // could guess/enumerate a proposal UUID could read full client PII and
+  // pricing. The client-facing share flow uses a separate token-based route
+  // (src/app/api/proposal/share/[token]/route.ts) and does not depend on
+  // this one; this route is for CRM staff to generate a PDF from within the
+  // authenticated app, so it belongs behind requireAuth() like the sibling
+  // invoice/receipt routes.
+  const auth = await requireAuth()
+  if (!auth.ok) return auth.response
 
   const supabaseAdmin = getSupabaseAdmin()
 
