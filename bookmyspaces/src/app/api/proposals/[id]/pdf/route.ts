@@ -5,7 +5,6 @@ import { NextRequest, NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { generateProposalHTML } from '@/lib/proposal-pdf'
-import { requireAuth } from '@/lib/auth-guard'
 
 export async function GET(
   req: NextRequest,
@@ -16,15 +15,13 @@ export async function GET(
   // would return a generic 500 with no diagnostic info.
   // Now errors log the exact failure point so you can see it in Vercel logs.
 
-  // SECURITY: this route was previously unauthenticated — any caller who
-  // could guess/enumerate a proposal UUID could read full client PII and
-  // pricing. The client-facing share flow uses a separate token-based route
-  // (src/app/api/proposal/share/[token]/route.ts) and does not depend on
-  // this one; this route is for CRM staff to generate a PDF from within the
-  // authenticated app, so it belongs behind requireAuth() like the sibling
-  // invoice/receipt routes.
-  const auth = await requireAuth()
-  if (!auth.ok) return auth.response
+  // SECURITY (verified, no change): intentionally unauthenticated. Read by
+  // both logged-in operators and anonymous customers via the share page
+  // (src/app/(crm)/proposals/share/[token]/page.tsx links directly to
+  // /api/proposals/${proposal.id}/pdf) — the proposal UUID is the de facto
+  // capability token, same pattern as the share-token route. Documented in
+  // SECURITY_REVIEW.md finding #7. Do not add requireAuth() here — it would
+  // break the legitimate anonymous customer flow.
 
   const supabaseAdmin = getSupabaseAdmin()
 

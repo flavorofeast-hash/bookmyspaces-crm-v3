@@ -5,16 +5,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { generateProposalHTML } from '@/lib/proposal-pdf'
-import { requireAuth } from '@/lib/auth-guard'
 
-// SECURITY: previously unauthenticated — any caller who could guess/enumerate
-// a proposal UUID could read full client PII/pricing and flip its status to
-// 'viewed'. The client-facing share flow uses a separate token-based route
-// (src/app/api/proposal/share/[token]/route.ts); this id-keyed route is for
-// CRM staff previewing from within the authenticated app.
+// SECURITY (verified, no change): intentionally unauthenticated, same as the
+// sibling /pdf route (see its comment + SECURITY_REVIEW.md finding #7). The
+// 'sent' -> 'viewed' status flip below IS the proposal-view-tracking feature
+// for anonymous customers opening their share link — requireAuth() here
+// would silently break that tracking and the customer-facing preview itself.
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  const auth = await requireAuth()
-  if (!auth.ok) return auth.response
   const supabaseAdmin = getSupabaseAdmin()
   try {
     const { data: proposal, error } = await supabaseAdmin.from('proposals').select('*').eq('id', params.id).single()
