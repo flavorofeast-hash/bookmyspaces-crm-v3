@@ -18,12 +18,17 @@ export const runtime = 'nodejs'
 export const maxDuration = 60
 
 export async function GET(request: NextRequest) {
+  // SECURITY: fail closed. Previously `if (cronSecret)` meant an unset
+  // CRON_SECRET left this route completely unauthenticated in production
+  // instead of blocking it — the opposite of the intended fail-safe.
   const cronSecret = process.env.CRON_SECRET
-  if (cronSecret) {
-    const token = request.headers.get('authorization')?.replace('Bearer ', '').trim()
-    if (token !== cronSecret) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+  if (!cronSecret) {
+    logger.error('cron', 'CRON_SECRET not configured — refusing request')
+    return NextResponse.json({ error: 'Cron not configured' }, { status: 500 })
+  }
+  const token = request.headers.get('authorization')?.replace('Bearer ', '').trim()
+  if (token !== cronSecret) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
   try {
