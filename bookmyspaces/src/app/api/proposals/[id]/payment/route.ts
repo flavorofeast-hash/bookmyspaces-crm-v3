@@ -33,7 +33,12 @@ export async function POST(
     // number by convention". The API takes a positive refund amount from the
     // operator and applies the sign itself.
     const isRefund = payment_type === 'refund'
-    if (!amount || Number(amount) <= 0) {
+    // FIX: `!amount || Number(amount) <= 0` let a non-numeric string (e.g.
+    // "abc") through — !amount is false for a truthy string, and
+    // Number("abc") <= 0 is also false (NaN comparisons are always false) —
+    // so NaN reached the payments.amount insert below. Number.isFinite()
+    // rejects NaN/Infinity/non-numeric input directly.
+    if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) {
       return NextResponse.json({ error: 'Valid amount is required (positive; refunds are negated automatically)' }, { status: 400 })
     }
 

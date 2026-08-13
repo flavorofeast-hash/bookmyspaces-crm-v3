@@ -13,6 +13,13 @@ import { logger } from '@/lib/logger'
 
 export const dynamic = 'force-dynamic'
 
+// Mirrors the DB-level CHECK (migration 009: user_profiles.role CHECK IN
+// ('admin','manager','sales','marketing')). Previously body.role was passed
+// straight through to the DB with no app-level validation — an invalid role
+// still failed (the CHECK constraint enforces this), but as a raw Postgres
+// error string instead of a clean 400.
+const VALID_ROLES = ['admin', 'manager', 'sales', 'marketing'] as const
+
 export async function GET(): Promise<NextResponse> {
   try {
     const auth = await requireRole(['admin', 'manager'])
@@ -46,6 +53,9 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     const db = getSupabaseAdmin()
 
     if (body.action === 'set_role' && body.role) {
+      if (!VALID_ROLES.includes(body.role as typeof VALID_ROLES[number])) {
+        return NextResponse.json({ error: `Invalid role. Must be one of: ${VALID_ROLES.join(', ')}` }, { status: 400 })
+      }
       const { error } = await db
         .from('user_profiles')
         .update({ role: body.role, updated_at: new Date().toISOString() })
@@ -91,6 +101,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       full_name : string
       role      : string
       phone    ?: string
+    }
+
+    if (!VALID_ROLES.includes(body.role as typeof VALID_ROLES[number])) {
+      return NextResponse.json({ error: `Invalid role. Must be one of: ${VALID_ROLES.join(', ')}` }, { status: 400 })
     }
 
     const db       = getSupabaseAdmin()
