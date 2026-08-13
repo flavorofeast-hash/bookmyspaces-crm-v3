@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { MetaAdapter } from './adapters/meta-adapter'
 import { classifySentiment } from './interaction-service'
 
@@ -43,6 +43,73 @@ describe('MetaAdapter.parseWebhook', () => {
     const result = await adapter.publishPost({ postType: 'text', content: 'hi', media: [] })
     expect(result.ok).toBe(false)
     expect(result.error).toContain('meta_not_configured')
+  })
+})
+
+describe('MetaAdapter.publishPost (configured)', () => {
+  const ORIGINAL_ENV = { ...process.env }
+
+  beforeEach(() => {
+    process.env.META_APP_SECRET = 'secret'
+    process.env.META_PAGE_ACCESS_TOKEN = 'token'
+    process.env.META_PAGE_ID = 'page123'
+    process.env.META_IG_ID = 'ig456'
+  })
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV }
+    vi.unstubAllGlobals()
+  })
+
+  it('publishes a text-only Facebook post to /feed', async () => {
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(String(url))
+      return new Response(JSON.stringify({ id: 'post_1' }), { status: 200 })
+    }))
+    const adapter = new MetaAdapter('facebook')
+    const result = await adapter.publishPost({ postType: 'text', content: 'Hello', media: [] })
+    expect(result).toEqual({ ok: true, externalPostId: 'post_1' })
+    expect(calls[0]).toContain('/page123/feed')
+  })
+
+  it('publishes a Facebook image post to /photos, not /feed', async () => {
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(String(url))
+      return new Response(JSON.stringify({ id: 'photo_1', post_id: 'post_2' }), { status: 200 })
+    }))
+    const adapter = new MetaAdapter('facebook')
+    const result = await adapter.publishPost({
+      postType: 'image', content: 'Look', media: [{ url: 'https://x/img.jpg', type: 'image' }],
+    })
+    expect(result).toEqual({ ok: true, externalPostId: 'post_2' })
+    expect(calls[0]).toContain('/page123/photos')
+  })
+
+  it('publishes Instagram via the two-step container + media_publish flow', async () => {
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(String(url))
+      if (String(url).includes('/media_publish')) {
+        return new Response(JSON.stringify({ id: 'ig_post_1' }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ id: 'creation_1' }), { status: 200 })
+    }))
+    const adapter = new MetaAdapter('instagram')
+    const result = await adapter.publishPost({
+      postType: 'image', content: 'Caption', media: [{ url: 'https://x/img.jpg', type: 'image' }],
+    })
+    expect(result).toEqual({ ok: true, externalPostId: 'ig_post_1' })
+    expect(calls[0]).toContain('/ig456/media')
+    expect(calls[1]).toContain('/ig456/media_publish')
+  })
+
+  it('refuses an Instagram post with no media', async () => {
+    const adapter = new MetaAdapter('instagram')
+    const result = await adapter.publishPost({ postType: 'text', content: 'No image', media: [] })
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('instagram_requires_media')
   })
 })
 
