@@ -17,6 +17,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { logger } from '@/lib/logger'
+import { getSupabaseAdmin } from '@/lib/supabase'
+import { callGraphAPI } from '@/lib/social/graph-api-client'
 
 const GRAPH = 'https://graph.facebook.com/v23.0'
 
@@ -34,6 +36,57 @@ export interface MessagingEvent {
   timestamp: number | null
   externalMessageId: string | null
   platform: 'facebook' | 'instagram'
+}
+
+// ─── Leadgen idempotency (migration 029, social_leadgen_events) ───────────
+// Meta integration hardening pass. Meta redelivers a leadgen webhook on any
+// non-2xx response/timeout, and a captured valid payload can be replayed —
+// without this, every replay re-fetched the same Graph API form data and
+// re-ran captureLeadWithJourney(), inserting a duplicate `leads` row on
+// every replay when the form had no phone/email to dedupe against (see
+// SECURITY_AUDIT_REPORT.md finding M9). `claimLeadgenEvent` uses an atomic
+// INSERT ... ON CONFLICT DO NOTHING so two concurrent deliveries of the
+// same leadgen_id can't both "win" the race — the DB's UNIQUE(leadgen_id)
+// constraint is the actual guarantee, this is just how the app observes it.
+
+/**
+ * Attempts to claim a leadgen_id as "being processed now." Returns true the
+ * first time (caller should proceed), false on every subsequent call for
+ * the same leadgen_id (caller should skip — it's a replay). Fails open
+ * (returns true) on a DB error, so a database hiccup degrades to
+ * "possible duplicate processing," never "leadgen event silently dropped."
+ */
+export async function claimLeadgenEvent(leadgenId: string, platform: 'facebook' | 'instagram'): Promise<boolean> {
+  try {
+    const db = getSupabaseAdmin()
+    const { data, error } = await db
+      .from('social_leadgen_events')
+      .insert({ leadgen_id: leadgenId, platform })
+      .select('id')
+      .single()
+
+    if (!error && data) return true
+    // Postgres unique_violation — this leadgen_id was already claimed.
+    if (error?.code === '23505') {
+      logger.info('social', 'Leadgen event already processed, skipping (replay)', { leadgenId, platform })
+      return false
+    }
+    logger.error('social', 'claimLeadgenEvent insert failed — proceeding anyway (fail open)', error, { leadgenId, platform })
+    return true
+  } catch (err) {
+    logger.error('social', 'claimLeadgenEvent threw — proceeding anyway (fail open)', err, { leadgenId, platform })
+    return true
+  }
+}
+
+/** Best-effort: links a claimed leadgen event to the lead it produced/matched, once known. Never throws. */
+export async function linkLeadgenEventToLead(leadgenId: string, leadId: string): Promise<void> {
+  try {
+    const db = getSupabaseAdmin()
+    await db.from('social_leadgen_events').update({ lead_id: leadId }).eq('leadgen_id', leadgenId)
+  } catch (err) {
+    logger.error('social', 'linkLeadgenEventToLead failed (non-fatal)', err, { leadgenId, leadId })
+  }
 }
 
 /**
@@ -120,35 +173,34 @@ export async function fetchLeadgenDetails(leadgenId: string): Promise<LeadgenDet
     return null
   }
 
-  try {
-    const res = await fetch(`${GRAPH}/${leadgenId}?access_token=${encodeURIComponent(accessToken)}`)
-    const json = (await res.json()) as { field_data?: Array<{ name: string; values: string[] }>; error?: { message?: string } }
-    if (!res.ok || !json.field_data) {
-      logger.error('social', `fetchLeadgenDetails Graph error for ${leadgenId}`, json.error)
-      return null
-    }
+  const result = await callGraphAPI<{ field_data?: Array<{ name: string; values: string[] }> }>(
+    `${GRAPH}/${leadgenId}?access_token=${encodeURIComponent(accessToken)}`,
+    { method: 'GET' },
+    'fetch-leadgen-details'
+  )
 
-    const byName = new Map<string, string>()
-    for (const field of json.field_data) {
-      const key = field.name?.toLowerCase()
-      const value = field.values?.[0]
-      if (key && value) byName.set(key, value)
-    }
-
-    const firstMatch = (keys: string[]) => keys.map((k) => byName.get(k)).find((v) => !!v) ?? null
-    const first = firstMatch(FIRST_NAME_FIELDS)
-    const last = firstMatch(LAST_NAME_FIELDS)
-    const combinedName = [first, last].filter(Boolean).join(' ') || null
-    const name = firstMatch(NAME_FIELDS) ?? combinedName
-
-    return {
-      name,
-      phone: firstMatch(PHONE_FIELDS),
-      email: firstMatch(EMAIL_FIELDS),
-      raw: json as Record<string, unknown>,
-    }
-  } catch (err) {
-    logger.error('social', `fetchLeadgenDetails failed for ${leadgenId}`, err)
+  if (!result.ok || !result.data?.field_data) {
+    // callGraphAPI already logged the failure (with retries) — nothing more to add here.
     return null
+  }
+
+  const byName = new Map<string, string>()
+  for (const field of result.data.field_data) {
+    const key = field.name?.toLowerCase()
+    const value = field.values?.[0]
+    if (key && value) byName.set(key, value)
+  }
+
+  const firstMatch = (keys: string[]) => keys.map((k) => byName.get(k)).find((v) => !!v) ?? null
+  const first = firstMatch(FIRST_NAME_FIELDS)
+  const last = firstMatch(LAST_NAME_FIELDS)
+  const combinedName = [first, last].filter(Boolean).join(' ') || null
+  const name = firstMatch(NAME_FIELDS) ?? combinedName
+
+  return {
+    name,
+    phone: firstMatch(PHONE_FIELDS),
+    email: firstMatch(EMAIL_FIELDS),
+    raw: result.data as Record<string, unknown>,
   }
 }

@@ -12,15 +12,16 @@
 // before the body is trusted, exactly like /api/whatsapp/webhook.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const dynamic = 'force-dynamic'
-export const runtime = 'nodejs'
+export const dynamic    = 'force-dynamic'
+export const runtime    = 'nodejs'
+export const maxDuration = 30
 
 import { NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSocialAdapter } from '@/lib/social/adapter-registry'
 import { ingestInteraction } from '@/lib/social/interaction-service'
 import { checkRateLimit, clientIpFrom } from '@/lib/rate-limit'
-import { parseLeadgenEvents, parseMessagingEvents, fetchLeadgenDetails } from '@/lib/social/meta-lead-capture'
+import { parseLeadgenEvents, parseMessagingEvents, fetchLeadgenDetails, claimLeadgenEvent, linkLeadgenEventToLead } from '@/lib/social/meta-lead-capture'
 import { captureLeadWithJourney } from '@/lib/leads/create-lead-with-journey'
 import { captureSocialDirectMessage } from '@/lib/social/dm-capture-service'
 
@@ -30,9 +31,19 @@ export async function GET(req: Request, { params }: { params: { platform: string
   const token = url.searchParams.get('hub.verify_token')
   const challenge = url.searchParams.get('hub.challenge')
 
+  if (!process.env.META_VERIFY_TOKEN) {
+    logger.error('social-webhook', `${params.platform} verification failed: META_VERIFY_TOKEN is not set. Add it in Vercel -> Project -> Settings -> Environment Variables, then redeploy.`)
+    return NextResponse.json({ error: 'Server configuration error' }, { status: 500 })
+  }
+
   if (mode === 'subscribe' && token && token === process.env.META_VERIFY_TOKEN && challenge) {
+    logger.info('social-webhook', `${params.platform} webhook verification succeeded — Meta subscription confirmed.`)
     return new Response(challenge, { status: 200 })
   }
+
+  logger.error('social-webhook', `${params.platform} verification failed: hub.mode/hub.verify_token/hub.challenge did not match expected values.`, undefined, {
+    modeReceived: mode, modeExpected: 'subscribe', tokenMatched: token === process.env.META_VERIFY_TOKEN, challengePresent: !!challenge,
+  })
   return NextResponse.json({ error: 'Verification failed' }, { status: 403 })
 }
 
@@ -75,6 +86,13 @@ export async function POST(req: Request, { params }: { params: { platform: strin
 
       const leadgenEvents = parseLeadgenEvents(payload, platform)
       for (const event of leadgenEvents) {
+        // Meta integration hardening pass — see meta-lead-capture.ts's
+        // claimLeadgenEvent() header comment: skip if this leadgen_id was
+        // already processed (a Meta redelivery or a replayed payload),
+        // instead of re-fetching Graph and re-running lead capture.
+        const claimed = await claimLeadgenEvent(event.leadgenId, platform)
+        if (!claimed) continue
+
         const details = await fetchLeadgenDetails(event.leadgenId)
         if (!details) continue // unconfigured or Graph error — already logged, skip silently
         const captured = await captureLeadWithJourney({
@@ -85,7 +103,10 @@ export async function POST(req: Request, { params }: { params: { platform: strin
           notes: `Lead Ads form ${event.formId ?? 'unknown'}${event.adId ? `, ad ${event.adId}` : ''}`,
           qualifyText: null,
         })
-        if (captured) leadsFromForms++
+        if (captured) {
+          leadsFromForms++
+          await linkLeadgenEventToLead(event.leadgenId, captured.leadId)
+        }
       }
 
       const messagingEvents = parseMessagingEvents(payload, platform)

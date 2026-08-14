@@ -33,6 +33,8 @@ export interface CaptureDMResult {
   leadId: string | null
   conversationId: string
   isNewLead: boolean
+  /** true when this externalMessageId was already recorded — no work was (re-)done. */
+  duplicate?: boolean
 }
 
 /**
@@ -40,11 +42,36 @@ export interface CaptureDMResult {
  * (created on first contact, reused on every message after via the
  * conversation's own customer_id — never re-resolved by treating the PSID
  * as a phone/email). Never throws.
+ *
+ * Meta integration hardening pass: replays a delivery-retried webhook (Meta
+ * redelivers on any non-2xx/timeout, and a captured valid payload can be
+ * replayed by an attacker — same class of gap the WhatsApp webhook's
+ * orchestration path already guards against) used to re-run lead
+ * qualification/package-recommendation AI calls and insert a duplicate
+ * unified_messages row on every replay, with no idempotency check at all.
+ * Mirrors the same dedup pattern: check external_message_id before doing
+ * any work.
  */
 export async function captureSocialDirectMessage(event: MessagingEvent): Promise<CaptureDMResult | null> {
   try {
     const db = getSupabaseAdmin()
     const channelType = event.platform // 'facebook' | 'instagram' — both valid ChannelType values
+
+    if (event.externalMessageId) {
+      const { data: existingMessage } = await db
+        .from('unified_messages')
+        .select('id, conversation_id')
+        .eq('external_message_id', event.externalMessageId)
+        .limit(1)
+        .maybeSingle()
+
+      if (existingMessage) {
+        logger.info('social', 'captureSocialDirectMessage: duplicate delivery, skipping', {
+          platform: event.platform, mid: event.externalMessageId,
+        })
+        return { leadId: null, conversationId: existingMessage.conversation_id, isNewLead: false, duplicate: true }
+      }
+    }
 
     const { conversationId, channelId, isNewConversation } = await getOrCreateConversation({
       channelType,

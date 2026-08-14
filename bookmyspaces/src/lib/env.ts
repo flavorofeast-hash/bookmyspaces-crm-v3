@@ -36,6 +36,7 @@ const OPTIONAL_VARS: Record<string, string[]> = {
   'Google Sheets sync'                      : ['GOOGLE_SERVICE_ACCOUNT_EMAIL', 'GOOGLE_PRIVATE_KEY', 'GOOGLE_SHEETS_ID'],
   'WhatsApp (Meta Cloud API)'               : ['WHATSAPP_ACCESS_TOKEN', 'WHATSAPP_PHONE_NUMBER_ID', 'WHATSAPP_WEBHOOK_VERIFY_TOKEN'],
   'WhatsApp webhook signature verification' : ['WHATSAPP_APP_SECRET'],
+  'Social (Meta Facebook/Instagram)'        : ['META_APP_SECRET', 'META_VERIFY_TOKEN', 'META_PAGE_ACCESS_TOKEN', 'META_PAGE_ID', 'META_IG_ID'],
   'Cron endpoint authentication'            : ['CRON_SECRET'],
   'Transactional email (Resend)'            : ['RESEND_API_KEY', 'EMAIL_FROM'],
   'Secondary WhatsApp subsystem (Wati)'     : ['WATI_BASE_URL', 'WATI_API_TOKEN'],

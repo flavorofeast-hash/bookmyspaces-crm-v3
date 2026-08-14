@@ -1,5 +1,34 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { parseLeadgenEvents, parseMessagingEvents, fetchLeadgenDetails } from './meta-lead-capture'
+
+const dbState = {
+  insertError: null as { code: string; message: string } | null,
+  updateCalls: [] as Array<{ values: unknown; leadgenId: string }>,
+}
+
+vi.mock('@/lib/supabase', () => ({
+  getSupabaseAdmin: () => ({
+    from: (table: string) => {
+      if (table !== 'social_leadgen_events') throw new Error(`unexpected table: ${table}`)
+      return {
+        insert: () => ({
+          select: () => ({
+            single: () => dbState.insertError
+              ? Promise.resolve({ data: null, error: dbState.insertError })
+              : Promise.resolve({ data: { id: 'event-1' }, error: null }),
+          }),
+        }),
+        update: (values: unknown) => ({
+          eq: (_col: string, leadgenId: string) => {
+            dbState.updateCalls.push({ values, leadgenId })
+            return Promise.resolve({ error: null })
+          },
+        }),
+      }
+    },
+  }),
+}))
+
+import { parseLeadgenEvents, parseMessagingEvents, fetchLeadgenDetails, claimLeadgenEvent, linkLeadgenEventToLead } from './meta-lead-capture'
 
 describe('parseLeadgenEvents', () => {
   it('parses a Facebook Lead Ads leadgen event', () => {
@@ -126,5 +155,36 @@ describe('fetchLeadgenDetails', () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network down') }))
     const result = await fetchLeadgenDetails('lg_1')
     expect(result).toBeNull()
+  })
+})
+
+// Meta integration hardening pass — leadgen webhook idempotency
+// (migration 029, social_leadgen_events).
+describe('claimLeadgenEvent / linkLeadgenEventToLead', () => {
+  beforeEach(() => {
+    dbState.insertError = null
+    dbState.updateCalls.length = 0
+  })
+
+  it('claims a new leadgen_id (first delivery)', async () => {
+    const claimed = await claimLeadgenEvent('lg_1', 'facebook')
+    expect(claimed).toBe(true)
+  })
+
+  it('does not re-claim a leadgen_id already recorded (replay/redelivery)', async () => {
+    dbState.insertError = { code: '23505', message: 'duplicate key value violates unique constraint' }
+    const claimed = await claimLeadgenEvent('lg_1', 'facebook')
+    expect(claimed).toBe(false)
+  })
+
+  it('fails open (claims anyway) on an unexpected DB error, never silently drops the event', async () => {
+    dbState.insertError = { code: '42P01', message: 'relation does not exist' }
+    const claimed = await claimLeadgenEvent('lg_1', 'facebook')
+    expect(claimed).toBe(true)
+  })
+
+  it('links a claimed event to the lead it produced', async () => {
+    await linkLeadgenEventToLead('lg_1', 'lead-1')
+    expect(dbState.updateCalls).toEqual([{ values: { lead_id: 'lead-1' }, leadgenId: 'lg_1' }])
   })
 })

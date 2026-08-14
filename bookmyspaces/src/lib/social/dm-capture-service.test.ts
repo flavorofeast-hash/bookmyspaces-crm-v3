@@ -5,6 +5,10 @@ const state = {
   existingCustomerId: null as string | null,
   updateCalls: [] as unknown[],
   throwOnGetOrCreateConversation: false,
+  // Meta integration hardening pass — dedup check against unified_messages.
+  // null = no existing message with this external_message_id (default,
+  // matches every pre-existing test's assumption that nothing is a replay).
+  existingMessageForDedup: null as { id: string; conversation_id: string } | null,
 }
 const recorded: unknown[] = []
 const captureCalls: unknown[] = []
@@ -14,6 +18,17 @@ const packageRecCalls: unknown[] = []
 vi.mock('@/lib/supabase', () => ({
   getSupabaseAdmin: () => ({
     from: (table: string) => {
+      if (table === 'unified_messages') {
+        return {
+          select: () => ({
+            eq: () => ({
+              limit: () => ({
+                maybeSingle: () => Promise.resolve({ data: state.existingMessageForDedup }),
+              }),
+            }),
+          }),
+        }
+      }
       if (table !== 'unified_conversations') throw new Error(`unexpected table: ${table}`)
       return {
         select: () => ({
@@ -72,6 +87,7 @@ beforeEach(() => {
   state.isNewConversation = true
   state.existingCustomerId = null
   state.updateCalls.length = 0
+  state.existingMessageForDedup = null
   recorded.length = 0
   captureCalls.length = 0
   qualifyCalls.length = 0
@@ -130,5 +146,35 @@ describe('captureSocialDirectMessage', () => {
     })
     expect(result).toBeNull()
     state.throwOnGetOrCreateConversation = false
+  })
+
+  // Meta integration hardening pass: a replayed/redelivered webhook (Meta
+  // retries on any non-2xx, and a captured payload can be replayed) used to
+  // re-run lead capture/qualification and insert a duplicate message on
+  // every replay — no idempotency check existed at all.
+  it('skips a duplicate delivery (same externalMessageId already recorded) without re-running any side effects', async () => {
+    state.existingMessageForDedup = { id: 'msg-existing-1', conversation_id: 'conv-existing-1' }
+
+    const result = await captureSocialDirectMessage({
+      senderPsid: 'psid_1', text: 'Do you have availability this weekend?',
+      timestamp: 1700000000, externalMessageId: 'mid_1', platform: 'facebook',
+    })
+
+    expect(result).toEqual({ leadId: null, conversationId: 'conv-existing-1', isNewLead: false, duplicate: true })
+    expect(captureCalls).toHaveLength(0)
+    expect(qualifyCalls).toHaveLength(0)
+    expect(packageRecCalls).toHaveLength(0)
+    expect(recorded).toHaveLength(0)
+    expect(state.updateCalls).toHaveLength(0)
+  })
+
+  it('does not attempt a dedup check when externalMessageId is null (nothing to key on)', async () => {
+    // Regression guard: the dedup query must be gated on externalMessageId
+    // being present, or every DM with no message id (already possible per
+    // the existing "instagram_dm" test above) would incorrectly short-circuit.
+    await captureSocialDirectMessage({
+      senderPsid: 'psid_4', text: 'hello', timestamp: null, externalMessageId: null, platform: 'facebook',
+    })
+    expect(captureCalls).toHaveLength(1)
   })
 })
