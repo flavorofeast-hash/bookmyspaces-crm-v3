@@ -186,5 +186,20 @@ describe('send-message.ts (consolidated WhatsApp sender)', () => {
       const result = await sendWhatsAppTemplate('9051459463', 'x', 'en', [])
       expect(result).toEqual({ success: false, error: 'not_configured' })
     })
+
+    it('retries on failure and reports failed after exhausting retries', async () => {
+      configureMeta()
+      vi.spyOn(global, 'fetch').mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve('server error'),
+      } as unknown as Response)
+
+      const result = await sendWhatsAppTemplate('9051459463', 'inquiry_followup', 'en', [])
+
+      expect(result.success).toBe(false)
+      expect(global.fetch).toHaveBeenCalledTimes(3) // MAX_RETRIES = 2 -> 3 attempts total
+      expect(state.updateCalls.at(-1)?.status).toBe('failed')
+    }, 10000)
   })
 })

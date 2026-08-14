@@ -196,28 +196,46 @@ export async function sendWhatsAppTemplate(
     template: { name: templateName, language: { code: languageCode }, components },
   }
 
-  try {
-    const response = await callWhatsAppAPI(payload)
-    const waMessageId = response.messages?.[0]?.id ?? null
+  // FIX (repo-wide audit finding): this previously made exactly one attempt
+  // and gave up, unlike sendWhatsAppText's retry-with-backoff above. Broadcast
+  // campaigns (sendBroadcastCampaign -> sendWhatsAppTemplateSimple -> this)
+  // can run up to hundreds of recipients; a single transient 5xx permanently
+  // failed that recipient with no retry. Now matches sendWhatsAppText's
+  // MAX_RETRIES/RETRY_DELAY_MS backoff.
+  let lastError: string | null = null
 
-    if (logId) {
-      await supabase
-        .from('whatsapp_messages')
-        .update({ message_status: MessageStatus.SENT, whatsapp_message_id: waMessageId })
-        .eq('id', logId)
-    }
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await callWhatsAppAPI(payload)
+      const waMessageId = response.messages?.[0]?.id ?? null
 
-    return { success: true, waMessageId: waMessageId ?? undefined }
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err)
-    if (logId) {
-      await supabase
-        .from('whatsapp_messages')
-        .update({ message_status: MessageStatus.FAILED })
-        .eq('id', logId)
+      if (logId) {
+        await supabase
+          .from('whatsapp_messages')
+          .update({ message_status: MessageStatus.SENT, whatsapp_message_id: waMessageId })
+          .eq('id', logId)
+      }
+
+      return { success: true, waMessageId: waMessageId ?? undefined }
+    } catch (err: unknown) {
+      lastError = err instanceof Error ? err.message : String(err)
+      logger.error('whatsapp-send-template', `Attempt ${attempt + 1} failed`, lastError, { phone: to, templateName })
+
+      if (attempt < MAX_RETRIES) {
+        await new Promise(r => setTimeout(r, RETRY_DELAY_MS * (attempt + 1)))
+      }
     }
-    return { success: false, error: errMsg }
   }
+
+  if (logId) {
+    await supabase
+      .from('whatsapp_messages')
+      .update({ message_status: MessageStatus.FAILED })
+      .eq('id', logId)
+  }
+
+  logger.error('whatsapp-send-template', 'All retries failed', lastError, { phone: to, templateName })
+  return { success: false, error: lastError ?? 'Unknown error' }
 }
 
 export async function sendWhatsAppTemplateSimple(

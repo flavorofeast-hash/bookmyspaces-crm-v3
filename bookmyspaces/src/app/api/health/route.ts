@@ -88,8 +88,24 @@ export async function GET() {
   checks.openai_key = process.env.OPENAI_API_KEY ? { status: 'ok', message: 'Configured' } : { status: 'warn', message: 'OPENAI_API_KEY not set — RAG embeddings disabled' }
   checks.google_sheets = process.env.GOOGLE_SHEETS_ID ? { status: 'ok', message: 'Sheet ID configured' } : { status: 'warn', message: 'GOOGLE_SHEETS_ID not set — sync disabled' }
 
+  // FIX (repo-wide audit finding): this used to check WATI_BASE_URL/
+  // WATI_API_TOKEN — Wati.io is the legacy provider, not what actually
+  // sends/receives WhatsApp messages (that's the Meta Cloud API, see
+  // src/lib/whatsapp/send-message.ts and the webhook at
+  // src/app/api/whatsapp/webhook/route.ts). Ops monitoring this endpoint
+  // was getting a signal from a subsystem nothing else depends on.
+  const metaWhatsappConfigured = !!(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID)
+  checks.whatsapp = {
+    status: metaWhatsappConfigured ? 'ok' : 'warn',
+    message: metaWhatsappConfigured
+      ? 'Meta Cloud API configured — webhook active'
+      : 'WHATSAPP_ACCESS_TOKEN / WHATSAPP_PHONE_NUMBER_ID not set — WhatsApp send/receive disabled',
+  }
   const watiConfigured = !!(process.env.WATI_BASE_URL && process.env.WATI_API_TOKEN)
-  checks.whatsapp = { status: watiConfigured ? 'ok' : 'warn', message: watiConfigured ? 'Wati configured — webhook active' : 'Wati not yet configured — chatbot works without it' }
+  checks.wati_legacy = {
+    status: watiConfigured ? 'ok' : 'warn',
+    message: watiConfigured ? 'Wati configured (legacy, transcription helper only)' : 'Wati not configured (legacy, optional — see .env.example)',
+  }
 
   const values = Object.values(checks)
   const hasErrors = values.some(c => c.status === 'error')
