@@ -780,14 +780,25 @@ export default function SalesOperationsDashboard() {
 
       <div className="max-w-screen-2xl mx-auto w-full px-6 py-5 space-y-5">
 
-        {/* KPI cards */}
+        {/* KPI cards.
+            FIX (repo-wide audit finding): /api/leads/hot caps at 500 rows
+            (newest first), so once the table passes 500 leads, headline
+            stats computed from the loaded `leads` array silently under-report.
+            /api/dashboard/stats has no such cap and already computes these
+            same aggregates server-side over every row — it was fetched into
+            `summary` but never read. Business-metric cards below now prefer
+            `summary`'s unbounded figures, falling back to the client-computed
+            value only until that fetch resolves. Filter-driving counts
+            (hotCount/escCount/overdueLeads, used by the quick-filter pills
+            and table below) are left untouched so a pill's number always
+            matches what clicking it actually shows. */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <StatCard label="Total Leads"    value={leads.length}     sub={`${leads.filter((l) => { const d = new Date(l.created_at); return new Date().toDateString() === d.toDateString() }).length} today`} icon={Users}       accent="bg-gray-100 text-gray-600" />
-          <StatCard label="HOT Leads"      value={hotCount}         sub={`${staleLeads.filter(l=>l.lead_temperature==='HOT').length} stale`}                                                                   icon={Flame}       accent="bg-red-100 text-red-600"     highlight={hotCount > 0} />
+          <StatCard label="Total Leads"    value={summary?.total_leads ?? leads.length} sub={`${leads.filter((l) => { const d = new Date(l.created_at); return new Date().toDateString() === d.toDateString() }).length} today`} icon={Users}       accent="bg-gray-100 text-gray-600" />
+          <StatCard label="HOT Leads"      value={summary?.hot_leads ?? hotCount} sub={`${staleLeads.filter(l=>l.lead_temperature==='HOT').length} stale`}                                                                   icon={Flame}       accent="bg-red-100 text-red-600"     highlight={hotCount > 0} />
           <StatCard label="Overdue"        value={overdueLeads.length} sub="need action now"                                                                                                                  icon={Clock}       accent="bg-amber-100 text-amber-600"  highlight={overdueLeads.length > 0} />
-          <StatCard label="Escalated"      value={escCount}         sub="needs attention"                                                                                                                      icon={AlertTriangle} accent="bg-red-100 text-red-600"   highlight={escCount > 0} />
-          <StatCard label="Pipeline Value" value={formatINR(totalRevenue)} sub="estimated"                                                                                                                    icon={TrendingUp}  accent="bg-blue-100 text-blue-600" />
-          <StatCard label="Conversion"     value={`${convRate}%`}   sub={`${confirmedCount} confirmed`}                                                                                                       icon={CheckCircle2} accent="bg-emerald-100 text-emerald-600" />
+          <StatCard label="Escalated"      value={summary?.escalations_pending ?? escCount} sub="needs attention"                                                                                                                      icon={AlertTriangle} accent="bg-red-100 text-red-600"   highlight={escCount > 0} />
+          <StatCard label="Pipeline Value" value={formatINR(summary?.total_pipeline_value ?? totalRevenue)} sub="estimated"                                                                                                                    icon={TrendingUp}  accent="bg-blue-100 text-blue-600" />
+          <StatCard label="Conversion"     value={`${summary?.conversion_rate ?? convRate}%`}   sub={`${confirmedCount} confirmed`}                                                                                                       icon={CheckCircle2} accent="bg-emerald-100 text-emerald-600" />
         </div>
 
         {/* Priority queues — Phase 4 */}
