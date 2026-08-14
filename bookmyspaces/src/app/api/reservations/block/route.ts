@@ -50,8 +50,12 @@ export async function POST(req: NextRequest) {
           { status: 409 }
         )
       }
-      logger.error('reservations/block', 'POST createManualBlock db_error', result.message)
-      return NextResponse.json({ error: 'Could not create manual block', detail: result.message }, { status: 502 })
+      // createManualBlock() calls createReservation() directly (no pricing
+      // quote step), so 'incomplete_quote' can never actually occur here —
+      // this narrows only to satisfy CreateReservationResult's shared type.
+      const message = result.error === 'db_error' ? result.message : `Unexpected error: ${result.error}`
+      logger.error('reservations/block', 'POST createManualBlock error', message)
+      return NextResponse.json({ error: 'Could not create manual block', detail: message }, { status: 502 })
     }
 
     return NextResponse.json({ reservation: result.reservation }, { status: 201 })

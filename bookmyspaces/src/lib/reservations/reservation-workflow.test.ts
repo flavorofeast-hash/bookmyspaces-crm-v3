@@ -188,6 +188,22 @@ describe('createReservationWithQuote', () => {
       })
     )
   })
+
+  // FIX (repo-wide audit finding): calculatePrice() marks isComplete: false
+  // when a night has no matching rate plan, but this used to be persisted
+  // as the reservation's final_room_rate anyway (missing nights counted as
+  // ₹0) instead of refusing, per calculatePrice()'s own doc comment.
+  it('refuses to create a reservation when the quote is incomplete (a night has no rate)', async () => {
+    mocks.checkAvailability.mockResolvedValue({ available: true, conflictingReservationIds: [] })
+    mocks.getInventoryItemRate.mockReset().mockResolvedValueOnce(5000).mockResolvedValueOnce(null)
+
+    const result = await createReservationWithQuote(baseInput)
+
+    expect(result.reservationResult).toEqual({ ok: false, error: 'incomplete_quote', unpricedNights: 1 })
+    expect(result.quote?.isComplete).toBe(false)
+    expect(mocks.createReservation).not.toHaveBeenCalled()
+    expect(activityInserts).toHaveLength(0)
+  })
 })
 
 describe('createManualBlock (Sprint 1, Priority 1 — manual availability override)', () => {

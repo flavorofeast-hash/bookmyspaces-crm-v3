@@ -62,6 +62,17 @@ export type CreateReservationResult =
   | { ok: true; reservation: Reservation }
   | { ok: false; error: 'unavailable'; conflictingReservationIds: string[] }
   | { ok: false; error: 'db_error'; message: string }
+  /**
+   * FIX (repo-wide audit finding): reservation-workflow.ts's calculatePrice()
+   * already computes isComplete: false when a night in the range has no
+   * matching rate plan, with a doc comment saying "callers should not
+   * present an incomplete quote as final" -- but createReservationWithQuote()
+   * never checked it before persisting, so an under-priced quote (missing
+   * nights counted as ₹0) was silently saved as the reservation's real
+   * final_room_rate. This variant lets createReservationWithQuote() refuse
+   * instead.
+   */
+  | { ok: false; error: 'incomplete_quote'; unpricedNights: number }
 
 /**
  * Creates a reservation after checking availability — never creates an

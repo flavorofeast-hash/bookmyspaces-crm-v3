@@ -226,6 +226,20 @@ export async function createReservationWithQuote(
   }
 
   const quote = await calculatePrice(input.inventoryItemId, input.checkInDate, input.checkOutDate, input.roomCount ?? 1, input.mealPlanId, input.addons)
+
+  // FIX (repo-wide audit finding): calculatePrice()'s own doc comment says
+  // an incomplete quote (a night with no matching rate plan) should never
+  // be "presented as final" -- but nothing enforced that here, so it was
+  // persisted as the reservation's final_room_rate anyway, silently
+  // under-charging. Refuse instead; quote is still returned so the caller
+  // can show the operator exactly what's unpriced.
+  if (!quote.isComplete) {
+    return {
+      reservationResult: { ok: false, error: 'incomplete_quote', unpricedNights: quote.unpricedNights },
+      quote,
+    }
+  }
+
   // Meal Plan / Add-on Services booking-flow integration (Reservation
   // Platform activation, Phases 3-4): the quote's pricing (room subtotal +
   // meal plan charge + priced add-on lines) is now persisted onto the

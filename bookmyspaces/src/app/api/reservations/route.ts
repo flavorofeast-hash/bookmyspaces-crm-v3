@@ -97,6 +97,12 @@ export async function POST(req: NextRequest) {
           { status: 409 }
         )
       }
+      if (reservationResult.error === 'incomplete_quote') {
+        return NextResponse.json(
+          { error: `No rate configured for ${reservationResult.unpricedNights} night(s) in this range — cannot quote a final price`, unpricedNights: reservationResult.unpricedNights },
+          { status: 422 }
+        )
+      }
       // db_error here almost always means migration 012's `reservations`
       // table isn't applied yet in this environment — 502, not 500, to
       // signal "dependency not ready" rather than "this route is broken".
