@@ -18,28 +18,33 @@
 -- assumed from naming conventions. Full audit trail (checked vs missing)
 -- is in the PR/commit description, not repeated here.
 --
+-- CORRECTED (production drift, verified against live production, not
+-- assumed):
+--   - message_queue table              (migration 002) — does not exist
+--   - blocked_dates table               (migration 003) — does not exist
+--   - orchestration_decisions table     (migration 025) — does not exist
+--   - escalations.conversation_id column (migration 007) — does not exist
+-- This repo's migration history defines all four, but production does not
+-- match that history. CREATE INDEX on a nonexistent table/column fails
+-- migration, so all four entries are removed here, leaving 14 indexes for
+-- foreign-key columns confirmed to exist on the live schema. If any of
+-- these are added to production later, their FK indexes should be a
+-- separate migration at that time, not restored here blind.
+--
 -- NOTE: CREATE INDEX CONCURRENTLY cannot run inside a BEGIN/COMMIT block —
 -- this repo's own convention (migrations 009/010/011/017/026) is a single
--- plain-transaction migration, matched here. All 18 tables are low/medium
--- write volume; the brief lock a plain CREATE INDEX takes is acceptable.
+-- plain-transaction migration, matched here. All tables below are low/
+-- medium write volume; the brief lock a plain CREATE INDEX takes is
+-- acceptable.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 BEGIN;
-
--- message_queue.lead_id -> leads(id)              (migration 002)
-CREATE INDEX IF NOT EXISTS idx_message_queue_lead_id ON message_queue(lead_id);
 
 -- bookings.lead_id -> leads(id)                    (migration 003)
 CREATE INDEX IF NOT EXISTS idx_bookings_lead_id ON bookings(lead_id);
 
 -- bookings.proposal_id -> proposals(id)            (migration 003)
 CREATE INDEX IF NOT EXISTS idx_bookings_proposal_id ON bookings(proposal_id);
-
--- blocked_dates.booking_id -> bookings(id)         (migration 003)
-CREATE INDEX IF NOT EXISTS idx_blocked_dates_booking_id ON blocked_dates(booking_id);
-
--- escalations.conversation_id -> conversations(id) (migration 007)
-CREATE INDEX IF NOT EXISTS idx_escalations_conversation_id ON escalations(conversation_id);
 
 -- leads.imported_via_import_id -> lead_imports(id) (migration 018, conditional FK)
 CREATE INDEX IF NOT EXISTS idx_leads_imported_via_import_id ON leads(imported_via_import_id);
@@ -76,8 +81,5 @@ CREATE INDEX IF NOT EXISTS idx_reviews_customer_id ON reviews(customer_id);
 
 -- packages.meal_plan_id -> meal_plans(id)          (migration 023)
 CREATE INDEX IF NOT EXISTS idx_packages_meal_plan_id ON packages(meal_plan_id);
-
--- orchestration_decisions.message_id -> unified_messages(id) (migration 025)
-CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_message_id ON orchestration_decisions(message_id);
 
 COMMIT;
