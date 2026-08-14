@@ -174,7 +174,10 @@ async function computeAdvancedSegmentSets(filter: SegmentFilter) {
       bookingCountByLead.set(p.lead_id, (bookingCountByLead.get(p.lead_id) ?? 0) + 1)
     }
   }
-  const reservationRevenue = (r: SegmentReservationRow) => (Number(r.final_room_rate) || 0) + (Number(r.meal_plan_charge) || 0)
+  // FIX: final_room_rate already includes meal_plan_charge (it's the
+  // grand total persisted by reservation-workflow.ts's grandTotal) —
+  // adding meal_plan_charge again double-counted it.
+  const reservationRevenue = (r: SegmentReservationRow) => Number(r.final_room_rate) || 0
   const cancelledLeadIds = new Set<string>()
   const longStayLeadIds = new Set<string>()
   for (const r of reservations) {

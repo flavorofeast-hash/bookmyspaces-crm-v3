@@ -166,8 +166,13 @@ async function fetchRawData(sinceISO: string): Promise<RawData> {
   }
 }
 
+// FIX: final_room_rate is persisted as the full grand total (room subtotal +
+// meal plan charge + add-ons charge — see reservation-workflow.ts's
+// createReservationWithPricing(), which sets finalRoomRate: quote.grandTotal).
+// Adding meal_plan_charge again here double-counted it. final_room_rate alone
+// is the correct total.
 function reservationRevenue(r: ReservationRow): number {
-  return (Number(r.final_room_rate) || 0) + (Number(r.meal_plan_charge) || 0)
+  return Number(r.final_room_rate) || 0
 }
 
 function nights(r: ReservationRow): number {

@@ -225,7 +225,12 @@ export default function ReservationDetailsPage({ params }: { params: { id: strin
     )
   }
 
-  const total = reservation.finalRoomRate + reservation.mealPlanCharge
+  // FIX: finalRoomRate already includes mealPlanCharge (it's the grand
+  // total persisted at reservation creation — see reservation-workflow.ts's
+  // grandTotal) — adding mealPlanCharge again here double-counted it in
+  // the Total row below (the Meal Plan line above it is a correct,
+  // separate breakdown display, not part of this bug).
+  const total = reservation.finalRoomRate
   const actions = AVAILABLE_ACTIONS[reservation.status]
 
   return (

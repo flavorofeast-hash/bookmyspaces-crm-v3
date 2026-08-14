@@ -246,9 +246,12 @@ function ReservationDashboardContent() {
     const pendingReservations = reservations.filter((r) => r.status === 'inquiry')
     const pendingConfirmations = reservations.filter((r) => r.status === 'tentative')
     const checkedIn = reservations.filter((r) => r.status === 'checked_in')
+    // FIX: finalRoomRate already includes mealPlanCharge (grand total
+    // persisted at reservation creation — reservation-workflow.ts's
+    // grandTotal) — adding mealPlanCharge again here double-counted it.
     const monthRevenue = reservations
       .filter((r) => r.status !== 'cancelled' && r.status !== 'no_show')
-      .reduce((sum, r) => sum + (r.finalRoomRate || 0) + (r.mealPlanCharge || 0), 0)
+      .reduce((sum, r) => sum + (r.finalRoomRate || 0), 0)
 
     return { arrivalsToday, departuresToday, pendingReservations, pendingConfirmations, checkedIn, monthRevenue }
   }, [reservations, today])
@@ -360,7 +363,7 @@ function ReservationDashboardContent() {
                     </span>
                   </td>
                   <td className="px-6 py-3 text-right font-medium text-gray-800">
-                    {fmtINR(r.finalRoomRate + r.mealPlanCharge)}
+                    {fmtINR(r.finalRoomRate) /* finalRoomRate already includes mealPlanCharge — see monthRevenue fix above */}
                     <Link href={`/reservations/${r.id}`}>
                       <ChevronRight className="w-3.5 h-3.5 inline text-gray-300 ml-1" />
                     </Link>

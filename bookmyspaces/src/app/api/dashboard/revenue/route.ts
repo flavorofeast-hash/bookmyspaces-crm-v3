@@ -223,8 +223,12 @@ export async function GET(): Promise<NextResponse> {
     // for `confirmedReservations`/`completedReservations` above.
     const REVENUE_RECOGNIZED_STATUSES = new Set(['confirmed', 'checked_in', 'checked_out']);
     const revenueReservations = reservations.filter((r) => r.status && REVENUE_RECOGNIZED_STATUSES.has(r.status));
+    // FIX: final_room_rate already includes meal_plan_charge (it's the
+    // grand total persisted at reservation creation — see
+    // reservation-workflow.ts's grandTotal) — adding meal_plan_charge
+    // again here double-counted it in every revenue total below.
     const reservationAmount = (r: ReservationStatsRow) =>
-      (Number(r.final_room_rate) || 0) + (Number(r.meal_plan_charge) || 0);
+      Number(r.final_room_rate) || 0;
 
     const reservationRevenueTotal = revenueReservations.reduce((sum, r) => sum + reservationAmount(r), 0);
 

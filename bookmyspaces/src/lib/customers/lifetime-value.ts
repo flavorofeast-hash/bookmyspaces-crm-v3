@@ -78,8 +78,11 @@ export async function computeLifetimeValue(leadId: string): Promise<LifetimeValu
   )
 
   const proposalRevenue = acceptedProposals.reduce((sum, p) => sum + (Number(p.total_price) || 0), 0)
+  // FIX: final_room_rate already includes meal_plan_charge (it's the grand
+  // total persisted at reservation creation — see reservation-workflow.ts's
+  // grandTotal) — adding meal_plan_charge again here double-counted it.
   const reservationRevenue = standaloneReservations.reduce(
-    (sum, r) => sum + (Number(r.final_room_rate) || 0) + (Number(r.meal_plan_charge) || 0), 0
+    (sum, r) => sum + (Number(r.final_room_rate) || 0), 0
   )
 
   const bookingDates = [
