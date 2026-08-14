@@ -19,6 +19,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import crypto from 'crypto'
+import { logger } from '@/lib/logger'
+import { callGraphAPI } from '@/lib/social/graph-api-client'
 import type {
   SocialAdapter, SocialPlatform, NormalizedInteraction, PublishInput,
   PublishResult, ReplyResult,
@@ -39,13 +41,28 @@ export class MetaAdapter implements SocialAdapter {
 
   async verifyWebhook(req: Request, rawBody: string): Promise<boolean> {
     const appSecret = process.env.META_APP_SECRET
-    if (!appSecret) return false
+    if (!appSecret) {
+      logger.warn('meta-adapter', `${this.platform} webhook signature not verified — META_APP_SECRET unset`)
+      return false
+    }
     const signature = req.headers.get('x-hub-signature-256')
-    if (!signature?.startsWith('sha256=')) return false
+    if (!signature?.startsWith('sha256=')) {
+      logger.warn('meta-adapter', `${this.platform} webhook rejected — missing/malformed x-hub-signature-256 header`)
+      return false
+    }
     const expected = 'sha256=' + crypto.createHmac('sha256', appSecret).update(rawBody).digest('hex')
     try {
-      return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
-    } catch {
+      const expectedBuf = Buffer.from(expected)
+      const providedBuf = Buffer.from(signature)
+      if (expectedBuf.length !== providedBuf.length) {
+        logger.warn('meta-adapter', `${this.platform} webhook rejected — signature length mismatch`)
+        return false
+      }
+      const valid = crypto.timingSafeEqual(expectedBuf, providedBuf)
+      if (!valid) logger.warn('meta-adapter', `${this.platform} webhook rejected — signature mismatch`)
+      return valid
+    } catch (err) {
+      logger.error('meta-adapter', `${this.platform} webhook signature check threw`, err)
       return false
     }
   }
@@ -92,80 +109,69 @@ export class MetaAdapter implements SocialAdapter {
     const accessToken = process.env.META_PAGE_ACCESS_TOKEN
     const mediaUrl = input.media[0]?.url
 
-    try {
-      if (this.platform === 'facebook') {
-        const pageId = process.env.META_PAGE_ID
-        if (!pageId) return { ok: false, error: 'meta_not_configured: missing META_PAGE_ID' }
+    if (this.platform === 'facebook') {
+      const pageId = process.env.META_PAGE_ID
+      if (!pageId) return { ok: false, error: 'meta_not_configured: missing META_PAGE_ID' }
 
-        // Page feed publish: text-only posts go to /feed (message param).
-        // Posts with an image go to /photos (url + caption) — /feed has no
-        // image-attachment param; passing url/image_url there is silently
-        // ignored by Graph and only the text would ever post.
-        const url = mediaUrl ? `${GRAPH}/${pageId}/photos` : `${GRAPH}/${pageId}/feed`
-        const body: Record<string, unknown> = mediaUrl
-          ? { url: mediaUrl, caption: input.content ?? '', access_token: accessToken }
-          : { message: input.content ?? '', access_token: accessToken }
+      // Page feed publish: text-only posts go to /feed (message param).
+      // Posts with an image go to /photos (url + caption) — /feed has no
+      // image-attachment param; passing url/image_url there is silently
+      // ignored by Graph and only the text would ever post.
+      const url = mediaUrl ? `${GRAPH}/${pageId}/photos` : `${GRAPH}/${pageId}/feed`
+      const body: Record<string, unknown> = mediaUrl
+        ? { url: mediaUrl, caption: input.content ?? '', access_token: accessToken }
+        : { message: input.content ?? '', access_token: accessToken }
 
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        })
-        const json = (await res.json()) as { id?: string; post_id?: string; error?: { message?: string } }
-        const externalPostId = json.post_id ?? json.id
-        if (!res.ok || !externalPostId) return { ok: false, error: json.error?.message ?? `graph_error_${res.status}` }
-        return { ok: true, externalPostId }
-      }
-
-      // Instagram Content Publishing API is always two-step, even for a
-      // single image: create a media container, then publish that
-      // container's creation_id. There is no one-call publish endpoint.
-      const igId = process.env.META_IG_ID
-      if (!igId) return { ok: false, error: 'meta_not_configured: missing META_IG_ID' }
-      if (!mediaUrl) return { ok: false, error: 'instagram_requires_media: Instagram posts require at least one image or video URL' }
-
-      const isVideo = input.media[0]?.type?.startsWith('video') || input.postType === 'video' || input.postType === 'reel'
-      const containerBody: Record<string, unknown> = {
-        caption: input.content ?? '',
-        access_token: accessToken,
-        ...(isVideo
-          ? { video_url: mediaUrl, media_type: input.postType === 'reel' ? 'REELS' : 'VIDEO' }
-          : { image_url: mediaUrl }),
-      }
-      const createRes = await fetch(`${GRAPH}/${igId}/media`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(containerBody),
-      })
-      const createJson = (await createRes.json()) as { id?: string; error?: { message?: string } }
-      if (!createRes.ok || !createJson.id) return { ok: false, error: createJson.error?.message ?? `graph_error_${createRes.status}` }
-
-      const publishRes = await fetch(`${GRAPH}/${igId}/media_publish`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ creation_id: createJson.id, access_token: accessToken }),
-      })
-      const publishJson = (await publishRes.json()) as { id?: string; error?: { message?: string } }
-      if (!publishRes.ok || !publishJson.id) return { ok: false, error: publishJson.error?.message ?? `graph_error_${publishRes.status}` }
-      return { ok: true, externalPostId: publishJson.id }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      const result = await callGraphAPI<{ id?: string; post_id?: string }>(
+        url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+        mediaUrl ? 'publish-fb-photo' : 'publish-fb-feed'
+      )
+      const externalPostId = result.data?.post_id ?? result.data?.id
+      if (!result.ok || !externalPostId) return { ok: false, error: result.error ?? 'graph_error_no_post_id' }
+      logger.info('meta-adapter', 'Facebook post published', { externalPostId })
+      return { ok: true, externalPostId }
     }
+
+    // Instagram Content Publishing API is always two-step, even for a
+    // single image: create a media container, then publish that
+    // container's creation_id. There is no one-call publish endpoint.
+    const igId = process.env.META_IG_ID
+    if (!igId) return { ok: false, error: 'meta_not_configured: missing META_IG_ID' }
+    if (!mediaUrl) return { ok: false, error: 'instagram_requires_media: Instagram posts require at least one image or video URL' }
+
+    const isVideo = input.media[0]?.type?.startsWith('video') || input.postType === 'video' || input.postType === 'reel'
+    const containerBody: Record<string, unknown> = {
+      caption: input.content ?? '',
+      access_token: accessToken,
+      ...(isVideo
+        ? { video_url: mediaUrl, media_type: input.postType === 'reel' ? 'REELS' : 'VIDEO' }
+        : { image_url: mediaUrl }),
+    }
+    const createResult = await callGraphAPI<{ id?: string }>(
+      `${GRAPH}/${igId}/media`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(containerBody) },
+      'publish-ig-create-container'
+    )
+    if (!createResult.ok || !createResult.data?.id) return { ok: false, error: createResult.error ?? 'graph_error_no_container_id' }
+
+    const publishResult = await callGraphAPI<{ id?: string }>(
+      `${GRAPH}/${igId}/media_publish`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ creation_id: createResult.data.id, access_token: accessToken }) },
+      'publish-ig-media-publish'
+    )
+    if (!publishResult.ok || !publishResult.data?.id) return { ok: false, error: publishResult.error ?? 'graph_error_no_publish_id' }
+    logger.info('meta-adapter', 'Instagram post published', { externalPostId: publishResult.data.id })
+    return { ok: true, externalPostId: publishResult.data.id }
   }
 
   async replyToInteraction(externalId: string, message: string): Promise<ReplyResult> {
     if (!this.isConfigured()) return notConfigured()
-    try {
-      const res = await fetch(`${GRAPH}/${externalId}/comments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, access_token: process.env.META_PAGE_ACCESS_TOKEN }),
-      })
-      const json = (await res.json()) as { id?: string; error?: { message?: string } }
-      if (!res.ok || !json.id) return { ok: false, error: json.error?.message ?? `graph_error_${res.status}` }
-      return { ok: true, externalReplyId: json.id }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
+    const result = await callGraphAPI<{ id?: string }>(
+      `${GRAPH}/${externalId}/comments`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, access_token: process.env.META_PAGE_ACCESS_TOKEN }) },
+      'reply-to-interaction'
+    )
+    if (!result.ok || !result.data?.id) return { ok: false, error: result.error ?? 'graph_error_no_reply_id' }
+    logger.info('meta-adapter', 'Replied to interaction', { externalId, externalReplyId: result.data.id })
+    return { ok: true, externalReplyId: result.data.id }
   }
 }
