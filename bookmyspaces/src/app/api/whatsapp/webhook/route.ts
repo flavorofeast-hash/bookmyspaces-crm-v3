@@ -29,10 +29,15 @@ export async function GET(request: NextRequest) {
   const token     = searchParams.get('hub.verify_token')
   const challenge = searchParams.get('hub.challenge')
 
-  const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN
+  // Go-live hardening: the documented/required var is WHATSAPP_WEBHOOK_VERIFY_TOKEN
+  // (.env.example, settings page, src/lib/env.ts) — WHATSAPP_VERIFY_TOKEN is
+  // accepted as a fallback alias only in case that's what got set in Vercel,
+  // so a naming mismatch doesn't block go-live. Purely additive: behavior for
+  // anyone with WHATSAPP_WEBHOOK_VERIFY_TOKEN set is unchanged.
+  const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || process.env.WHATSAPP_VERIFY_TOKEN
 
   if (!verifyToken) {
-    logger.error('whatsapp-webhook', 'WHATSAPP_WEBHOOK_VERIFY_TOKEN is not set. Add it in Vercel -> Project -> Settings -> Environment Variables, then redeploy.')
+    logger.error('whatsapp-webhook', 'Verification failed: neither WHATSAPP_WEBHOOK_VERIFY_TOKEN nor WHATSAPP_VERIFY_TOKEN is set. Add WHATSAPP_WEBHOOK_VERIFY_TOKEN in Vercel -> Project -> Settings -> Environment Variables, then redeploy.')
     return new NextResponse('Server configuration error', { status: 500 })
   }
 
@@ -41,14 +46,21 @@ export async function GET(request: NextRequest) {
 
   if (mode === 'subscribe' && cleanVerifyToken === cleanTokenFromMeta) {
     if (!challenge) {
+      logger.error('whatsapp-webhook', 'Verification failed: mode/token matched but hub.challenge was missing from the request.')
       return new NextResponse('Bad Request: missing challenge', { status: 400 })
     }
+    logger.info('whatsapp-webhook', 'Webhook verification succeeded — Meta subscription confirmed.')
     return new NextResponse(challenge, {
       status:  200,
       headers: { 'Content-Type': 'text/plain' },
     })
   }
 
+  logger.error('whatsapp-webhook', 'Verification failed: hub.mode/hub.verify_token did not match expected values.', {
+    modeReceived:        mode,
+    modeExpected:        'subscribe',
+    tokenMatched:        cleanVerifyToken === cleanTokenFromMeta,
+  })
   return new NextResponse('Forbidden', { status: 403 })
 }
 
@@ -83,8 +95,20 @@ export async function POST(request: NextRequest) {
   }
 
   if (body.object !== 'whatsapp_business_account') {
+    logger.warn('whatsapp-webhook', 'Received webhook with unexpected object type — ignored.', { object: body.object })
     return new NextResponse('OK', { status: 200 })
   }
+
+  // Go-live hardening: a single receipt log line, before any processing, so
+  // "is Meta actually delivering webhooks to us" is answerable from logs
+  // alone instead of only being visible indirectly via downstream side
+  // effects (a reply sent, a lead created).
+  const entryCount        = body.entry?.length ?? 0
+  const messageCountTotal = (body.entry ?? []).reduce((sum, e) =>
+    sum + (e.changes ?? []).reduce((s, c) => s + (c.value.messages?.length ?? 0), 0), 0)
+  const statusCountTotal  = (body.entry ?? []).reduce((sum, e) =>
+    sum + (e.changes ?? []).reduce((s, c) => s + (c.value.statuses?.length ?? 0), 0), 0)
+  logger.info('whatsapp-webhook', 'Webhook payload received', { entryCount, messageCountTotal, statusCountTotal })
 
   try {
     for (const entry of body.entry ?? []) {
