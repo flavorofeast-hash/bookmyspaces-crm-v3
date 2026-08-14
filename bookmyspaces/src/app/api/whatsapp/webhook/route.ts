@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
     })
   }
 
-  logger.error('whatsapp-webhook', 'Verification failed: hub.mode/hub.verify_token did not match expected values.', {
+  logger.error('whatsapp-webhook', 'Verification failed: hub.mode/hub.verify_token did not match expected values.', undefined, {
     modeReceived:        mode,
     modeExpected:        'subscribe',
     tokenMatched:        cleanVerifyToken === cleanTokenFromMeta,
