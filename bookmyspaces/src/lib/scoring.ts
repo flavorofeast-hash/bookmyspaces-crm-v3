@@ -5,6 +5,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { logger } from './logger'
 import { getSupabaseAdmin } from './supabase'
+import { scoreLead } from './lead-scorer'
 
 // ─────────────────────────────────────────
 // Anthropic Client
@@ -215,6 +216,27 @@ BookMySpaces Team`
 // ─────────────────────────────────────────
 // BATCH SCORE LEADS
 // ─────────────────────────────────────────
+//
+// FIX (repo-wide audit finding): this used to write scoreLeadWithAI()'s
+// 1-10-scale `score.score` straight into `leads.ai_score` — the same
+// column src/lib/whatsapp/auto-qualify.ts's live wiring of
+// src/lib/lead-scorer.ts's scoreLead() writes on a 0-100 scale (see that
+// file's header for the full history: lead-scorer.ts is the established,
+// documented scorer; HOT/WARM/COLD thresholds, escalation-engine.ts's
+// ai_score>=90 rule, and every dashboard sort/filter all assume 0-100).
+// Worse, this function filtered on the OLD `ai_scored_at` column
+// (migration 003/005/006) while the live pipeline sets the NEWER
+// `scored_at` column (migration 008) — so every run of this function
+// (POST /api/analytics {action:'score_leads'}) re-selected leads already
+// correctly scored by auto-qualify.ts (their ai_scored_at is still null)
+// and overwrote their correct 0-100 score with a fresh 1-10 value,
+// silently breaking their temperature/escalation status.
+//
+// Now calls the same scoreLead() the live path uses for the numeric
+// fields (correct scale, correct filter column), and keeps
+// scoreLeadWithAI()'s LLM call only for the qualitative fields
+// (ai_score_reason, booking_probability) that scoreLead() doesn't
+// produce and that the Kanban lead panel / ai-summary.ts still read.
 
 export async function batchScoreLeads(
   limit = 20
@@ -227,7 +249,7 @@ export async function batchScoreLeads(
   const { data: leads } = await supabaseAdmin
     .from('leads')
     .select('*')
-    .is('ai_scored_at', null)
+    .is('scored_at', null)
     .limit(limit)
 
   if (!leads || leads.length === 0) {
@@ -238,17 +260,33 @@ export async function batchScoreLeads(
 
   for (const lead of leads) {
     try {
-      const score = await scoreLeadWithAI(lead)
+      const [aiNote, deterministicScore] = await Promise.all([
+        scoreLeadWithAI(lead),
+        Promise.resolve(scoreLead({
+          name: lead.name,
+          phone: lead.phone,
+          email: lead.email,
+          event_type: lead.event_type,
+          event_date: lead.event_date,
+          guest_count: lead.guest_count,
+          budget: lead.budget,
+          source: lead.source,
+          existing_tags: lead.tags ?? [],
+        })),
+      ])
 
       await supabaseAdmin
         .from('leads')
         .update({
-          ai_score: score.score,
-          booking_probability:
-            score.booking_probability,
-          ai_score_reason: score.reason,
-          ai_scored_at:
-            new Date().toISOString(),
+          ai_score: deterministicScore.ai_score,
+          lead_temperature: deterministicScore.lead_temperature,
+          urgency_level: deterministicScore.urgency_level,
+          estimated_revenue: deterministicScore.estimated_revenue,
+          score_breakdown: deterministicScore.score_breakdown,
+          scored_at: deterministicScore.scored_at,
+          tags: deterministicScore.tags,
+          booking_probability: aiNote.booking_probability,
+          ai_score_reason: aiNote.reason,
         })
         .eq('id', lead.id)
 
