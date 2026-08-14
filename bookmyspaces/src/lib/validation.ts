@@ -150,7 +150,10 @@ export const createReservationSchema = z.object({
   mealPlanId     : uuid.nullish(),
   /** Add-on Services booking-flow integration (Reservation Platform activation, Phase 4). */
   addons         : z.array(addonLineSchema).max(20).nullish(),
-})
+}).refine(
+  (v) => v.checkOutDate > v.checkInDate,
+  { message: 'checkOutDate must be after checkInDate', path: ['checkOutDate'] }
+)
 
 export const reservationStatusActionSchema = z.object({
   action   : z.enum(['confirm', 'cancel', 'check_in', 'check_out']),
@@ -168,7 +171,10 @@ export const createManualBlockSchema = z.object({
   checkInDate    : isoDate,
   checkOutDate   : isoDate,
   reason         : z.string().trim().min(1).max(500),
-})
+}).refine(
+  (v) => v.checkOutDate > v.checkInDate,
+  { message: 'checkOutDate must be after checkInDate', path: ['checkOutDate'] }
+)
 
 // ─── AI Operator Assistant (V3 Sprint 4 — Priority 4) ──────────────────────
 

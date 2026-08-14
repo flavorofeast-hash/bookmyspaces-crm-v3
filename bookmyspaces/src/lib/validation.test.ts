@@ -5,7 +5,7 @@
 // this sandbox instead of only statically type-checked.
 
 import { describe, it, expect } from 'vitest'
-import { createLeadSchema, updateLeadSchema, leadStageBodySchema, createManualBlockSchema } from './validation'
+import { createLeadSchema, updateLeadSchema, leadStageBodySchema, createManualBlockSchema, createReservationSchema } from './validation'
 
 describe('createLeadSchema', () => {
   it('accepts a minimal valid lead', () => {
@@ -119,5 +119,45 @@ describe('createManualBlockSchema (Sprint 1, Priority 1 — manual availability 
     // behavior -- the important guarantee is that omitting guestName/pricing
     // fields entirely (as `valid` does) still passes, proving they're not required.
     expect(result.success).toBe(true)
+  })
+
+  // FIX (repo-wide audit finding): checkOutDate <= checkInDate used to reach
+  // createManualBlock() unvalidated -- caught here now instead of downstream.
+  it('rejects checkOutDate equal to checkInDate', () => {
+    const result = createManualBlockSchema.safeParse({ ...valid, checkOutDate: valid.checkInDate })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects checkOutDate before checkInDate', () => {
+    const result = createManualBlockSchema.safeParse({ ...valid, checkInDate: '2026-09-05', checkOutDate: '2026-09-01' })
+    expect(result.success).toBe(false)
+  })
+})
+
+describe('createReservationSchema (date-order validation)', () => {
+  const valid = {
+    guestName: 'Test Guest',
+    propertyId: '11111111-1111-1111-1111-111111111111',
+    inventoryItemId: '22222222-2222-2222-2222-222222222222',
+    checkInDate: '2026-09-01',
+    checkOutDate: '2026-09-03',
+  }
+
+  it('accepts a valid check-in/check-out range', () => {
+    const result = createReservationSchema.safeParse(valid)
+    expect(result.success).toBe(true)
+  })
+
+  // FIX (repo-wide audit finding): a reversed/zero-night range used to reach
+  // createReservationWithQuote() unvalidated, producing a zero-price,
+  // zero-night reservation instead of a 400.
+  it('rejects checkOutDate equal to checkInDate', () => {
+    const result = createReservationSchema.safeParse({ ...valid, checkOutDate: valid.checkInDate })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects checkOutDate before checkInDate', () => {
+    const result = createReservationSchema.safeParse({ ...valid, checkInDate: '2026-09-05', checkOutDate: '2026-09-01' })
+    expect(result.success).toBe(false)
   })
 })
