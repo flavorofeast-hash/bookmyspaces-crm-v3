@@ -12,11 +12,23 @@ import { checkRateLimit, clientIpFrom } from '@/lib/rate-limit'
 // audit/PHASE_1B_STEP6_REPORT.md) -- the orchestration foundation, wired
 // in behind settings.orchestration.enabled (default false). See
 // handleIncomingMessageViaOrchestration() below.
-import { ConversationState }         from '@/constants/conversation-states'
+import { ConversationState, SourceChannel } from '@/constants/conversation-states'
 import { getSettingsSection }        from '@/lib/settings/settings-service'
 import { orchestrate }               from '@/lib/ai/orchestration-engine'
 import { executeOrchestration }      from '@/lib/ai/orchestration-executor'
 import { applyHandoff }              from '@/lib/ai/orchestrator'
+// BUGFIX (this pass): persistConversation() below previously only ever
+// LOOKED UP an existing lead by phone -- it never created one. First-time
+// WhatsApp contacts (the common case for an inbound inquiry) got a
+// `conversations` row with lead_id=null and NO `leads` row at all, so they
+// never appeared in the CRM's Leads list, and the Unified Conversation
+// Platform mirror below (which resolves identity from `leads`) also found
+// nothing to link, so the Inbox conversation had no associated lead either.
+// resolveLeadByPhone() (src/lib/whatsapp/lead-resolver.ts) already
+// implements correct find-or-create-by-phone semantics with proper
+// source_channel/whatsapp_opted_in fields and an activity_log entry on
+// creation -- reused here rather than duplicating that logic.
+import { resolveLeadByPhone }        from '@/lib/whatsapp/lead-resolver'
 
 export const dynamic    = 'force-dynamic'
 export const runtime    = 'nodejs'
@@ -187,7 +199,8 @@ async function runLegacyReplyPath(
 ): Promise<void> {
   const reply = await buildAutoReply(text, senderName)
 
-  await sendWhatsAppText(from, reply)
+  const sendResult = await sendWhatsAppText(from, reply)
+  logger.info('whatsapp-webhook', sendResult.success ? 'Auto-reply sent' : 'Auto-reply send failed', { phone: from, success: sendResult.success })
 
   await persistConversation(from, senderName, text, reply)
 
@@ -412,13 +425,18 @@ async function persistConversation(
   const sessionId = `wa_${phone}`
   const now       = new Date().toISOString()
 
-  const { data: lead } = await db
-    .from('leads')
-    .select('id')
-    .eq('phone', phone)
-    .maybeSingle()
-
-  const leadId = lead?.id ?? null
+  // Find-or-create the lead (see BUGFIX note on the resolveLeadByPhone
+  // import above). Never fatal -- a lead-resolution failure must not drop
+  // the already-sent reply or the conversation record; fall back to
+  // leadId=null exactly as the old lookup-only code did on a miss.
+  let leadId: string | null = null
+  try {
+    const lead = await resolveLeadByPhone(phone, SourceChannel.WEBSITE, senderName !== 'Unknown' ? senderName : null)
+    leadId = lead.id
+    logger.info('whatsapp-webhook', lead.isNew ? 'Lead created' : 'Lead found', { phone, leadId: lead.id, isNew: lead.isNew })
+  } catch (err) {
+    logger.error('whatsapp-webhook', 'Lead resolution failed (continuing without a lead)', err, { phone })
+  }
 
   const { data: existing } = await db
     .from('conversations')
@@ -436,7 +454,7 @@ async function persistConversation(
   ]
 
   if (existing?.id) {
-    await db
+    const { error: updateError } = await db
       .from('conversations')
       .update({
         messages:   newMessages,
@@ -444,8 +462,13 @@ async function persistConversation(
         ...(leadId && { lead_id: leadId }),
       })
       .eq('id', existing.id)
+    if (updateError) {
+      logger.error('whatsapp-webhook', 'Conversation update failed', updateError, { phone, conversationId: existing.id })
+    } else {
+      logger.info('whatsapp-webhook', 'Conversation found, message saved', { phone, conversationId: existing.id })
+    }
   } else {
-    await db
+    const { data: created, error: insertError } = await db
       .from('conversations')
       .insert({
         session_id:      sessionId,
@@ -456,6 +479,13 @@ async function persistConversation(
         extracted_phone: phone,
         is_active:       true,
       })
+      .select('id')
+      .single()
+    if (insertError) {
+      logger.error('whatsapp-webhook', 'Conversation create failed', insertError, { phone })
+    } else {
+      logger.info('whatsapp-webhook', 'Conversation created, message saved', { phone, conversationId: created?.id })
+    }
   }
 
   if (leadId) {
