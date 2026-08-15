@@ -80,9 +80,16 @@ export async function GET(req: NextRequest) {
       lastMessage: lastByConv.get(c.id) ?? null,
     }))
 
+    logger.info('inbox', 'inbox_query_result', {
+      total: count ?? 0,
+      returned: enriched.length,
+      conversationIds: enriched.map((c) => c.id),
+    })
+    logger.info('inbox', 'ui_payload', { total: count ?? 0, returned: enriched.length })
+
     return NextResponse.json({ conversations: enriched, total: count })
   } catch (err) {
-    logger.error('inbox', 'GET /api/inbox failed', err)
+    logger.error('inbox', 'exception_stack', err, { stage: 'GET /api/inbox' })
     return NextResponse.json({ error: 'Failed to load inbox' }, { status: 500 })
   }
 }

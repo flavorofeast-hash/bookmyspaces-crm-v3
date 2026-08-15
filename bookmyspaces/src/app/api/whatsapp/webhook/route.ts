@@ -120,7 +120,7 @@ export async function POST(request: NextRequest) {
     sum + (e.changes ?? []).reduce((s, c) => s + (c.value.messages?.length ?? 0), 0), 0)
   const statusCountTotal  = (body.entry ?? []).reduce((sum, e) =>
     sum + (e.changes ?? []).reduce((s, c) => s + (c.value.statuses?.length ?? 0), 0), 0)
-  logger.info('whatsapp-webhook', 'Webhook payload received', { entryCount, messageCountTotal, statusCountTotal })
+  logger.info('whatsapp-webhook', 'webhook_received', { entryCount, messageCountTotal, statusCountTotal })
 
   try {
     for (const entry of body.entry ?? []) {
@@ -141,12 +141,15 @@ export async function POST(request: NextRequest) {
         for (const message of value.messages ?? []) {
           const contact    = value.contacts?.find(c => c.wa_id === message.from)
           const senderName = contact?.profile?.name ?? 'Unknown'
+          logger.info('whatsapp-webhook', 'message_parsed', {
+            phone: message.from, messageId: message.id, type: message.type, senderName,
+          })
           await handleIncomingMessage(message, senderName)
         }
       }
     }
   } catch (err) {
-    logger.error('whatsapp-webhook', 'Error processing payload', err)
+    logger.error('whatsapp-webhook', 'exception_stack', err, { stage: 'POST body loop' })
   }
 
   return new NextResponse('OK', { status: 200 })
@@ -183,7 +186,7 @@ async function handleIncomingMessage(
       await runLegacyReplyPath(from, senderName, text, message.id)
     }
   } catch (err) {
-    logger.error('whatsapp-webhook', 'Error handling message', err, { phone: from })
+    logger.error('whatsapp-webhook', 'exception_stack', err, { stage: 'handleIncomingMessage', phone: from, messageId: message.id })
   }
 }
 
@@ -199,21 +202,43 @@ async function runLegacyReplyPath(
 ): Promise<void> {
   const reply = await buildAutoReply(text, senderName)
 
-  const sendResult = await sendWhatsAppText(from, reply)
-  logger.info('whatsapp-webhook', sendResult.success ? 'Auto-reply sent' : 'Auto-reply send failed', { phone: from, success: sendResult.success })
+  // unifiedMirror: null -- syncToUnifiedConversationPlatform() below already
+  // records this exact outbound reply into unified_messages right after the
+  // inbound message. Without this, sendWhatsAppText()'s own default mirror
+  // (send-message.ts) fires a SECOND, independent write for the same reply,
+  // producing a duplicate outbound unified_messages row per exchange. Found
+  // and fixed in this pass (Vercel runtime audit).
+  const sendResult = await sendWhatsAppText(from, reply, { unifiedMirror: null })
+  logger.info('whatsapp-webhook', 'reply_sent', { phone: from, success: sendResult.success, waMessageId: sendResult.waMessageId ?? null })
 
   await persistConversation(from, senderName, text, reply)
 
-  // V3 Day 5 — mirror this exchange into the Unified Conversation
-  // Platform (Day 4's handleInboundMessage pipeline) alongside the
-  // legacy `conversations` write above, which stays canonical for the
-  // live CRM UI until a real cutover. Fire-and-forget and fully
-  // isolated: a failure here (e.g. migration 012 not yet applied in
-  // this environment) must never affect the WhatsApp reply already
-  // sent, so it's caught here rather than by the outer try/catch.
-  syncToUnifiedConversationPlatform(from, text, reply, messageId).catch(err => {
+  // BUGFIX (Vercel runtime audit, this pass): this call used to be
+  // fire-and-forget (`.catch()`, not awaited). On Vercel's Node.js
+  // serverless runtime, a promise left running after the route handler's
+  // Response is returned is NOT guaranteed to complete -- the function
+  // invocation can be frozen/torn down as soon as the response is flushed.
+  // That meant the ONLY write to unified_conversations/unified_messages
+  // -- the exact tables /api/inbox reads -- was racing against the
+  // request's own teardown, and could silently never finish. This is the
+  // confirmed root cause of "reply sends fine, legacy `conversations` row
+  // is written fine (both on the awaited path), but nothing appears in
+  // the Inbox" even after the lead-creation and DB-constraint fixes.
+  // Now awaited, inside a try/catch so a genuine failure here (e.g.
+  // migration 012 not applied) still can't fail the webhook response --
+  // matches the file's existing non-fatal philosophy, just without the
+  // teardown race.
+  try {
+    const mirror = await syncToUnifiedConversationPlatform(from, text, reply, messageId)
+    logger.info('whatsapp-webhook', 'unified_message_saved', {
+      phone: from,
+      unifiedConversationId: mirror.conversationId,
+      inboundMessageId: mirror.inboundMessageId,
+      outboundMessageId: mirror.outboundMessageId,
+    })
+  } catch (err) {
     logger.error('whatsapp-webhook', 'Unified Conversation Platform sync failed (non-fatal)', err, { phone: from })
-  })
+  }
 }
 
 // ─── Orchestration path -- Phase 1B, Step 6, flag-gated ────────────────────
@@ -254,6 +279,16 @@ async function handleIncomingMessageViaOrchestration(
     channelIdentity:   from,
     content:           text,
     externalMessageId: message.id,
+  })
+
+  logger.info('whatsapp-webhook', 'unified_conversation_created', {
+    phone: from,
+    unifiedConversationId: ingest.conversationId,
+    leadId: ingest.identity?.leadId ?? null,
+    isNewConversation: ingest.isNewConversation,
+  })
+  logger.info('whatsapp-webhook', 'unified_message_saved', {
+    phone: from, unifiedConversationId: ingest.conversationId, messageId: ingest.messageId, direction: 'inbound',
   })
 
   // Safety gate: never let this pipeline reply into a conversation a human
@@ -316,6 +351,10 @@ async function handleIncomingMessageViaOrchestration(
         // automatic Unified Conversation Platform mirror (send-message.ts)
         // to avoid writing two unified_messages rows for one reply.
         unifiedMirror: null,
+      })
+      logger.info('whatsapp-webhook', 'reply_sent', {
+        phone, success: sendResult.success, waMessageId: sendResult.waMessageId ?? null,
+        leadId: ingest.identity?.leadId ?? null, conversationId: ingest.conversationId,
       })
       return { success: sendResult.success }
     },
@@ -398,7 +437,7 @@ async function syncToUnifiedConversationPlatform(
   inbound:            string,
   outbound:           string,
   externalMessageId:  string
-): Promise<void> {
+): Promise<{ conversationId: string; inboundMessageId: string; outboundMessageId: string }> {
   const result = await handleInboundMessage({
     channelType:        'whatsapp',
     channelIdentity:    phone,
@@ -406,13 +445,22 @@ async function syncToUnifiedConversationPlatform(
     externalMessageId,
   })
 
-  await recordMessage({
+  logger.info('whatsapp-webhook', 'unified_conversation_created', {
+    phone,
+    unifiedConversationId: result.conversationId,
+    leadId: result.identity?.leadId ?? null,
+    isNewConversation: result.isNewConversation,
+  })
+
+  const outboundMessageId = await recordMessage({
     conversationId: result.conversationId,
     channelId:      result.channelId,
     direction:      'outbound',
     senderType:     'ai',
     content:        outbound,
   })
+
+  return { conversationId: result.conversationId, inboundMessageId: result.messageId, outboundMessageId }
 }
 
 async function persistConversation(
@@ -433,9 +481,9 @@ async function persistConversation(
   try {
     const lead = await resolveLeadByPhone(phone, SourceChannel.WEBSITE, senderName !== 'Unknown' ? senderName : null)
     leadId = lead.id
-    logger.info('whatsapp-webhook', lead.isNew ? 'Lead created' : 'Lead found', { phone, leadId: lead.id, isNew: lead.isNew })
+    logger.info('whatsapp-webhook', 'lead_created_or_found', { phone, leadId: lead.id, isNew: lead.isNew })
   } catch (err) {
-    logger.error('whatsapp-webhook', 'Lead resolution failed (continuing without a lead)', err, { phone })
+    logger.error('whatsapp-webhook', 'exception_stack', err, { stage: 'resolveLeadByPhone', phone })
   }
 
   const { data: existing } = await db
@@ -463,9 +511,9 @@ async function persistConversation(
       })
       .eq('id', existing.id)
     if (updateError) {
-      logger.error('whatsapp-webhook', 'Conversation update failed', updateError, { phone, conversationId: existing.id })
+      logger.error('whatsapp-webhook', 'exception_stack', updateError, { stage: 'conversations update', phone, leadId, conversationId: existing.id })
     } else {
-      logger.info('whatsapp-webhook', 'Conversation found, message saved', { phone, conversationId: existing.id })
+      logger.info('whatsapp-webhook', 'conversation_created_or_found', { phone, leadId, conversationId: existing.id, isNew: false })
     }
   } else {
     const { data: created, error: insertError } = await db
@@ -482,9 +530,9 @@ async function persistConversation(
       .select('id')
       .single()
     if (insertError) {
-      logger.error('whatsapp-webhook', 'Conversation create failed', insertError, { phone })
+      logger.error('whatsapp-webhook', 'exception_stack', insertError, { stage: 'conversations insert', phone, leadId })
     } else {
-      logger.info('whatsapp-webhook', 'Conversation created, message saved', { phone, conversationId: created?.id })
+      logger.info('whatsapp-webhook', 'conversation_created_or_found', { phone, leadId, conversationId: created?.id, isNew: true })
     }
   }
 
