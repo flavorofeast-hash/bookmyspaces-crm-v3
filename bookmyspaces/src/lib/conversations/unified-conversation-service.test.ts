@@ -19,15 +19,18 @@ const state = {
   channelInsertError: null as { message: string } | null,
 
   existingConversationId: null as string | null,
+  existingCustomerId: null as string | null,
   createdConversationId: 'conv-1',
   conversationInsertError: null as { message: string } | null,
   linkInsertError: null as { message: string } | null,
+  customerIdBackfillError: null as { message: string } | null,
 
   messageId: 'msg-1',
   messageInsertError: null as { message: string } | null,
 
   touchCalls: [] as Array<{ channelId: string; channelIdentity: string }>,
   lastMessageAtUpdates: [] as string[],
+  customerIdUpdates: [] as Array<{ conversationId: string; customerId: string }>,
 }
 
 vi.mock('@/lib/supabase', () => ({
@@ -90,6 +93,15 @@ vi.mock('@/lib/supabase', () => ({
 
       if (table === 'unified_conversations') {
         return {
+          select: (cols: string) => {
+            if (cols !== 'customer_id') throw new Error(`unexpected select: ${cols}`)
+            return {
+              eq: () => ({
+                maybeSingle: () =>
+                  Promise.resolve({ data: { customer_id: state.existingCustomerId }, error: null }),
+              }),
+            }
+          },
           insert: () => ({
             select: () => ({
               single: () =>
@@ -99,10 +111,14 @@ vi.mock('@/lib/supabase', () => ({
                 }),
             }),
           }),
-          update: (payload: { last_message_at: string }) => ({
-            eq: () => {
-              state.lastMessageAtUpdates.push(payload.last_message_at)
-              return Promise.resolve({ data: null, error: null })
+          update: (payload: { last_message_at?: string; customer_id?: string }) => ({
+            eq: (_col: string, id: string) => {
+              if ('last_message_at' in payload) {
+                state.lastMessageAtUpdates.push(payload.last_message_at as string)
+                return Promise.resolve({ data: null, error: null })
+              }
+              state.customerIdUpdates.push({ conversationId: id, customerId: payload.customer_id as string })
+              return Promise.resolve({ data: null, error: state.customerIdBackfillError })
             },
           }),
         }
@@ -140,13 +156,16 @@ function resetState() {
   state.createdChannelId = 'chan-1'
   state.channelInsertError = null
   state.existingConversationId = null
+  state.existingCustomerId = null
   state.createdConversationId = 'conv-1'
   state.conversationInsertError = null
   state.linkInsertError = null
+  state.customerIdBackfillError = null
   state.messageId = 'msg-1'
   state.messageInsertError = null
   state.touchCalls = []
   state.lastMessageAtUpdates = []
+  state.customerIdUpdates = []
 }
 
 describe('ensureChannel', () => {
@@ -204,6 +223,49 @@ describe('getOrCreateConversation', () => {
     await expect(
       getOrCreateConversation({ channelType: 'whatsapp', channelIdentity: '919051459463' })
     ).rejects.toThrow(/failed to create unified_conversations row/)
+  })
+
+  // BUGFIX regression coverage: a conversation created with customer_id=NULL
+  // (e.g. via mirrorWhatsAppOutbound, which never knows the lead) must get
+  // backfilled the next time a caller resolves a real customerId for it,
+  // without creating a duplicate conversation or losing its id.
+  it('backfills customer_id on an existing conversation whose customer_id is currently NULL', async () => {
+    state.existingChannelId = 'chan-existing'
+    state.existingConversationId = 'conv-existing'
+    state.existingCustomerId = null
+
+    const result = await getOrCreateConversation({
+      channelType: 'whatsapp',
+      channelIdentity: '919051459463',
+      customerId: 'lead-42',
+    })
+
+    expect(result).toEqual({ conversationId: 'conv-existing', channelId: 'chan-existing', isNewConversation: false })
+    expect(state.customerIdUpdates).toEqual([{ conversationId: 'conv-existing', customerId: 'lead-42' }])
+  })
+
+  it('does not overwrite an already-set customer_id with a different lead', async () => {
+    state.existingChannelId = 'chan-existing'
+    state.existingConversationId = 'conv-existing'
+    state.existingCustomerId = 'lead-original'
+
+    await getOrCreateConversation({
+      channelType: 'whatsapp',
+      channelIdentity: '919051459463',
+      customerId: 'lead-different',
+    })
+
+    expect(state.customerIdUpdates).toEqual([])
+  })
+
+  it('does not query or update customer_id when the caller has no customerId to offer', async () => {
+    state.existingChannelId = 'chan-existing'
+    state.existingConversationId = 'conv-existing'
+    state.existingCustomerId = null
+
+    await getOrCreateConversation({ channelType: 'whatsapp', channelIdentity: '919051459463' })
+
+    expect(state.customerIdUpdates).toEqual([])
   })
 })
 

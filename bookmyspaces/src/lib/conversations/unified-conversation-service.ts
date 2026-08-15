@@ -36,6 +36,7 @@
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { resolveIdentity, type ResolvedIdentity, type IdentityLookup } from '@/lib/identity/resolve-identity'
 import { buildAIContext } from '@/lib/ai/context-builder'
+import { logger } from '@/lib/logger'
 import type {
   ChannelType,
   GetOrCreateConversationInput,
@@ -117,6 +118,49 @@ export async function getOrCreateConversation(
       .update({ last_seen_at: new Date().toISOString() })
       .eq('channel_id', channelId)
       .eq('channel_identity', input.channelIdentity)
+
+    // BUGFIX (customer_id backfill): this branch used to return immediately
+    // on every repeat contact, never looking at customer_id again. A
+    // conversation created before identity could be resolved -- or via an
+    // outbound-only path like mirrorWhatsAppOutbound (whatsapp-unified-sync.ts),
+    // which always passes customerId: null since it has no inbound message
+    // to resolve identity from -- stayed permanently unlinked from its lead,
+    // even once a later inbound message resolved one. Only fills a NULL;
+    // never overwrites an already-set customer_id with a different lead.
+    if (input.customerId) {
+      const { data: existingConv } = await supabase
+        .from('unified_conversations')
+        .select('customer_id')
+        .eq('id', existingConversationId)
+        .maybeSingle()
+
+      const customerIdBefore = existingConv?.customer_id ?? null
+      logger.info('unified-conversation', 'getOrCreateConversation: reused conversation', {
+        conversationId: existingConversationId,
+        leadId: input.customerId,
+        customerIdBefore,
+      })
+
+      if (!customerIdBefore) {
+        const { error: backfillError } = await supabase
+          .from('unified_conversations')
+          .update({ customer_id: input.customerId })
+          .eq('id', existingConversationId)
+
+        if (backfillError) {
+          logger.error('unified-conversation', 'getOrCreateConversation: customer_id backfill failed', backfillError, {
+            conversationId: existingConversationId,
+            leadId: input.customerId,
+          })
+        } else {
+          logger.info('unified-conversation', 'getOrCreateConversation: customer_id backfilled', {
+            conversationId: existingConversationId,
+            customerIdBefore,
+            customerIdAfter: input.customerId,
+          })
+        }
+      }
+    }
 
     return { conversationId: existingConversationId, channelId, isNewConversation: false }
   }
