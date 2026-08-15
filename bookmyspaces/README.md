@@ -58,3 +58,4 @@ npm run test
 ## Business contact info (built into the app's chat/proposal templates)
 
 BookMySpaces · Mukundapur, near EM Bypass, Kolkata · www.bookmyspaces.in · 9051459463 / 9830509991
+
