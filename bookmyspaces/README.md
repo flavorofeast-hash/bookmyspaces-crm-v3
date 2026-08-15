@@ -59,3 +59,4 @@ npm run test
 
 BookMySpaces · Mukundapur, near EM Bypass, Kolkata · www.bookmyspaces.in · 9051459463 / 9830509991
 
+//auto deploy verification
