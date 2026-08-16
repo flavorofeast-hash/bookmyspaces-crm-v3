@@ -31,7 +31,18 @@ export async function GET(req: NextRequest) {
     const { data, error, count } = await query
     if (error) throw error
 
-    return NextResponse.json({ conversations: data, total: count })
+    // BUGFIX: the WhatsApp CRM page's Send handler gates on `selected.phone`
+    // (a flat field), but this table has no `phone` column — only
+    // `extracted_phone` and the linked lead's `leads.phone`. Without this,
+    // `selected?.phone` was always undefined, so Send silently no-op'd
+    // before any fetch was made. Prefer the linked lead's phone (kept in
+    // sync via the CRM), fall back to the AI-extracted value.
+    const enriched = (data ?? []).map((c) => ({
+      ...c,
+      phone: c.leads?.phone ?? c.extracted_phone ?? null,
+    }))
+
+    return NextResponse.json({ conversations: enriched, total: count })
   } catch (err) {
     logger.error('conversations', 'GET /api/conversations error', err)
     return NextResponse.json({ error: 'Failed to fetch conversations' }, { status: 500 })

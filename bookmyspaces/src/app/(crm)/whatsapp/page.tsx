@@ -282,11 +282,14 @@ export default function WhatsAppPage() {
     if (!replyText.trim() || !selected?.phone || sending) return
     setSending(true)
     try {
+      // BUGFIX: /api/whatsapp/send/route.ts destructures `phone`, not `to` —
+      // the mismatched key meant even a fetch that *did* fire would 400
+      // with "Phone number required".
       await fetch('/api/whatsapp/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          to: selected.phone,
+          phone: selected.phone,
           message: replyText,
           conversationId: selected.id,
         }),
