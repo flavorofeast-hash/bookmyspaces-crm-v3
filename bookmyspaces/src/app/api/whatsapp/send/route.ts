@@ -29,7 +29,17 @@ export async function POST(req: NextRequest) {
       template,
       type = 'session',
     } = body
-    const phone = phoneRaw ?? to
+    // ROOT CAUSE (this pass): `!phone` only ever rejects requests where
+    // `phone` is missing entirely. Conversations/leads with no WhatsApp
+    // number on file (created via /api/leads with no phone, or a
+    // website-chat lead whose phone was never captured — both allowed by
+    // schema/validation elsewhere) still pass this endpoint whatever falsy
+    // value they resolved to, so a whitespace-only value slipped through
+    // as "present". Trimming here plus /api/conversations' fix (below)
+    // makes "no phone on file" surface as this same, now-accurate 400
+    // instead of a confusing pass-through.
+    const phoneCandidate = phoneRaw ?? to
+    const phone = typeof phoneCandidate === 'string' ? phoneCandidate.trim() : phoneCandidate
 
     logger.info('whatsapp-send', 'parsed_values', {
       hasPhone: Boolean(phone),
@@ -42,7 +52,7 @@ export async function POST(req: NextRequest) {
 
     if (!phone) {
       logger.error('whatsapp-send', 'validation_failed: missing phone', undefined, { bodyKeys: Object.keys(body ?? {}) })
-      return NextResponse.json({ error: 'Phone number required' }, { status: 400 })
+      return NextResponse.json({ error: 'No WhatsApp number on file for this contact — add a phone number to the lead before sending.' }, { status: 400 })
     }
 
     let finalMessage = message

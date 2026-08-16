@@ -37,10 +37,26 @@ export async function GET(req: NextRequest) {
     // `selected?.phone` was always undefined, so Send silently no-op'd
     // before any fetch was made. Prefer the linked lead's phone (kept in
     // sync via the CRM), fall back to the AI-extracted value.
-    const enriched = (data ?? []).map((c) => ({
-      ...c,
-      phone: c.leads?.phone ?? c.extracted_phone ?? null,
-    }))
+    //
+    // ROOT CAUSE (this pass, "some conversations 400"): two data-shape gaps
+    // in that fix. (1) `c.leads` is a to-one embed but this codebase's own
+    // /api/inbox route defensively unwraps the same kind of embed via
+    // Array.isArray — mirrored here in case PostgREST ever returns it as
+    // a single-element array. (2) `??` only falls through on null/undefined,
+    // not `""` — a lead saved with an empty-string phone (e.g. created via
+    // POST /api/leads, which allows `phone: null`/omitted) was read as a
+    // "valid" but blank value instead of falling back to extracted_phone.
+    // Conversations/leads with genuinely no phone captured anywhere (never
+    // messaged over WhatsApp, no number given in website chat or manual
+    // entry) still correctly resolve to null — that's real missing data,
+    // not a bug — and now surfaces as an accurate, actionable 400 from
+    // /api/whatsapp/send instead of a misleading pass-through.
+    const enriched = (data ?? []).map((c) => {
+      const leadRow = Array.isArray(c.leads) ? c.leads[0] : c.leads
+      const leadPhone = typeof leadRow?.phone === 'string' ? leadRow.phone.trim() : ''
+      const extractedPhone = typeof c.extracted_phone === 'string' ? c.extracted_phone.trim() : ''
+      return { ...c, phone: leadPhone || extractedPhone || null }
+    })
 
     return NextResponse.json({ conversations: enriched, total: count })
   } catch (err) {
