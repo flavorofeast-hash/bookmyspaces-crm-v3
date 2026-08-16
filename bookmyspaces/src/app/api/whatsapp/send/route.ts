@@ -14,9 +14,36 @@ export async function POST(req: NextRequest) {
   const supabaseAdmin = getSupabaseAdmin()
   try {
     const body = await req.json()
-    const { phone, message, lead_id, template, type = 'session' } = body
+    logger.info('whatsapp-send', 'request_received', { keys: Object.keys(body ?? {}) })
 
-    if (!phone) return NextResponse.json({ error: 'Phone number required' }, { status: 400 })
+    const {
+      phone: phoneRaw,
+      // DEFENSIVE ALIAS: an earlier CRM build posted `to` instead of `phone`
+      // (fixed at the call site in src/app/(crm)/whatsapp/page.tsx), which
+      // 400'd here with no visibility into why. Accepting `to` as a fallback
+      // means a stale/rolled-back frontend deploy degrades gracefully
+      // instead of hard-failing manual sends.
+      to,
+      message,
+      lead_id,
+      template,
+      type = 'session',
+    } = body
+    const phone = phoneRaw ?? to
+
+    logger.info('whatsapp-send', 'parsed_values', {
+      hasPhone: Boolean(phone),
+      hasMessage: Boolean(message),
+      hasTemplate: Boolean(template),
+      lead_id: lead_id ?? null,
+      type,
+      usedToAlias: !phoneRaw && Boolean(to),
+    })
+
+    if (!phone) {
+      logger.error('whatsapp-send', 'validation_failed: missing phone', undefined, { bodyKeys: Object.keys(body ?? {}) })
+      return NextResponse.json({ error: 'Phone number required' }, { status: 400 })
+    }
 
     let finalMessage = message
     if (template) {
@@ -35,9 +62,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    if (!finalMessage) return NextResponse.json({ error: 'Message content required' }, { status: 400 })
+    if (!finalMessage) {
+      logger.error('whatsapp-send', 'validation_failed: missing message', undefined, { template: template ?? null, bodyKeys: Object.keys(body ?? {}) })
+      return NextResponse.json({ error: 'Message content required' }, { status: 400 })
+    }
 
+    logger.info('whatsapp-send', 'validation_passed: calling smartSend', { phone, type })
     const success = await smartSend(phone, finalMessage, { type })
+    logger.info('whatsapp-send', 'smartSend_result', { phone, success })
 
     if (success && lead_id) {
       await supabaseAdmin.from('activity_logs').insert({ lead_id, action: 'whatsapp_sent', description: `WhatsApp message sent: "${finalMessage.substring(0, 100)}..."`, performed_by: 'staff', metadata: { template, phone } })
