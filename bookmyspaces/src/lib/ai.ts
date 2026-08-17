@@ -194,8 +194,15 @@ export function hasMinimumLeadData(data: ExtractedLeadData | null): boolean {
 
 export function cleanAIResponse(response: string): string {
   return response
+    // Strip the mandatory data-extraction tag. Normally closes with a
+    // literal ">>", but the model occasionally emits a malformed closing
+    // delimiter -- if the well-formed pattern doesn't match, strip from
+    // the tag's start to the end of the string instead of ever leaving
+    // raw backend JSON visible to the customer.
     .replace(/<<LEAD:[\s\S]*?>>/g, '')
+    .replace(/<<LEAD:[\s\S]*$/g, '')
     .replace(/<<EXTRACTED_DATA:[\s\S]*?>>/g, '')
+    .replace(/<<EXTRACTED_DATA:[\s\S]*$/g, '')
     .trim()
 }
 

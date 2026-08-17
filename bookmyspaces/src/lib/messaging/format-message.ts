@@ -61,9 +61,21 @@ function truncateToWordLimit(text: string, limit: number): string {
   return `${truncated}…`
 }
 
+// Last line of defense: no caller-facing message should ever carry raw
+// backend metadata (the AI's own <<LEAD:...>> extraction tag), even if a
+// caller forgot to run cleanAIResponse() or the model emitted a malformed
+// closing delimiter that a narrower regex upstream didn't catch.
+function stripBackendTags(text: string): string {
+  return text
+    .replace(/<<LEAD:[\s\S]*?>>/g, '')
+    .replace(/<<LEAD:[\s\S]*$/g, '')
+    .replace(/<<EXTRACTED_DATA:[\s\S]*?>>/g, '')
+    .replace(/<<EXTRACTED_DATA:[\s\S]*$/g, '')
+}
+
 export function formatMessage(input: FormattedMessage): string {
   const bodyParagraphs = (Array.isArray(input.body) ? input.body : [input.body])
-    .map((p) => p.trim())
+    .map((p) => stripBackendTags(p).trim())
     .filter(Boolean)
   const bodyText = bodyParagraphs.join('\n\n')
 
