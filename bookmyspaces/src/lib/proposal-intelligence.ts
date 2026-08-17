@@ -118,7 +118,7 @@ const VENUE_CONFIG = {
   monurama_homestay: {
     name        : 'Monurama Homestay',
     location    : 'Mukundapur, EM Bypass',
-    contact     : '9051459463',
+    contact     : '8017035546',
     capacity    : 70,
     strengths   : ['Intimate gatherings', 'Heritage ambience', 'Private celebrations', 'Stay-in option'],
     perHead     : 1800,

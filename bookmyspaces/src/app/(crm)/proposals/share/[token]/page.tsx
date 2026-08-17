@@ -170,7 +170,7 @@ Please guide me with the next payment steps.`);
           <div className="space-y-4">
 
             <a
-              href={`https://wa.me/919051459463?text=${whatsappMessage}`}
+              href={`https://wa.me/918017035546?text=${whatsappMessage}`}
               target="_blank"
               rel="noopener noreferrer"
               className="w-full bg-[#25D366] hover:bg-[#1ebe5d] text-white font-semibold py-5 rounded-2xl flex items-center justify-center text-xl transition-all"
@@ -179,10 +179,10 @@ Please guide me with the next payment steps.`);
             </a>
 
             <a
-              href="tel:+919051459463"
+              href="tel:+918017035546"
               className="w-full bg-[#0d1b2a] hover:bg-[#16263a] text-white font-semibold py-5 rounded-2xl flex items-center justify-center text-xl transition-all"
             >
-              Call Us: +91 9051459463
+              Call Us: +91 8017035546
             </a>
 
             <Link
@@ -206,7 +206,7 @@ Please guide me with the next payment steps.`);
           </p>
 
           <p className="mt-2">
-            9051459463 · 9830509991
+            8017035546 · 9830509991
           </p>
 
           <p className="mt-2 text-[#c6a55b]">

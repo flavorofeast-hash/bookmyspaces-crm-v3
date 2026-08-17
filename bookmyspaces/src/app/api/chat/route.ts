@@ -200,7 +200,7 @@ export async function POST(req: NextRequest) {
     logger.error('chat', `[${reqId}] Unhandled error`, error)
     return NextResponse.json(
       {
-        reply: "I'm having trouble connecting right now. Please WhatsApp us at 9051459463 and we'll respond right away! 😊",
+        reply: "I'm having trouble connecting right now. Please WhatsApp us at 8017035546 and we'll respond right away! 😊",
         error: 'Internal server error',
         sessionId: null,
       },

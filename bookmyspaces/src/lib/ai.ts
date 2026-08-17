@@ -36,7 +36,7 @@ SKYLINE SERENITY (Near Kolkata Airport)
 MONURAMA HOMESTAY (Mukundapur, Near EM Bypass)
 - Rooms for stay, Open-Air Cafe "Under the Mango Tree" from Rs249
 - Rooftop events, Private Dining from Rs4999, Open-Air Banquet
-- Phone: 9051459463 / 7003853624
+- Phone: 8017035546 / 7003853624
 
 ROOFTOP EVENT PACKAGES:
 - SILVER Rs42000 (60 guests, 4hrs): venue, basic decor, buffet, sound, lighting, staff
@@ -47,9 +47,9 @@ ROOFTOP EVENT PACKAGES:
 STYLE: Warm, professional, Indian English, use emojis naturally, never robotic
 GOALS: Understand needs, collect details conversationally, suggest right package, handle objections
 COLLECT: name, phone (say "so I can share catalog"), event type, date, guest count, budget
-TRUST: Mention Google reviews, Justdial, website if asked. Manager: 9051459463
+TRUST: Mention Google reviews, Justdial, website if asked. Manager: 8017035546
 PRICING: Never reduce without authorization. Price objection: explain value, offer lower package.
-ESCALATE: "Let me connect you with our manager. WhatsApp: 9051459463"
+ESCALATE: "Let me connect you with our manager. WhatsApp: 8017035546"
 
 DATA EXTRACTION — MANDATORY — DO THIS EVERY SINGLE RESPONSE:
 After your natural reply, append this EXACTLY (one line, valid JSON):
@@ -57,7 +57,7 @@ After your natural reply, append this EXACTLY (one line, valid JSON):
 
 RULES FOR THE TAG:
 - Include ALL 8 fields every single time, even if empty string
-- phone: 10-digit Indian mobile only (e.g. "9051459463") — empty string if uncertain
+- phone: 10-digit Indian mobile only (e.g. "8017035546") — empty string if uncertain
 - guest_count: digits only as string (e.g. "50") — empty string if uncertain
 - venue: "skyline" or "monurama" or empty string
 - Only put what customer EXPLICITLY said — never guess
@@ -289,7 +289,7 @@ export interface Message {
 }
 
 const FALLBACK_MESSAGE =
-  "I'm having a brief connectivity issue 🙏 Please WhatsApp us at *9051459463* and we'll respond immediately!"
+  "I'm having a brief connectivity issue 🙏 Please WhatsApp us at *8017035546* and we'll respond immediately!"
 
 export async function chatWithAI(messages: Message[], userQuery: string): Promise<string> {
   const cappedMessages = messages.slice(-20)

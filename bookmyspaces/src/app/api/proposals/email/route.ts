@@ -64,8 +64,8 @@ export async function POST(req: NextRequest) {
         `🎪 Event: ${proposal.event_type || '-'}`,
         `💰 Package Value: ₹${(proposal.total_price || 0).toLocaleString('en-IN')}`, '',
         `View your complete proposal here:`, shareUrl, '',
-        `To confirm your booking, please reply to this email or WhatsApp us at +91 9051459463.`, '',
-        `Warm regards,`, `BookMySpaces Team`, `📞 9051459463 | www.bookmyspaces.in`,
+        `To confirm your booking, please reply to this email or WhatsApp us at +91 8017035546.`, '',
+        `Warm regards,`, `BookMySpaces Team`, `📞 8017035546 | www.bookmyspaces.in`,
       ].join('\n')
       const mailtoUrl = `mailto:${toEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(mailtoBody)}`
       return NextResponse.json({ success: true, method: 'mailto', mailto_url: mailtoUrl, sent_to: toEmail, note: 'No email provider configured — use mailto_url to open in email client' })

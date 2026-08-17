@@ -79,7 +79,7 @@ ADD-ONS:
 - Theme Decoration: ₹5,000–₹12,000
 
 Maximum capacity: 70 guests
-Contact: 9051459463 / 7003853624`,
+Contact: 8017035546 / 7003853624`,
   },
   {
     source: 'venues_info',
@@ -101,7 +101,7 @@ Contact: 9051459463 / 7003853624`,
 - Rooftop space for parties and events
 - Private Dining Room — from ₹4,999 (couples, intimate celebrations)
 - Open-Air Banquet Hall
-- Phone: 9051459463 / 7003853624
+- Phone: 8017035546 / 7003853624
 
 Perfect for: Birthday Parties, Engagement Ceremonies, Anniversary Celebrations, Corporate Gatherings, Private Dinner Events, Family Get-togethers`,
   },
@@ -120,7 +120,7 @@ Q: Can I arrange food through you?
 A: Yes! We offer buffet dinners with both veg and non-veg options.
 
 Q: Can I get a site visit before booking?
-A: Absolutely! Please call ahead to schedule: 9051459463.
+A: Absolutely! Please call ahead to schedule: 8017035546.
 
 Q: What payment modes are accepted?
 A: UPI, bank transfer. Advance required to confirm booking.
@@ -147,7 +147,7 @@ IMPORTANT POLICIES:
 - Food menu customization must be confirmed 3-5 days before event
 
 CONTACT:
-WhatsApp / Call: 9051459463 or 7003853624
+WhatsApp / Call: 8017035546 or 7003853624
 Website: www.bookmyspaces.in`,
   },
   {

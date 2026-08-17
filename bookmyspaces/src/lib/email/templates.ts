@@ -5,7 +5,7 @@
 // provider, so these are easy to unit-test and easy to reuse from any route.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BUSINESS_PHONE = '9051459463'
+const BUSINESS_PHONE = '8017035546'
 const BUSINESS_NAME = 'BookMySpaces'
 
 export interface EmailTemplate {

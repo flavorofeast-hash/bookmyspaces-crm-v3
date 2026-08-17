@@ -584,7 +584,7 @@ ${hasEvent && inclusionsHtml ? `
   <div class="contact-row">
     <div class="contact-cell">
       <div class="contact-cell-label">WhatsApp / Call</div>
-      <div class="contact-cell-value">9051459463</div>
+      <div class="contact-cell-value">8017035546</div>
     </div>
     <div class="contact-cell">
       <div class="contact-cell-label">Alternate</div>

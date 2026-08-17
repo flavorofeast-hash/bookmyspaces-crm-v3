@@ -32,7 +32,7 @@ Requirements:
 - End with a soft call to action (WhatsApp to inquire)
 - Use 2-3 relevant emojis
 - Sound warm, not salesy
-- Include phone: 9051459463
+- Include phone: 8017035546
 
 Return ONLY the message text, no preamble.`
 
@@ -44,10 +44,10 @@ Return ONLY the message text, no preamble.`
 
   const message = response.content[0].type === 'text'
     ? response.content[0].text
-    : `Wishing you a wonderful ${festival}! Celebrate with your loved ones at BookMySpaces. WhatsApp: 9051459463 🎉`
+    : `Wishing you a wonderful ${festival}! Celebrate with your loved ones at BookMySpaces. WhatsApp: 8017035546 🎉`
 
-  const cta = `📱 WhatsApp: 9051459463`
-  const fullMessage = message.includes('9051459463') ? message : `${message}\n\n${cta}`
+  const cta = `📱 WhatsApp: 8017035546`
+  const fullMessage = message.includes('8017035546') ? message : `${message}\n\n${cta}`
 
   return {
     festival,
@@ -478,7 +478,7 @@ ${context ? `Additional context: ${context}` : ''}
 Draft a complete campaign brief. Respond with ONLY valid JSON, no markdown fences, in exactly this shape:
 {
   "title": "short internal campaign name",
-  "whatsappMessage": "the actual WhatsApp message, Indian English, 2-4 sentences, 1-2 emojis, ends with a soft CTA and phone 9051459463",
+  "whatsappMessage": "the actual WhatsApp message, Indian English, 2-4 sentences, 1-2 emojis, ends with a soft CTA and phone 8017035546",
   "emailSubject": "email subject line",
   "emailBody": "short email body, under 150 words, professional but warm",
   "cta": "one short call-to-action phrase, e.g. 'Reply to book your date'",
@@ -506,7 +506,7 @@ Draft a complete campaign brief. Respond with ONLY valid JSON, no markdown fence
   } catch {
     return {
       title: 'Untitled Campaign',
-      whatsappMessage: `Hi! We have something special for you at BookMySpaces. Contact us at 9051459463 to know more.`,
+      whatsappMessage: `Hi! We have something special for you at BookMySpaces. Contact us at 8017035546 to know more.`,
       emailSubject: 'A special offer from BookMySpaces',
       emailBody: 'We have something special for you — reach out to learn more.',
       cta: 'Contact us to learn more',
@@ -534,7 +534,7 @@ Context: ${context}
 Tone: ${toneGuide[tone]}
 
 Business: BookMySpaces — Premium Rooftop Events & Stay in Kolkata
-Contact: 9051459463
+Contact: 8017035546
 
 Rules:
 - Max 150 words
@@ -554,5 +554,5 @@ Return ONLY the message text.`
 
   return response.content[0].type === 'text'
     ? response.content[0].text
-    : `Hi! We have exciting offers at BookMySpaces. Contact us at 9051459463 to know more.`
+    : `Hi! We have exciting offers at BookMySpaces. Contact us at 8017035546 to know more.`
 }

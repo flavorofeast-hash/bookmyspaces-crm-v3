@@ -270,7 +270,7 @@ table{width:100%;border-collapse:collapse}
   <div>
     <div class="party-label">Billed By</div>
     <div class="party-name">BookMySpaces</div>
-    <div class="party-detail">Mukundapur, Near Ruby Hospital<br>EM Bypass, Kolkata<br>9051459463 · bookmyspaces.in</div>
+    <div class="party-detail">Mukundapur, Near Ruby Hospital<br>EM Bypass, Kolkata<br>8017035546 · bookmyspaces.in</div>
   </div>
   <div>
     <div class="party-label">Billed To</div>
@@ -385,7 +385,7 @@ ${hasRooms ? `
       </div>
       <div class="pay-instr-row">
         <span class="pay-instr-key">Phone / WhatsApp</span>
-        <span class="pay-instr-value">9051459463</span>
+        <span class="pay-instr-value">8017035546</span>
       </div>
       <div class="pay-instr-note">Please quote Invoice No. ${invoiceNumber} when making payment.</div>
     </div>
@@ -419,7 +419,7 @@ ${payments.length>0 ? `
   <div class="footer-cells">
     <div class="f-cell">
       <div class="f-lbl">WhatsApp / Call</div>
-      <div class="f-val">9051459463</div>
+      <div class="f-val">8017035546</div>
     </div>
     <div class="f-cell">
       <div class="f-lbl">UPI Payment</div>
@@ -436,7 +436,7 @@ ${payments.length>0 ? `
 <!-- Hospitality closing message -->
 <div class="hospitality-close">
   <div class="hosp-text">Thank you for choosing BookMySpaces.</div>
-  <div class="hosp-sub">We look forward to hosting your celebration and creating a memorable experience for your guests.<br>For any queries, please reach us at 9051459463 or via WhatsApp.</div>
+  <div class="hosp-sub">We look forward to hosting your celebration and creating a memorable experience for your guests.<br>For any queries, please reach us at 8017035546 or via WhatsApp.</div>
 </div>
 
 <!-- Digital signature strip -->

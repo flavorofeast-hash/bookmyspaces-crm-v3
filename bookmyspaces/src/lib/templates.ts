@@ -160,7 +160,7 @@ Please review your personalised proposal here:
 
 To confirm your booking, simply reply *YES* or call us directly.
 
-📞 9051459463 | 9830509991
+📞 8017035546 | 9830509991
 🌐 www.bookmyspaces.in
 
 _This proposal is valid for 7 days. Weekend slots fill fast!_ 🗓`,
@@ -174,7 +174,7 @@ Just checking in on your proposal *${proposalNumber}* — have you had a chance 
 
 Happy to answer any questions or customise the package for you!
 
-📞 Call/WhatsApp: 9051459463`,
+📞 Call/WhatsApp: 8017035546`,
 
   followUp: (name?: string) =>
     `Hi${name ? ` ${name}` : ''}! 😊 
@@ -209,13 +209,13 @@ I'll suggest the best option for you! ✨`,
 
 You're welcome to visit the venue before booking — just let us know! 
 
-Or connect with our manager: 📞 9051459463`,
+Or connect with our manager: 📞 8017035546`,
 
   // ── ESCALATION TO HUMAN ───────────────────────────────
   escalateToHuman: () =>
     `Let me connect you with our team for better assistance! 😊
 
-📞 Call / WhatsApp: *9051459463*
+📞 Call / WhatsApp: *8017035546*
 📞 Alternate: *7003853624*
 🌐 www.bookmyspaces.in
 
@@ -250,7 +250,7 @@ Perfect for:
 
 Feel free to reach us anytime for rooms, events, or celebrations!
 
-📲 9051459463 | 🌐 www.bookmyspaces.in
+📲 8017035546 | 🌐 www.bookmyspaces.in
 
 Have a wonderful day! ✨`,
 
@@ -263,7 +263,7 @@ Your stay at *BookMySpaces*${params.venue ? ` (${params.venue})` : ''} is coming
 
 We're looking forward to hosting you. Any special requests before you arrive?
 
-📞 9051459463 | 🌐 www.bookmyspaces.in`,
+📞 8017035546 | 🌐 www.bookmyspaces.in`,
 
   // ── CUSTOMER JOURNEY: CHECK-IN ────────────────────────
   // Fires immediately when the front desk marks a reservation checked-in
@@ -277,7 +277,7 @@ We hope you have a wonderful stay!${params.checkOutDate ? ` Your check-out date 
 
 Need anything during your stay? Just message us here. 😊
 
-📞 9051459463`,
+📞 8017035546`,
 
   // ── CUSTOMER JOURNEY: CHECK-OUT ───────────────────────
   // Fires immediately when the front desk marks a reservation checked-out
@@ -297,7 +297,7 @@ We've added new packages and offers since your last visit — we'd love to host 
 
 Reply here or call us to check availability for your next celebration or stay. 🎉
 
-📞 9051459463 | 🌐 www.bookmyspaces.in`,
+📞 8017035546 | 🌐 www.bookmyspaces.in`,
 
   // ── CUSTOMER JOURNEY: POST-STAY ───────────────────────
   postStayThankYou: (params: { name?: string; venue?: string }) =>

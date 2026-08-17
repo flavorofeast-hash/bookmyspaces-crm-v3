@@ -44,7 +44,7 @@ export default function HomePage() {
 
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <a
-              href={`https://wa.me/919051459463?text=Hi! I'm interested in booking an event at BookMySpaces`}
+              href={`https://wa.me/918017035546?text=Hi! I'm interested in booking an event at BookMySpaces`}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-2 px-8 py-4 text-white font-medium rounded-lg transition-all"
@@ -226,7 +226,7 @@ export default function HomePage() {
               </div>
               <div className="flex items-center gap-2 text-gray-400 text-sm mt-1">
                 <Phone size={14} style={{ color: 'var(--gold)' }} />
-                9051459463 / 7003853624
+                8017035546 / 7003853624
               </div>
             </div>
           </div>
@@ -245,7 +245,7 @@ export default function HomePage() {
           BookMySpaces
         </p>
         <p className="text-gray-500 text-sm">
-          © 2026 BookMySpaces · www.bookmyspaces.in · 9051459463
+          © 2026 BookMySpaces · www.bookmyspaces.in · 8017035546
         </p>
       </footer>
     </main>
@@ -334,7 +334,7 @@ function PackageCard({
       </ul>
 
       <a
-        href={`https://wa.me/919051459463?text=Hi! I'm interested in the ${tier} Package (${price}). Can you share more details?`}
+        href={`https://wa.me/918017035546?text=Hi! I'm interested in the ${tier} Package (${price}). Can you share more details?`}
         target="_blank"
         rel="noopener noreferrer"
         className="block mt-8 w-full text-center py-3 rounded-lg font-medium text-sm transition-all"
