@@ -5,3 +5,5 @@
 .git.stale-*/
 .git.corrupted-*/
 probe_delete_test.txt
+
+.env*
