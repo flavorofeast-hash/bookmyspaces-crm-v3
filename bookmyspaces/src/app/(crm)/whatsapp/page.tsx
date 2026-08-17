@@ -278,39 +278,11 @@ export default function WhatsAppPage() {
     return () => clearInterval(interval)
   }, [fetchConversations]) // fetchConversations is stable — this runs once
 
-  // TEMP DIAGNOSTICS (remove after runtime investigation is done) — mount log.
-  useEffect(() => {
-    console.log('[WA] mounted')
-  }, [])
-
   async function handleSendReply() {
-    // TEMP DIAGNOSTICS (remove after runtime investigation is done)
-    console.log('[WA] handleSendReply entered')
-
-    if (!replyText.trim()) {
-      console.log('[WA] blocked: empty reply')
-      return
-    }
-    if (!selected?.phone) {
-      console.log('[WA] blocked: missing phone')
-      return
-    }
-    if (sending) {
-      console.log('[WA] blocked: sending')
-      return
-    }
+    if (!replyText.trim() || !selected?.phone || sending) return
 
     setSending(true)
     try {
-      // BUGFIX: /api/whatsapp/send/route.ts destructures `phone`, not `to` —
-      // the mismatched key meant even a fetch that *did* fire would 400
-      // with "Phone number required".
-      // TEMP DIAGNOSTICS (remove after runtime investigation is done)
-      console.log('[WA] calling /api/whatsapp/send', {
-        conversationId: selected?.id,
-        phone: selected?.phone,
-        message: replyText,
-      })
       await fetch('/api/whatsapp/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -331,14 +303,6 @@ export default function WhatsAppPage() {
   // Derive selected conversation from the list — no separate state for the object
   // This means it always reflects latest data without an extra setState
   const selected = conversations.find((c) => c.id === selectedId) ?? null
-
-  // TEMP DIAGNOSTICS (remove after runtime investigation is done) — logs on
-  // every render, so these reflect the actual state at the moment each
-  // render committed, not a stale/cached read.
-  console.log('[WA] selected', selected)
-  console.log('[WA] selected.phone', selected?.phone)
-  console.log('[WA] replyText', replyText)
-  console.log('[WA] sending', sending)
 
   // Filtered list
   const filtered = conversations.filter((c) => {
@@ -361,24 +325,8 @@ export default function WhatsAppPage() {
 
   const messageList = selected?.messages ?? []
 
-  // TEMP DIAGNOSTICS (remove after runtime investigation is done)
-  const buttonDisabled = !replyText.trim() || sending
-  const buildCommit = process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ?? 'unknown (NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA not exposed)'
-
   return (
-    <div className="flex flex-col h-screen bg-gray-50 overflow-hidden">
-      {/* TEMP DEBUG PANEL — remove after runtime investigation is done */}
-      <div className="shrink-0 bg-black text-green-400 text-xs font-mono px-3 py-2 flex flex-wrap gap-x-4 gap-y-1 border-b-2 border-yellow-400">
-        <span>build: {buildCommit}</span>
-        <span>selected.id: {String(selected?.id ?? 'null')}</span>
-        <span>selected.phone: {String(selected?.phone ?? 'null')}</span>
-        <span>replyText.length: {replyText.length}</span>
-        <span>sending: {String(sending)}</span>
-        <span>buttonDisabled: {String(buttonDisabled)}</span>
-        <span>typeof selected: {typeof selected}</span>
-        <span>Array.isArray(selected): {String(Array.isArray(selected))}</span>
-      </div>
-      <div className="flex flex-1 overflow-hidden">
+    <div className="flex h-screen bg-gray-50 overflow-hidden">
       {/* Sidebar */}
       <div className="w-80 flex-shrink-0 flex flex-col bg-white border-r border-gray-200">
         {/* Header */}
@@ -617,7 +565,6 @@ export default function WhatsAppPage() {
           <XCircle className="w-5 h-5 text-gray-600" />
         </button>
       )}
-      </div>
     </div>
   )
 }
