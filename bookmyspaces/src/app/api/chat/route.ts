@@ -22,9 +22,12 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { syncLeadToSheets, initializeSheet } from '@/lib/sheets'
 import { logger } from '@/lib/logger'
 import { handleInboundMessage, recordMessage } from '@/lib/conversations/unified-conversation-service'
-import { checkAndApplyHandoff, estimateConfidence } from '@/lib/ai/orchestrator'
+import { checkAndApplyHandoff, evaluateHandoff, estimateConfidence } from '@/lib/ai/orchestrator'
 import { normalizePhone as normalizePhoneCanonical } from '@/lib/whatsapp/normalize-phone'
 import { checkRateLimit, clientIpFrom } from '@/lib/rate-limit'
+import { formatMessage } from '@/lib/messaging/format-message'
+import { errorTemplate } from '@/lib/messaging/templates'
+import { getSettingsSection } from '@/lib/settings/settings-service'
 
 // CORS — the public website (bookmyspaces.in, hosted separately on
 // Cloudflare Pages, not this Vercel project) calls this endpoint directly
@@ -226,8 +229,22 @@ export async function POST(req: NextRequest) {
       logger.error('chat', `[${reqId}] Unified Conversation Platform sync failed (non-fatal)`, err)
     })
 
+    // Human Handover -- reuses evaluateHandoff()'s existing detection
+    // (customer-requested-human, complaint, refund, payment issue, low
+    // confidence), unchanged; only decides whether to render the contact
+    // block. `aiResponseClean` (not the formatted version) stays the
+    // canonical stored/context text above -- formatting is applied only
+    // to what's actually returned to the browser.
+    const aiSettingsForHandover = await getSettingsSection('ai')
+    const handoverDecision = evaluateHandoff({
+      customerText: trimmedMessage,
+      aiConfidence: estimateConfidence(aiResponseClean),
+      settings: aiSettingsForHandover,
+    })
+    const formattedReply = formatMessage({ body: aiResponseClean, includeHandover: handoverDecision.escalate })
+
     return NextResponse.json(
-      { reply: aiResponseClean, sessionId, leadCaptured: hasLead },
+      { reply: formattedReply, sessionId, leadCaptured: hasLead },
       { headers: corsHeaders(origin) }
     )
 
@@ -235,7 +252,7 @@ export async function POST(req: NextRequest) {
     logger.error('chat', `[${reqId}] Unhandled error`, error)
     return NextResponse.json(
       {
-        reply: "I'm having trouble connecting right now. Please WhatsApp us at 8017035546 and we'll respond right away! 😊",
+        reply: errorTemplate(),
         error: 'Internal server error',
         sessionId: null,
       },

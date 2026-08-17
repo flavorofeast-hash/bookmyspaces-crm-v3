@@ -5,6 +5,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { smartSend } from '@/lib/queue'
 import { WHATSAPP_MESSAGES } from '@/lib/templates'
+import {
+  welcomeTemplate,
+  roomTemplate,
+  banquetTemplate,
+  restaurantTemplate,
+  quoteTemplate,
+  contactTemplate,
+  humanHandoverTemplate,
+} from '@/lib/messaging/templates'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
 
@@ -57,18 +66,24 @@ export async function POST(req: NextRequest) {
 
     let finalMessage = message
     if (template) {
+      // Cases with a direct match in the new unified template set
+      // (src/lib/messaging/templates.ts) call it directly -- already
+      // formatter-wrapped, with heading/handover baked in. The rest keep
+      // using WHATSAPP_MESSAGES (src/lib/templates.ts), which is now also
+      // internally rebuilt on the same formatter, so every case here goes
+      // through the unified layout either way.
       switch (template) {
-        case 'greeting': finalMessage = WHATSAPP_MESSAGES.greeting(); break
-        case 'packages': finalMessage = WHATSAPP_MESSAGES.packagesOverview(); break
+        case 'greeting': finalMessage = welcomeTemplate(); break
+        case 'packages': finalMessage = quoteTemplate(); break
         case 'followup': finalMessage = WHATSAPP_MESSAGES.followUp(); break
         case 'payment': finalMessage = WHATSAPP_MESSAGES.paymentInfo(); break
-        case 'trust': finalMessage = WHATSAPP_MESSAGES.trustMessage(); break
+        case 'trust': finalMessage = contactTemplate(); break
         case 'urgency': finalMessage = WHATSAPP_MESSAGES.urgency(); break
-        case 'escalate': finalMessage = WHATSAPP_MESSAGES.escalateToHuman(); break
-        case 'rooftop': finalMessage = WHATSAPP_MESSAGES.rooftopInfo(); break
-        case 'dining': finalMessage = WHATSAPP_MESSAGES.privateDining(); break
-        case 'skyline': finalMessage = WHATSAPP_MESSAGES.skylineRooms(); break
-        case 'cafe': finalMessage = WHATSAPP_MESSAGES.cafeInfo(); break
+        case 'escalate': finalMessage = humanHandoverTemplate(); break
+        case 'rooftop': finalMessage = banquetTemplate(); break
+        case 'dining': finalMessage = restaurantTemplate(); break
+        case 'skyline': finalMessage = roomTemplate(); break
+        case 'cafe': finalMessage = restaurantTemplate(); break
       }
     }
 

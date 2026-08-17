@@ -16,7 +16,8 @@ import { ConversationState, SourceChannel } from '@/constants/conversation-state
 import { getSettingsSection }        from '@/lib/settings/settings-service'
 import { orchestrate }               from '@/lib/ai/orchestration-engine'
 import { executeOrchestration }      from '@/lib/ai/orchestration-executor'
-import { applyHandoff }              from '@/lib/ai/orchestrator'
+import { applyHandoff, evaluateHandoff, estimateConfidence } from '@/lib/ai/orchestrator'
+import { formatMessage }             from '@/lib/messaging/format-message'
 // BUGFIX (this pass): persistConversation() below previously only ever
 // LOOKED UP an existing lead by phone -- it never created one. First-time
 // WhatsApp contacts (the common case for an inbound inquiry) got a
@@ -211,7 +212,23 @@ async function runLegacyReplyPath(
   text:       string,
   messageId:  string
 ): Promise<void> {
-  const reply = await buildReply(from, text, senderName)
+  // buildReply() returns the CLEAN reply text (no brand chrome) -- that's
+  // what gets stored as conversation history/AI context below. The
+  // formatted, customer-facing version (brand header, dividers, optional
+  // Human Handover block) is only computed here, right before the actual
+  // send, so the AI never sees its own past replies wrapped in presentation
+  // markup as if that markup were something it said.
+  const { text: cleanReply, isFallback } = await buildReply(from, text, senderName)
+
+  const aiSettings = await getSettingsSection('ai')
+  const decision = isFallback
+    // The AI call itself failed -- exactly the "repeated failures" Human
+    // Handover trigger. Presentation-only: does not call applyHandoff()
+    // (no DB escalation write), matching this path's existing behavior of
+    // never marking a conversation escalated on its own.
+    ? { escalate: true }
+    : evaluateHandoff({ customerText: text, aiConfidence: estimateConfidence(cleanReply), settings: aiSettings })
+  const reply = formatMessage({ body: cleanReply, includeHandover: decision.escalate })
 
   // unifiedMirror: null -- syncToUnifiedConversationPlatform() below already
   // records this exact outbound reply into unified_messages right after the
@@ -222,7 +239,7 @@ async function runLegacyReplyPath(
   const sendResult = await sendWhatsAppText(from, reply, { unifiedMirror: null })
   logger.info('whatsapp-webhook', 'reply_sent', { phone: from, success: sendResult.success, waMessageId: sendResult.waMessageId ?? null })
 
-  await persistConversation(from, senderName, text, reply)
+  await persistConversation(from, senderName, text, cleanReply)
 
   // BUGFIX (Vercel runtime audit, this pass): this call used to be
   // fire-and-forget (`.catch()`, not awaited). On Vercel's Node.js
@@ -563,7 +580,7 @@ async function persistConversation(
 // (`conversations` table, session_id = wa_<phone> -- persistConversation()'s
 // own scheme, kept in sync here so a returning customer's prior messages are
 // actually passed as context, not just their latest one).
-async function buildReply(phone: string, text: string, name: string): Promise<string> {
+async function buildReply(phone: string, text: string, name: string): Promise<{ text: string; isFallback: boolean }> {
   try {
     const db = getSupabaseAdmin()
     const sessionId = `wa_${phone}`
@@ -579,10 +596,10 @@ async function buildReply(phone: string, text: string, name: string): Promise<st
 
     const messagesForAI: AIMessage[] = [...history, { role: 'user', content: text }]
     const raw = await chatWithAI(messagesForAI, text)
-    return cleanAIResponse(raw)
+    return { text: cleanAIResponse(raw), isFallback: false }
   } catch (err) {
     logger.error('whatsapp-webhook', 'buildReply (AI) failed, falling back to keyword auto-reply', err, { phone })
-    return buildAutoReply(text, name)
+    return { text: await buildAutoReply(text, name), isFallback: true }
   }
 }
 
