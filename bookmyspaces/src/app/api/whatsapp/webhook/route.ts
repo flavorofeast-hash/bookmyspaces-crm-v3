@@ -29,6 +29,17 @@ import { applyHandoff }              from '@/lib/ai/orchestrator'
 // source_channel/whatsapp_opted_in fields and an activity_log entry on
 // creation -- reused here rather than duplicating that logic.
 import { resolveLeadByPhone }        from '@/lib/whatsapp/lead-resolver'
+// FIX (this pass): the legacy reply path called buildAutoReply() -- a pure
+// keyword matcher ("book"/"price"/"cancel", else a generic fallback line) --
+// never the actual AI. Every message that didn't hit one of those three
+// keywords (e.g. "Hi") got the same canned fallback, which read to a
+// customer like an automated template, not the AI Receptionist the website
+// chat already provides via this exact function. Reusing chatWithAI/
+// cleanAIResponse here -- the same, already-tested pipeline api/chat/route.ts
+// uses -- rather than duplicating prompt/knowledge-base logic or flipping
+// the separately-gated orchestration.enabled flag (settings-service.ts:
+// "MUST remain false until an explicitly-approved later Phase 1B step").
+import { chatWithAI, cleanAIResponse, Message as AIMessage } from '@/lib/ai'
 
 export const dynamic    = 'force-dynamic'
 export const runtime    = 'nodejs'
@@ -200,7 +211,7 @@ async function runLegacyReplyPath(
   text:       string,
   messageId:  string
 ): Promise<void> {
-  const reply = await buildAutoReply(text, senderName)
+  const reply = await buildReply(from, text, senderName)
 
   // unifiedMirror: null -- syncToUnifiedConversationPlatform() below already
   // records this exact outbound reply into unified_messages right after the
@@ -548,6 +559,33 @@ async function persistConversation(
   }
 }
 
+// Real AI reply, using the same conversation history the CRM inbox reads
+// (`conversations` table, session_id = wa_<phone> -- persistConversation()'s
+// own scheme, kept in sync here so a returning customer's prior messages are
+// actually passed as context, not just their latest one).
+async function buildReply(phone: string, text: string, name: string): Promise<string> {
+  try {
+    const db = getSupabaseAdmin()
+    const sessionId = `wa_${phone}`
+    const { data: existing } = await db
+      .from('conversations')
+      .select('messages')
+      .eq('session_id', sessionId)
+      .maybeSingle()
+
+    const history: AIMessage[] = Array.isArray(existing?.messages)
+      ? (existing!.messages as AIMessage[]).slice(-18)
+      : []
+
+    const messagesForAI: AIMessage[] = [...history, { role: 'user', content: text }]
+    const raw = await chatWithAI(messagesForAI, text)
+    return cleanAIResponse(raw)
+  } catch (err) {
+    logger.error('whatsapp-webhook', 'buildReply (AI) failed, falling back to keyword auto-reply', err, { phone })
+    return buildAutoReply(text, name)
+  }
+}
+
 async function buildAutoReply(text: string, name: string): Promise<string> {
   const lower = text.toLowerCase()
 
@@ -558,9 +596,9 @@ async function buildAutoReply(text: string, name: string): Promise<string> {
     return await buildPricingReply(name)
   }
   if (lower.includes('cancel')) {
-    return `Hi ${name}! For cancellations see https://www.bookmyspaces.in/cancellation.html or call +91 90514 59463.`
+    return `Hi ${name}! For cancellations see https://www.bookmyspaces.in/cancellation.html or call +91 80170 35546.`
   }
-  return `Hi ${name}! 🏡 Thanks for reaching out to Book My Space. Our team will respond shortly. Call us at +91 90514 59463 or visit www.bookmyspaces.in`
+  return `Hi ${name}! 🏡 Thanks for reaching out to Book My Space. Our team will respond shortly. Call us at +91 80170 35546 or visit www.bookmyspaces.in`
 }
 
 async function buildPricingReply(name: string): Promise<string> {

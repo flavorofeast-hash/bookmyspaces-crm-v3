@@ -42,13 +42,13 @@ export const MESSAGES = {
     `Noted! 👥\n\nApproximately how many *guests* are you expecting?\n\n_(Share a rough number — e.g. 50, 100-150, 300+)_`,
 
   QUALIFIED: (name: string | null, eventType: string, guestCount: string) =>
-    `Thank you${name ? ` ${name}` : ''}! 🙏\n\nHere's a summary of your inquiry:\n• *Event:* ${eventType}\n• *Guests:* ${guestCount}\n\nOur team will review this and get back to you shortly with venue options and pricing. ⚡\n\nFor faster assistance, you can also reach us at:\n📞 +91 90514 59463 | +91 70038 53624`,
+    `Thank you${name ? ` ${name}` : ''}! 🙏\n\nHere's a summary of your inquiry:\n• *Event:* ${eventType}\n• *Guests:* ${guestCount}\n\nOur team will review this and get back to you shortly with venue options and pricing. ⚡\n\nFor faster assistance, you can also reach us at:\n📞 +91 80170 35546 | +91 70038 53624`,
 
   HANDOFF:
-    `I've notified our team — someone will reach out to you soon! 🤝\n\nIf you need immediate help, please call us on *+91 90514 59463*.`,
+    `I've notified our team — someone will reach out to you soon! 🤝\n\nIf you need immediate help, please call us on *+91 80170 35546*.`,
 
   ALREADY_QUALIFIED:
-    `👋 Hi again! Our team has already received your inquiry and will be in touch shortly.\n\nFor immediate help, please call *+91 90514 59463*.`,
+    `👋 Hi again! Our team has already received your inquiry and will be in touch shortly.\n\nFor immediate help, please call *+91 80170 35546*.`,
 
   UNRECOGNISED_DATE:
     `I didn't quite catch the date. Could you share it again in a simple format?\n_(e.g. "15 June 2025" or "15/06/2025")_`,

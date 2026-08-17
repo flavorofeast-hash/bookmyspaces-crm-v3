@@ -76,25 +76,25 @@ describe('MESSAGES (Phase 1B, Step 3 -- export only, no content change)', () => 
 
   it('QUALIFIED is unchanged', () => {
     expect(MESSAGES.QUALIFIED('Priya', 'Wedding', '150')).toBe(
-      `Thank you Priya! 🙏\n\nHere's a summary of your inquiry:\n• *Event:* Wedding\n• *Guests:* 150\n\nOur team will review this and get back to you shortly with venue options and pricing. ⚡\n\nFor faster assistance, you can also reach us at:\n📞 +91 90514 59463 | +91 70038 53624`
+      `Thank you Priya! 🙏\n\nHere's a summary of your inquiry:\n• *Event:* Wedding\n• *Guests:* 150\n\nOur team will review this and get back to you shortly with venue options and pricing. ⚡\n\nFor faster assistance, you can also reach us at:\n📞 +91 80170 35546 | +91 70038 53624`
     )
   })
 
   it('QUALIFIED handles a null name', () => {
     expect(MESSAGES.QUALIFIED(null, 'Birthday', '50')).toBe(
-      `Thank you! 🙏\n\nHere's a summary of your inquiry:\n• *Event:* Birthday\n• *Guests:* 50\n\nOur team will review this and get back to you shortly with venue options and pricing. ⚡\n\nFor faster assistance, you can also reach us at:\n📞 +91 90514 59463 | +91 70038 53624`
+      `Thank you! 🙏\n\nHere's a summary of your inquiry:\n• *Event:* Birthday\n• *Guests:* 50\n\nOur team will review this and get back to you shortly with venue options and pricing. ⚡\n\nFor faster assistance, you can also reach us at:\n📞 +91 80170 35546 | +91 70038 53624`
     )
   })
 
   it('HANDOFF is unchanged', () => {
     expect(MESSAGES.HANDOFF).toBe(
-      `I've notified our team — someone will reach out to you soon! 🤝\n\nIf you need immediate help, please call us on *+91 90514 59463*.`
+      `I've notified our team — someone will reach out to you soon! 🤝\n\nIf you need immediate help, please call us on *+91 80170 35546*.`
     )
   })
 
   it('ALREADY_QUALIFIED is unchanged', () => {
     expect(MESSAGES.ALREADY_QUALIFIED).toBe(
-      `👋 Hi again! Our team has already received your inquiry and will be in touch shortly.\n\nFor immediate help, please call *+91 90514 59463*.`
+      `👋 Hi again! Our team has already received your inquiry and will be in touch shortly.\n\nFor immediate help, please call *+91 80170 35546*.`
     )
   })
 
