@@ -26,7 +26,39 @@ import { checkAndApplyHandoff, estimateConfidence } from '@/lib/ai/orchestrator'
 import { normalizePhone as normalizePhoneCanonical } from '@/lib/whatsapp/normalize-phone'
 import { checkRateLimit, clientIpFrom } from '@/lib/rate-limit'
 
+// CORS — the public website (bookmyspaces.in, hosted separately on
+// Cloudflare Pages, not this Vercel project) calls this endpoint directly
+// from its floating chat widget. Cross-origin browser requests need an
+// explicit allowlist; same-origin CRM calls (the /whatsapp inbox etc. don't
+// use this route) are unaffected either way.
+const ALLOWED_ORIGINS = new Set([
+  'https://bookmyspaces.in',
+  'https://www.bookmyspaces.in',
+])
+
+function corsHeaders(origin: string | null): HeadersInit {
+  if (!origin || !ALLOWED_ORIGINS.has(origin)) return {}
+  return {
+    'Access-Control-Allow-Origin': origin,
+    'Vary': 'Origin',
+  }
+}
+
+export async function OPTIONS(req: NextRequest) {
+  const origin = req.headers.get('origin')
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      ...corsHeaders(origin),
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Max-Age': '86400',
+    },
+  })
+}
+
 export async function POST(req: NextRequest) {
+  const origin = req.headers.get('origin')
   const supabaseAdmin = getSupabaseAdmin()
   const reqId = uuidv4().slice(0, 8)
 
@@ -36,7 +68,7 @@ export async function POST(req: NextRequest) {
   if (!rl.allowed) {
     return NextResponse.json(
       { error: 'Too many messages — please wait a moment.' },
-      { status: 429, headers: { 'Retry-After': String(rl.retryAfterSeconds) } }
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfterSeconds), ...corsHeaders(origin) } }
     )
   }
 
@@ -45,12 +77,12 @@ export async function POST(req: NextRequest) {
     const { message, sessionId: incomingSessionId } = body
 
     if (!message || typeof message !== 'string') {
-      return NextResponse.json({ error: 'Message is required' }, { status: 400 })
+      return NextResponse.json({ error: 'Message is required' }, { status: 400, headers: corsHeaders(origin) })
     }
 
     const trimmedMessage = message.trim().slice(0, 2000)
     if (!trimmedMessage) {
-      return NextResponse.json({ error: 'Message cannot be empty' }, { status: 400 })
+      return NextResponse.json({ error: 'Message cannot be empty' }, { status: 400, headers: corsHeaders(origin) })
     }
 
     const sessionId =
@@ -194,7 +226,10 @@ export async function POST(req: NextRequest) {
       logger.error('chat', `[${reqId}] Unified Conversation Platform sync failed (non-fatal)`, err)
     })
 
-    return NextResponse.json({ reply: aiResponseClean, sessionId, leadCaptured: hasLead })
+    return NextResponse.json(
+      { reply: aiResponseClean, sessionId, leadCaptured: hasLead },
+      { headers: corsHeaders(origin) }
+    )
 
   } catch (error) {
     logger.error('chat', `[${reqId}] Unhandled error`, error)
@@ -204,7 +239,7 @@ export async function POST(req: NextRequest) {
         error: 'Internal server error',
         sessionId: null,
       },
-      { status: 500 }
+      { status: 500, headers: corsHeaders(origin) }
     )
   }
 }
