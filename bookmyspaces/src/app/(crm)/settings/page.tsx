@@ -14,6 +14,7 @@ import {
   Mail,
   Globe,
   Key,
+  Link2,
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -226,7 +227,7 @@ function Toggle({
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings)
-  const [activeTab, setActiveTab] = useState<'venue' | 'ai' | 'notifications' | 'whatsapp'>('venue')
+  const [activeTab, setActiveTab] = useState<'venue' | 'ai' | 'notifications' | 'whatsapp' | 'integrations'>('venue')
   const [saving, setSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [loading, setLoading] = useState(true)
@@ -306,6 +307,7 @@ export default function SettingsPage() {
     { id: 'ai' as const, label: 'AI Engine', icon: Brain },
     { id: 'notifications' as const, label: 'Notifications', icon: Bell },
     { id: 'whatsapp' as const, label: 'WhatsApp', icon: MessageSquare },
+    { id: 'integrations' as const, label: 'Integrations', icon: Link2 },
   ]
 
   return (
@@ -654,6 +656,31 @@ export default function SettingsPage() {
                     : 'Access token not yet set — add WHATSAPP_ACCESS_TOKEN to Vercel env vars'}
                 </span>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Integrations */}
+        {activeTab === 'integrations' && (
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <SectionHeader
+              icon={Link2}
+              title="Integrations"
+              description="Connect external accounts used by the CRM"
+            />
+            <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-gray-800">Google Business Profile</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Connect your Google Business Profile account for future GBP features (setup only — no data is synced yet).
+                </p>
+              </div>
+              <a
+                href="/api/google/gbp/connect"
+                className="shrink-0 flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+              >
+                <Link2 className="w-4 h-4" /> Connect Google Business
+              </a>
             </div>
           </div>
         )}
