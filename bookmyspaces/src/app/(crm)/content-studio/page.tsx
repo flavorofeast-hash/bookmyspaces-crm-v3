@@ -15,7 +15,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import {
   PenSquare, Plus, X, Save, RefreshCw, AlertCircle, CalendarClock,
-  FileText, Image as ImageIcon, Hash,
+  FileText, Image as ImageIcon, Hash, Link2,
 } from 'lucide-react'
 
 interface SocialPost {
@@ -41,6 +41,11 @@ const PLATFORMS = [
   { value: 'youtube', label: 'YouTube' },
   { value: 'threads', label: 'Threads' },
 ]
+
+// Facebook/Instagram connector recovery — platforms with a real OAuth flow
+// (src/lib/social/oauth/oauth-config.ts's OAUTH_CONFIGS keys). Everything
+// else in PLATFORMS has no OAuth config and shows no Connect button.
+const OAUTH_CAPABLE_PLATFORMS = new Set(['facebook', 'instagram'])
 
 const STATUS_STYLES: Record<SocialPost['status'], string> = {
   draft: 'bg-gray-100 text-gray-600',
@@ -83,6 +88,24 @@ export default function ContentStudioPage() {
   }, [statusFilter])
 
   useEffect(() => { load() }, [load])
+
+  // Facebook/Instagram connector recovery — the OAuth callback
+  // (src/app/api/social/oauth/[platform]/callback) redirects back here
+  // with ?oauth=success|error&platform=&detail=. Surface it once, then
+  // clean the URL so a page refresh doesn't re-show a stale toast.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const oauthStatus = params.get('oauth')
+    if (!oauthStatus) return
+
+    const platformLabel = PLATFORMS.find((p) => p.value === params.get('platform'))?.label ?? params.get('platform') ?? 'account'
+    if (oauthStatus === 'success') {
+      toast.success(`${platformLabel} connected.`)
+    } else {
+      toast.error(`Failed to connect ${platformLabel}${params.get('detail') ? `: ${params.get('detail')}` : ''}`)
+    }
+    window.history.replaceState({}, '', window.location.pathname)
+  }, [])
 
   function resetForm() {
     setPlatform('facebook'); setContent(''); setMediaUrl(''); setHashtags(''); setScheduleAt('')
@@ -178,6 +201,24 @@ export default function ContentStudioPage() {
             <AlertCircle className="w-4 h-4 shrink-0" /> {error}
           </div>
         )}
+
+        {/* Facebook/Instagram connector recovery — OAuth requires that
+            platform's app credentials (META_APP_ID/META_APP_SECRET,
+            already live for the existing Meta integration) to be set; if
+            they aren't, the start route returns a clear error instead of a
+            broken redirect. */}
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <span className="text-xs text-gray-400">Connect:</span>
+          {PLATFORMS.filter((p) => OAUTH_CAPABLE_PLATFORMS.has(p.value)).map((p) => (
+            <a
+              key={p.value}
+              href={`/api/social/oauth/${p.value}/start`}
+              className="flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50"
+            >
+              <Link2 className="w-3.5 h-3.5" /> {p.label}
+            </a>
+          ))}
+        </div>
 
         {/* Create form */}
         {formOpen && (
