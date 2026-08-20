@@ -63,6 +63,18 @@ interface AppSettings {
   whatsapp: WhatsAppSettings
 }
 
+interface GbpLocation {
+  externalId: string
+  displayName: string
+}
+
+interface GbpStatus {
+  connected: boolean
+  connectedAt?: string
+  scope?: string
+  locations: GbpLocation[]
+}
+
 // ─── Defaults ─────────────────────────────────────────────────────────────────
 
 const defaultSettings: AppSettings = {
@@ -232,6 +244,11 @@ export default function SettingsPage() {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [loading, setLoading] = useState(true)
 
+  // Google Business connection status ("GBP account -> location -> CRM").
+  const [gbpStatus, setGbpStatus] = useState<GbpStatus | null>(null)
+  const [gbpStatusLoading, setGbpStatusLoading] = useState(true)
+  const [gbpBanner, setGbpBanner] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
+
   // Load persisted settings from the backend (V3 Phase 2a — replaces the old
   // localStorage-only store). Defaults render immediately; saved values
   // overwrite them when the fetch resolves.
@@ -250,6 +267,30 @@ export default function SettingsPage() {
       })
     return () => {
       cancelled = true
+    }
+  }, [])
+
+  // Google Business connection status — fetched on mount, and after the
+  // OAuth callback redirects back here with ?gbp_connected=1 / ?gbp_error=.
+  useEffect(() => {
+    function loadGbpStatus() {
+      setGbpStatusLoading(true)
+      fetch('/api/google/gbp/status')
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+        .then((json) => setGbpStatus(json))
+        .catch(() => setGbpStatus(null))
+        .finally(() => setGbpStatusLoading(false))
+    }
+    loadGbpStatus()
+
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('gbp_connected')) {
+      setGbpBanner({ kind: 'success', message: 'Google Business connected.' })
+      loadGbpStatus()
+      window.history.replaceState({}, '', window.location.pathname)
+    } else if (params.get('gbp_error')) {
+      setGbpBanner({ kind: 'error', message: `Failed to connect Google Business: ${params.get('gbp_error')}` })
+      window.history.replaceState({}, '', window.location.pathname)
     }
   }, [])
 
@@ -668,19 +709,56 @@ export default function SettingsPage() {
               title="Integrations"
               description="Connect external accounts used by the CRM"
             />
-            <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between gap-4">
-              <div>
-                <p className="text-sm font-medium text-gray-800">Google Business Profile</p>
-                <p className="text-xs text-gray-500 mt-0.5">
-                  Connect your Google Business Profile account for future GBP features (setup only — no data is synced yet).
-                </p>
-              </div>
-              <a
-                href="/api/google/gbp/connect"
-                className="shrink-0 flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+
+            {gbpBanner && (
+              <div
+                className={`flex items-center gap-2 text-sm rounded-lg px-4 py-3 mb-4 ${
+                  gbpBanner.kind === 'success' ? 'text-green-700 bg-green-50 border border-green-200' : 'text-red-700 bg-red-50 border border-red-200'
+                }`}
               >
-                <Link2 className="w-4 h-4" /> Connect Google Business
-              </a>
+                {gbpBanner.kind === 'success' ? <CheckCircle className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                {gbpBanner.message}
+              </div>
+            )}
+
+            <div className="border border-gray-200 rounded-lg p-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-gray-800">Google Business Profile</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {gbpStatusLoading
+                      ? 'Checking connection…'
+                      : gbpStatus?.connected
+                        ? `Connected${gbpStatus.connectedAt ? ` on ${new Date(gbpStatus.connectedAt).toLocaleDateString()}` : ''}.`
+                        : 'Not connected yet.'}
+                  </p>
+                </div>
+                <a
+                  href="/api/google/gbp/connect"
+                  className="shrink-0 flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+                >
+                  <Link2 className="w-4 h-4" /> {gbpStatus?.connected ? 'Reconnect' : 'Connect'} Google Business
+                </a>
+              </div>
+
+              {!gbpStatusLoading && gbpStatus?.connected && (
+                <div className="mt-4 pt-4 border-t border-gray-100">
+                  <p className="text-xs font-medium text-gray-500 mb-2">
+                    {gbpStatus.locations.length > 0
+                      ? `${gbpStatus.locations.length} location${gbpStatus.locations.length === 1 ? '' : 's'} discovered`
+                      : 'No locations discovered yet'}
+                  </p>
+                  {gbpStatus.locations.length > 0 && (
+                    <ul className="space-y-1">
+                      {gbpStatus.locations.map((loc) => (
+                        <li key={loc.externalId} className="text-sm text-gray-700 flex items-center gap-2">
+                          <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" /> {loc.displayName}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
