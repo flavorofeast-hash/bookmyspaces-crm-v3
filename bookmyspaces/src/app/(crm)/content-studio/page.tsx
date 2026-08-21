@@ -40,6 +40,20 @@ interface CatalogPackage {
   is_active: boolean
 }
 
+interface MediaAsset {
+  id: string
+  public_url: string
+  original_filename: string | null
+  venue_tag: string | null
+  asset_type: string
+  source: 'human' | 'ai'
+}
+
+const VENUE_TAG_LABELS: Record<string, string> = {
+  rooftop: 'Rooftop', cafe: 'Café', rooms: 'Rooms', hall: 'Hall',
+  private_dining: 'Private Dining', general: 'General',
+}
+
 const PLATFORMS = [
   { value: 'facebook', label: 'Facebook' },
   { value: 'instagram', label: 'Instagram' },
@@ -97,12 +111,26 @@ export default function ContentStudioPage() {
   const [imageConcept, setImageConcept] = useState('')
   const [targetAudience, setTargetAudience] = useState<string[]>([])
 
+  const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>([])
+  const [selectedAssetId, setSelectedAssetId] = useState('')
+
   useEffect(() => {
     fetch('/api/admin/catalog/packages')
       .then((res) => (res.ok ? res.json() : { rows: [] }))
       .then((json) => setPackages((json.rows ?? []).filter((p: CatalogPackage) => p.is_active)))
       .catch(() => setPackages([]))
+
+    fetch('/api/media-assets')
+      .then((res) => (res.ok ? res.json() : { assets: [] }))
+      .then((json) => setMediaAssets(json.assets ?? []))
+      .catch(() => setMediaAssets([]))
   }, [])
+
+  function handlePickAsset(assetId: string) {
+    setSelectedAssetId(assetId)
+    const asset = mediaAssets.find((a) => a.id === assetId)
+    if (asset) setMediaUrl(asset.public_url)
+  }
 
   async function handleGenerate() {
     if (!selectedPackageId) {
@@ -173,7 +201,7 @@ export default function ContentStudioPage() {
 
   function resetForm() {
     setPlatform('facebook'); setContent(''); setMediaUrl(''); setHashtags(''); setScheduleAt('')
-    setSelectedPackageId(''); setHeadline(''); setCtaText(''); setImageConcept(''); setTargetAudience([])
+    setSelectedPackageId(''); setHeadline(''); setCtaText(''); setImageConcept(''); setTargetAudience([]); setSelectedAssetId('')
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -384,10 +412,24 @@ export default function ContentStudioPage() {
                 <input
                   type="url"
                   value={mediaUrl}
-                  onChange={(e) => setMediaUrl(e.target.value)}
+                  onChange={(e) => { setMediaUrl(e.target.value); setSelectedAssetId('') }}
                   placeholder="https://…"
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
+                {mediaAssets.length > 0 && (
+                  <select
+                    value={selectedAssetId}
+                    onChange={(e) => handlePickAsset(e.target.value)}
+                    className="w-full mt-1.5 px-3 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">…or pick from media library ({mediaAssets.length})</option>
+                    {mediaAssets.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {VENUE_TAG_LABELS[a.venue_tag ?? ''] ?? a.venue_tag} — {a.asset_type} — {a.original_filename} {a.source === 'ai' ? '(AI)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
