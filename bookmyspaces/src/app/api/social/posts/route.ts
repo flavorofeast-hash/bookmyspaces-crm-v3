@@ -26,7 +26,7 @@ import {
 import type { SocialPlatform } from '@/lib/social/types'
 import { isSocialPlatform } from '@/lib/social/adapter-registry'
 
-const POST_STATUSES: SocialPostStatus[] = ['draft', 'approved', 'scheduled', 'publishing', 'published', 'failed']
+const POST_STATUSES: SocialPostStatus[] = ['draft', 'review', 'approved', 'scheduled', 'publishing', 'published', 'failed']
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth()
@@ -76,6 +76,12 @@ export async function POST(req: NextRequest) {
       account_id: parsed.data.account_id ?? null,
       scheduled_at: parsed.data.scheduled_at ?? null,
       created_by: auth.user.email ?? auth.user.id,
+      package_id: parsed.data.package_id ?? null,
+      campaign_id: parsed.data.campaign_id ?? null,
+      headline: parsed.data.headline ?? null,
+      cta_text: parsed.data.cta_text ?? null,
+      image_concept: parsed.data.image_concept ?? null,
+      target_audience: parsed.data.target_audience,
     })
 
     if (!result.ok) {

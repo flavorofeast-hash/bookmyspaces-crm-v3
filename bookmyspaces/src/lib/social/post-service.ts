@@ -17,7 +17,7 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import type { SocialPlatform } from '@/lib/social/types'
 
 export type SocialPostStatus =
-  | 'draft' | 'approved' | 'scheduled' | 'publishing' | 'published' | 'failed'
+  | 'draft' | 'review' | 'approved' | 'scheduled' | 'publishing' | 'published' | 'failed'
 
 export interface SocialPostRecord {
   id: string
@@ -35,6 +35,16 @@ export interface SocialPostRecord {
   external_post_id: string | null
   failure_reason: string | null
   created_by: string | null
+  // Catalog completion (migration 030) -- links a post back to the catalog
+  // item/campaign it promotes and the structured fields AI generation
+  // produces (headline/CTA/image concept/target audience), separate from
+  // the freeform `content` caption.
+  package_id: string | null
+  campaign_id: string | null
+  headline: string | null
+  cta_text: string | null
+  image_concept: string | null
+  target_audience: string[]
 }
 
 type Result<T> = { ok: true; value: T } | { ok: false; error: string }
@@ -77,6 +87,12 @@ export interface CreatePostInput {
   /** Present + future ⇒ the post is created as 'scheduled'; absent ⇒ 'draft'. */
   scheduled_at?: string | null
   created_by: string
+  package_id?: string | null
+  campaign_id?: string | null
+  headline?: string | null
+  cta_text?: string | null
+  image_concept?: string | null
+  target_audience?: string[]
 }
 
 export async function createSocialPost(
@@ -101,6 +117,12 @@ export async function createSocialPost(
       status,
       scheduled_at: input.scheduled_at ?? null,
       created_by: input.created_by,
+      package_id: input.package_id ?? null,
+      campaign_id: input.campaign_id ?? null,
+      headline: input.headline ?? null,
+      cta_text: input.cta_text ?? null,
+      image_concept: input.image_concept ?? null,
+      target_audience: input.target_audience ?? [],
     })
     .select('*')
     .single()

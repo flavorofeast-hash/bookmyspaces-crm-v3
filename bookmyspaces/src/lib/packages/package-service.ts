@@ -37,9 +37,11 @@ export interface EventPackage {
   seatingStyle: string | null
   tier: number
   basePrice: number
+  priceUnit: 'per_event' | 'per_person' | 'per_hour' | 'per_night'
   maxGuests: number
   durationHours: number
   inclusions: string[]
+  exclusions: string[]
   addons: PackageAddon[]
   addonServiceIds: string[]
   description: string | null
@@ -53,6 +55,14 @@ export interface EventPackage {
   taxRatePct: number
   seasonalPricing: SeasonalPricingRule[]
   standardDiscountPct: number | null
+  // Catalog completion (migration 030) -- marketing/SEO/CTA fields Content
+  // Studio and campaigns read to promote a package without re-deriving them.
+  bookingUrl: string | null
+  whatsappCtaText: string | null
+  seoTitle: string | null
+  seoDescription: string | null
+  seoSlug: string | null
+  targetAudience: string[]
   createdAt: string
 }
 
@@ -65,9 +75,11 @@ function mapPackageRow(row: Record<string, any>): EventPackage {
     seatingStyle: row.seating_style ?? null,
     tier: row.tier ?? 1,
     basePrice: Number(row.base_price) || 0,
+    priceUnit: row.price_unit ?? 'per_event',
     maxGuests: row.max_guests ?? 60,
     durationHours: row.duration_hours ?? 4,
     inclusions: row.inclusions ?? [],
+    exclusions: row.exclusions ?? [],
     addons: row.addons ?? [],
     addonServiceIds: row.addon_service_ids ?? [],
     description: row.description ?? null,
@@ -84,6 +96,12 @@ function mapPackageRow(row: Record<string, any>): EventPackage {
     taxRatePct: row.tax_rate_override_pct != null ? Number(row.tax_rate_override_pct) : getTaxRatePercent(),
     seasonalPricing: row.seasonal_pricing ?? [],
     standardDiscountPct: row.standard_discount_pct != null ? Number(row.standard_discount_pct) : null,
+    bookingUrl: row.booking_url ?? null,
+    whatsappCtaText: row.whatsapp_cta_text ?? null,
+    seoTitle: row.seo_title ?? null,
+    seoDescription: row.seo_description ?? null,
+    seoSlug: row.seo_slug ?? null,
+    targetAudience: row.target_audience ?? [],
     createdAt: row.created_at,
   }
 }
@@ -158,9 +176,11 @@ export interface CreatePackageInput {
   seatingStyle?: string | null
   tier?: number
   basePrice: number
+  priceUnit?: 'per_event' | 'per_person' | 'per_hour' | 'per_night'
   maxGuests?: number
   durationHours?: number
   inclusions?: string[]
+  exclusions?: string[]
   addons?: PackageAddon[]
   addonServiceIds?: string[]
   description?: string | null
@@ -173,6 +193,12 @@ export interface CreatePackageInput {
   taxRateOverridePct?: number | null
   seasonalPricing?: SeasonalPricingRule[]
   standardDiscountPct?: number | null
+  bookingUrl?: string | null
+  whatsappCtaText?: string | null
+  seoTitle?: string | null
+  seoDescription?: string | null
+  seoSlug?: string | null
+  targetAudience?: string[]
 }
 
 export async function createPackage(input: CreatePackageInput): Promise<EventPackage | null> {
@@ -186,9 +212,11 @@ export async function createPackage(input: CreatePackageInput): Promise<EventPac
       seating_style: input.seatingStyle ?? null,
       tier: input.tier ?? 1,
       base_price: input.basePrice,
+      price_unit: input.priceUnit ?? 'per_event',
       max_guests: input.maxGuests ?? 60,
       duration_hours: input.durationHours ?? 4,
       inclusions: input.inclusions ?? [],
+      exclusions: input.exclusions ?? [],
       addons: input.addons ?? [],
       addon_service_ids: input.addonServiceIds ?? [],
       description: input.description ?? null,
@@ -201,6 +229,12 @@ export async function createPackage(input: CreatePackageInput): Promise<EventPac
       tax_rate_override_pct: input.taxRateOverridePct ?? null,
       seasonal_pricing: input.seasonalPricing ?? [],
       standard_discount_pct: input.standardDiscountPct ?? null,
+      booking_url: input.bookingUrl ?? null,
+      whatsapp_cta_text: input.whatsappCtaText ?? null,
+      seo_title: input.seoTitle ?? null,
+      seo_description: input.seoDescription ?? null,
+      seo_slug: input.seoSlug ?? null,
+      target_audience: input.targetAudience ?? [],
     })
     .select('*')
     .single()
@@ -222,9 +256,11 @@ export async function updatePackage(id: string, input: UpdatePackageInput): Prom
   if (input.seatingStyle !== undefined) updates.seating_style = input.seatingStyle
   if (input.tier !== undefined) updates.tier = input.tier
   if (input.basePrice !== undefined) updates.base_price = input.basePrice
+  if (input.priceUnit !== undefined) updates.price_unit = input.priceUnit
   if (input.maxGuests !== undefined) updates.max_guests = input.maxGuests
   if (input.durationHours !== undefined) updates.duration_hours = input.durationHours
   if (input.inclusions !== undefined) updates.inclusions = input.inclusions
+  if (input.exclusions !== undefined) updates.exclusions = input.exclusions
   if (input.addons !== undefined) updates.addons = input.addons
   if (input.addonServiceIds !== undefined) updates.addon_service_ids = input.addonServiceIds
   if (input.description !== undefined) updates.description = input.description
@@ -238,6 +274,12 @@ export async function updatePackage(id: string, input: UpdatePackageInput): Prom
   if (input.taxRateOverridePct !== undefined) updates.tax_rate_override_pct = input.taxRateOverridePct
   if (input.seasonalPricing !== undefined) updates.seasonal_pricing = input.seasonalPricing
   if (input.standardDiscountPct !== undefined) updates.standard_discount_pct = input.standardDiscountPct
+  if (input.bookingUrl !== undefined) updates.booking_url = input.bookingUrl
+  if (input.whatsappCtaText !== undefined) updates.whatsapp_cta_text = input.whatsappCtaText
+  if (input.seoTitle !== undefined) updates.seo_title = input.seoTitle
+  if (input.seoDescription !== undefined) updates.seo_description = input.seoDescription
+  if (input.seoSlug !== undefined) updates.seo_slug = input.seoSlug
+  if (input.targetAudience !== undefined) updates.target_audience = input.targetAudience
 
   const { data, error } = await supabase.from('packages').update(updates).eq('id', id).select('*').single()
   if (error || !data) return null

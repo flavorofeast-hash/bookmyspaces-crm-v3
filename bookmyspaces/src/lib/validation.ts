@@ -427,6 +427,12 @@ export const createSocialPostSchema = z.object({
   hashtags    : z.array(z.string().trim().min(1).max(100)).max(50).optional(),
   account_id  : uuid.nullish(),
   scheduled_at: z.string().datetime({ offset: true, message: 'must be an ISO 8601 datetime' }).nullish(),
+  package_id     : uuid.nullish(),
+  campaign_id    : uuid.nullish(),
+  headline       : z.string().trim().max(200).nullish(),
+  cta_text       : z.string().trim().max(200).nullish(),
+  image_concept  : z.string().trim().max(1000).nullish(),
+  target_audience: z.array(z.string().trim().min(1).max(100)).max(10).optional(),
 }).strict()
   .refine(
     (v) => (v.content && v.content.length > 0) || (v.media && v.media.length > 0),

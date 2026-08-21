@@ -15,7 +15,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import {
   PenSquare, Plus, X, Save, RefreshCw, AlertCircle, CalendarClock,
-  FileText, Image as ImageIcon, Hash, Link2,
+  FileText, Image as ImageIcon, Hash, Link2, Sparkles,
 } from 'lucide-react'
 
 interface SocialPost {
@@ -26,10 +26,18 @@ interface SocialPost {
   content: string | null
   media: { url: string; type: string }[]
   hashtags: string[]
-  status: 'draft' | 'approved' | 'scheduled' | 'publishing' | 'published' | 'failed'
+  status: 'draft' | 'review' | 'approved' | 'scheduled' | 'publishing' | 'published' | 'failed'
   scheduled_at: string | null
   published_at: string | null
   created_by: string | null
+  headline: string | null
+}
+
+interface CatalogPackage {
+  id: string
+  name: string
+  venue: string
+  is_active: boolean
 }
 
 const PLATFORMS = [
@@ -49,12 +57,19 @@ const OAUTH_CAPABLE_PLATFORMS = new Set(['facebook', 'instagram'])
 
 const STATUS_STYLES: Record<SocialPost['status'], string> = {
   draft: 'bg-gray-100 text-gray-600',
+  review: 'bg-indigo-50 text-indigo-700',
   approved: 'bg-blue-50 text-blue-700',
   scheduled: 'bg-amber-50 text-amber-700',
   publishing: 'bg-purple-50 text-purple-700',
   published: 'bg-green-50 text-green-700',
   failed: 'bg-red-50 text-red-700',
 }
+
+// Catalog → AI Content Studio, Phase 2 — only these two platforms have a
+// grounded AI generator (src/lib/ai/content-generator.ts mirrors
+// OAUTH_CAPABLE_PLATFORMS above, same reason: those are the two platforms
+// this app actually has a real integration for).
+const AI_CAPABLE_PLATFORMS = new Set(['facebook', 'instagram'])
 
 const STATUS_FILTERS = ['', 'draft', 'scheduled', 'published', 'failed'] as const
 
@@ -72,6 +87,55 @@ export default function ContentStudioPage() {
   const [mediaUrl, setMediaUrl] = useState('')
   const [hashtags, setHashtags] = useState('')
   const [scheduleAt, setScheduleAt] = useState('')
+
+  // Catalog → AI Content Studio, Phase 2
+  const [packages, setPackages] = useState<CatalogPackage[]>([])
+  const [selectedPackageId, setSelectedPackageId] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const [headline, setHeadline] = useState('')
+  const [ctaText, setCtaText] = useState('')
+  const [imageConcept, setImageConcept] = useState('')
+  const [targetAudience, setTargetAudience] = useState<string[]>([])
+
+  useEffect(() => {
+    fetch('/api/admin/catalog/packages')
+      .then((res) => (res.ok ? res.json() : { rows: [] }))
+      .then((json) => setPackages((json.rows ?? []).filter((p: CatalogPackage) => p.is_active)))
+      .catch(() => setPackages([]))
+  }, [])
+
+  async function handleGenerate() {
+    if (!selectedPackageId) {
+      toast.error('Pick a catalog package first.')
+      return
+    }
+    setGenerating(true)
+    try {
+      const res = await fetch('/api/social/posts/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ packageId: selectedPackageId, platform }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json?.error || `Generation failed (${res.status})`)
+
+      const c = json.content as {
+        headline: string; caption: string; ctaText: string
+        hashtags: string[]; imageConcept: string; targetAudience: string[]
+      }
+      setContent(c.caption)
+      setHashtags(c.hashtags.join(', '))
+      setHeadline(c.headline)
+      setCtaText(c.ctaText)
+      setImageConcept(c.imageConcept)
+      setTargetAudience(c.targetAudience)
+      toast.success('Draft generated — review before saving.')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to generate content')
+    } finally {
+      setGenerating(false)
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -109,6 +173,7 @@ export default function ContentStudioPage() {
 
   function resetForm() {
     setPlatform('facebook'); setContent(''); setMediaUrl(''); setHashtags(''); setScheduleAt('')
+    setSelectedPackageId(''); setHeadline(''); setCtaText(''); setImageConcept(''); setTargetAudience([])
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -127,6 +192,11 @@ export default function ContentStudioPage() {
         ...(mediaUrl.trim() ? { media: [{ url: mediaUrl.trim(), type: 'image' }] } : {}),
         ...(tags.length ? { hashtags: tags } : {}),
         ...(scheduleAt ? { scheduled_at: new Date(scheduleAt).toISOString() } : {}),
+        ...(selectedPackageId ? { package_id: selectedPackageId } : {}),
+        ...(headline.trim() ? { headline: headline.trim() } : {}),
+        ...(ctaText.trim() ? { cta_text: ctaText.trim() } : {}),
+        ...(imageConcept.trim() ? { image_concept: imageConcept.trim() } : {}),
+        ...(targetAudience.length ? { target_audience: targetAudience } : {}),
       }
 
       const res = await fetch('/api/social/posts', {
@@ -164,7 +234,7 @@ export default function ContentStudioPage() {
               <PenSquare className="w-5 h-5" /> Content Studio
             </h1>
             <p className="text-sm text-gray-500">
-              Draft and schedule social posts. Publishing and AI captions arrive in later steps.
+              Draft and schedule social posts, or generate one from a real catalog package. Publishing arrives in a later step.
             </p>
           </div>
           <button
@@ -254,6 +324,46 @@ export default function ContentStudioPage() {
                 <p className="text-xs text-gray-400 mt-1">Leave empty to save as a draft</p>
               </div>
             </div>
+
+            {AI_CAPABLE_PLATFORMS.has(platform) && (
+              <div className="mb-4 flex items-end gap-2 bg-indigo-50 border border-indigo-100 rounded-lg p-3">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Generate from catalog item
+                  </label>
+                  <select
+                    value={selectedPackageId}
+                    onChange={(e) => setSelectedPackageId(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">Select a package…</option>
+                    {packages.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name} — {p.venue}</option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleGenerate}
+                  disabled={generating || !selectedPackageId}
+                  className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-60 shrink-0"
+                >
+                  {generating
+                    ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    : <Sparkles className="w-4 h-4" />}
+                  {generating ? 'Generating…' : 'Generate with AI'}
+                </button>
+              </div>
+            )}
+
+            {headline && (
+              <div className="mb-4 text-xs text-indigo-700 bg-indigo-50/60 rounded-lg px-3 py-2">
+                <span className="font-medium">Headline:</span> {headline}
+                {ctaText && <> · <span className="font-medium">CTA:</span> {ctaText}</>}
+                {targetAudience.length > 0 && <> · <span className="font-medium">Audience:</span> {targetAudience.join(', ')}</>}
+                {imageConcept && <div className="mt-1"><span className="font-medium">Image idea:</span> {imageConcept}</div>}
+              </div>
+            )}
 
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 mb-1">Content</label>
