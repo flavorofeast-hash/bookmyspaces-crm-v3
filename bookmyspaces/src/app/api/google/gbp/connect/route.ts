@@ -13,6 +13,16 @@
 // foundation is actually verifiable. Picking a specific GBP account/
 // location, refresh-token rotation, and multi-location support are NOT
 // built here -- that's GBP account/location management, a separate pass.
+//
+// State handling: HMAC-signed, stateless (src/lib/google/gbp-oauth-state.ts)
+// -- not a cookie. A production test showed the cookie arriving at the
+// callback but not matching what was set here, on a single request with no
+// duplicate connect/callback calls in the logs; same root cause
+// src/lib/social/oauth/oauth-state.ts's header already documents for
+// Facebook/Instagram ("serverless has no reliable place to stash a CSRF
+// nonce between the redirect-out and the provider's redirect-back"). Signed
+// state carries everything the callback needs in the state param itself, so
+// there's nothing to stash.
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -21,14 +31,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import crypto from 'crypto'
 import { requireRole } from '@/lib/auth-guard'
 import { logger } from '@/lib/logger'
+import { encodeGbpOAuthState, isGbpOAuthStateConfigured } from '@/lib/google/gbp-oauth-state'
 
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const SCOPE = 'https://www.googleapis.com/auth/business.manage'
-// Next.js route modules may only export handler functions (GET, POST, ...)
-// and a small fixed set of config values -- not arbitrary constants -- so
-// this name is duplicated (not imported) in ../callback/route.ts. Keep the
-// two in sync if it ever changes.
-const GBP_OAUTH_STATE_COOKIE = 'gbp_oauth_state'
 
 export async function GET(req: NextRequest) {
   // Connecting the business's Google account is a higher-stakes action
@@ -48,11 +54,22 @@ export async function GET(req: NextRequest) {
     )
   }
 
-  // CSRF protection: a random, single-use state value carried in an
-  // httpOnly cookie across the redirect round-trip and compared against
-  // the `state` Google echoes back to the callback. No server-side state
-  // storage needed -- the browser itself carries the proof.
-  const state = crypto.randomBytes(32).toString('hex')
+  if (!isGbpOAuthStateConfigured()) {
+    logger.error('gbp-oauth', 'connect: missing SOCIAL_OAUTH_STATE_SECRET')
+    return NextResponse.json(
+      { error: 'Google Business Profile OAuth is not configured yet.' },
+      { status: 500 }
+    )
+  }
+
+  // CSRF protection: HMAC-signed state carrying the requesting user's id and
+  // a random single-use nonce (the actual CSRF-defeating value), verified
+  // in the callback without needing any cookie/session lookup.
+  const state = encodeGbpOAuthState({
+    userId: auth.user.id,
+    nonce: crypto.randomBytes(16).toString('hex'),
+    issuedAt: Date.now(),
+  })
 
   const authUrl = new URL(GOOGLE_AUTH_URL)
   authUrl.searchParams.set('client_id', clientId)
@@ -65,15 +82,5 @@ export async function GET(req: NextRequest) {
 
   logger.info('gbp-oauth', 'connect: redirecting to Google consent screen', { by: auth.user.email ?? auth.user.id })
 
-  const response = NextResponse.redirect(authUrl.toString())
-  response.cookies.set(GBP_OAUTH_STATE_COOKIE, state, {
-    httpOnly: true,
-    secure: true,
-    // 'lax', not 'strict' -- this cookie must survive Google's top-level
-    // redirect back to our callback, which strict would block.
-    sameSite: 'lax',
-    maxAge: 600, // 10 minutes -- long enough for the consent screen, short-lived by design
-    path: '/api/google/gbp',
-  })
-  return response
+  return NextResponse.redirect(authUrl.toString())
 }

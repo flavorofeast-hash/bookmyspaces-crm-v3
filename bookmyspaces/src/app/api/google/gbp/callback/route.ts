@@ -29,14 +29,11 @@ import crypto from 'crypto'
 import { requireRole } from '@/lib/auth-guard'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { logger } from '@/lib/logger'
+import { decodeGbpOAuthState } from '@/lib/google/gbp-oauth-state'
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const SETTINGS_CATEGORY = 'integration'
 const SETTINGS_KEY = 'google_gbp_oauth'
-// Must match ../connect/route.ts's GBP_OAUTH_STATE_COOKIE -- duplicated,
-// not imported, because Next.js route modules may only export handler
-// functions and a small fixed set of config values.
-const GBP_OAUTH_STATE_COOKIE = 'gbp_oauth_state'
 
 interface GoogleTokenResponse {
   access_token: string
@@ -113,13 +110,9 @@ export async function GET(req: NextRequest) {
   const code = searchParams.get('code')
   const state = searchParams.get('state')
   const googleError = searchParams.get('error')
-  const expectedState = req.cookies.get(GBP_OAUTH_STATE_COOKIE)?.value
 
-  // Single-use: clear the state cookie on every outcome, success or not.
   function redirectResult(query: string): NextResponse {
-    const response = NextResponse.redirect(`${origin}/settings?${query}`)
-    response.cookies.set(GBP_OAUTH_STATE_COOKIE, '', { path: '/api/google/gbp', maxAge: 0 })
-    return response
+    return NextResponse.redirect(`${origin}/settings?${query}`)
   }
 
   if (googleError) {
@@ -127,11 +120,22 @@ export async function GET(req: NextRequest) {
     return redirectResult(`gbp_error=${encodeURIComponent(googleError)}`)
   }
 
-  if (!code || !state || !expectedState || state !== expectedState) {
-    logger.error('gbp-oauth', 'callback: missing/mismatched state -- rejecting as possible CSRF', {
+  // CSRF check: the state param is self-verifying (HMAC-signed, see
+  // ../connect/route.ts) -- no cookie/session lookup needed. Also confirms
+  // the state was minted for THIS user, not just any authenticated session.
+  const decodedState = state ? decodeGbpOAuthState(state) : null
+  if (!code || !decodedState) {
+    logger.error('gbp-oauth', 'callback: missing/invalid/expired state -- rejecting as possible CSRF', {
       hasCode: Boolean(code),
       hasState: Boolean(state),
-      hasStateCookie: Boolean(expectedState),
+      stateValid: Boolean(decodedState),
+    })
+    return redirectResult('gbp_error=invalid_state')
+  }
+  if (decodedState.userId !== auth.user.id) {
+    logger.error('gbp-oauth', 'callback: state was minted for a different user -- rejecting', {
+      stateUserId: decodedState.userId,
+      sessionUserId: auth.user.id,
     })
     return redirectResult('gbp_error=invalid_state')
   }
