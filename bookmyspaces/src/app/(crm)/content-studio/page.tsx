@@ -51,7 +51,7 @@ interface MediaAsset {
 
 const VENUE_TAG_LABELS: Record<string, string> = {
   rooftop: 'Rooftop', cafe: 'Café', rooms: 'Rooms', hall: 'Hall',
-  private_dining: 'Private Dining', general: 'General',
+  private_dining: 'Private Dining', property: 'Property', general: 'General',
 }
 
 const PLATFORMS = [
