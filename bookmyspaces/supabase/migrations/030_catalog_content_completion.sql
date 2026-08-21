@@ -48,9 +48,20 @@ ALTER TABLE inventory_items
 -- produces (headline/CTA/image concept/target audience, separate from the
 -- freeform `content` caption field), and 'review' added to the status
 -- machine between draft and approved.
+-- campaign_id has no FK: live-verified (Supabase MCP list_tables,
+-- 2026-08-21) that `broadcast_campaigns` -- the table every actual
+-- campaign code path in this app queries (src/app/api/campaigns/route.ts,
+-- campaign-scheduler.ts, revenue-intelligence.ts) -- does not exist in
+-- production, despite migration 004 defining it locally. Supabase's own
+-- migration history is empty (nothing here has ever been applied via
+-- tracked migrations, only ad hoc SQL), so campaigns is a separate,
+-- pre-existing production gap unrelated to this migration. Keeping
+-- campaign_id as a plain nullable column preserves the attribution slot
+-- for Phase 5 without blocking Catalog/Content Studio on that unrelated
+-- issue or FK'ing against a relation that isn't there.
 ALTER TABLE social_posts
   ADD COLUMN IF NOT EXISTS package_id UUID REFERENCES packages(id) ON DELETE SET NULL,
-  ADD COLUMN IF NOT EXISTS campaign_id UUID REFERENCES broadcast_campaigns(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS campaign_id UUID,
   ADD COLUMN IF NOT EXISTS headline TEXT,
   ADD COLUMN IF NOT EXISTS cta_text TEXT,
   ADD COLUMN IF NOT EXISTS image_concept TEXT,
