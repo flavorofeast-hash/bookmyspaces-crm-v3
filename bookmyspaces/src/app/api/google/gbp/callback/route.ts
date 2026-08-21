@@ -62,9 +62,35 @@ async function discoverAccountsAndLocations(accessToken: string): Promise<Discov
     const accountsRes = await fetch('https://mybusinessaccountmanagement.googleapis.com/v1/accounts', {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
-    const accountsJson = (await accountsRes.json().catch(() => ({}))) as { accounts?: Array<{ name: string; accountName?: string }> }
+    const accountsJson = (await accountsRes.json().catch(() => ({}))) as {
+      accounts?: Array<{ name: string; accountName?: string }>
+      error?: { code?: number; status?: string; message?: string }
+    }
     const accounts = accountsJson.accounts ?? []
-    if (!accountsRes.ok || accounts.length === 0) return []
+
+    // Previously silent on both branches below -- "0 locations" and "API call
+    // failed" were indistinguishable in production logs (confirmed live: a
+    // successful connect with hasRefreshToken:true, correct scope, and
+    // locationCount:0 gave no way to tell whether Google rejected the
+    // accounts.list call or the account genuinely has none). Logged, not
+    // fixed silently, because the actual cause (API not enabled vs. no
+    // Business Profile on this Google account vs. something else) changes
+    // what the real fix is -- see accounts.google.com/business vs Google
+    // Cloud Console API enablement.
+    if (!accountsRes.ok) {
+      logger.error('gbp-oauth', 'callback: accounts.list call failed', undefined, {
+        status: accountsRes.status,
+        googleErrorStatus: accountsJson.error?.status,
+        googleErrorMessage: accountsJson.error?.message,
+      })
+      return []
+    }
+    if (accounts.length === 0) {
+      logger.warn('gbp-oauth', 'callback: accounts.list succeeded but returned zero Business Profile accounts for this Google account', {
+        status: accountsRes.status,
+      })
+      return []
+    }
 
     const results: DiscoveredLocation[] = []
     for (const account of accounts) {
@@ -72,7 +98,19 @@ async function discoverAccountsAndLocations(accessToken: string): Promise<Discov
         `https://mybusinessbusinessinformation.googleapis.com/v1/${account.name}/locations?readMask=name,title`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       )
-      const locationsJson = (await locationsRes.json().catch(() => ({}))) as { locations?: Array<{ name: string; title?: string }> }
+      const locationsJson = (await locationsRes.json().catch(() => ({}))) as {
+        locations?: Array<{ name: string; title?: string }>
+        error?: { code?: number; status?: string; message?: string }
+      }
+      if (!locationsRes.ok) {
+        logger.error('gbp-oauth', 'callback: locations.list call failed for an account', undefined, {
+          account: account.name,
+          status: locationsRes.status,
+          googleErrorStatus: locationsJson.error?.status,
+          googleErrorMessage: locationsJson.error?.message,
+        })
+        continue
+      }
       for (const loc of locationsJson.locations ?? []) {
         results.push({
           externalId: `${account.name}/${loc.name}`,
@@ -80,6 +118,10 @@ async function discoverAccountsAndLocations(accessToken: string): Promise<Discov
         })
       }
     }
+    logger.info('gbp-oauth', 'callback: discovery complete', {
+      accountCount: accounts.length,
+      locationCount: results.length,
+    })
     return results
   } catch (err) {
     logger.error('gbp-oauth', 'callback: account/location discovery failed (non-fatal, token already exchanged)', err)
