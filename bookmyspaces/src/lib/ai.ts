@@ -302,6 +302,43 @@ export interface Message {
 const FALLBACK_MESSAGE =
   "I'm having a brief connectivity issue 🙏 Please WhatsApp us at *8017035546* and we'll respond immediately!"
 
+// Gemini is now primary (Anthropic/OpenAI remain fallbacks below) — plain
+// REST call, no new SDK dependency, matching this file's existing
+// lazy-init-on-call style. Free-tier-eligible model, per request.
+const GEMINI_MODEL = 'gemini-2.5-flash-lite'
+
+async function callGemini(systemPrompt: string, messages: Message[], maxTokens: number): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY
+  if (!apiKey) throw new Error('GEMINI_API_KEY is not set')
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: systemPrompt }] },
+        // Gemini uses 'model', not 'assistant', for the AI's own turns.
+        contents: messages.map(m => ({
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: m.content }],
+        })),
+        generationConfig: { maxOutputTokens: maxTokens },
+      }),
+    }
+  )
+
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '')
+    throw new Error(`Gemini API error ${res.status}: ${errBody.slice(0, 300)}`)
+  }
+
+  const data = await res.json()
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text
+  if (!text) throw new Error('Gemini returned no text (possibly blocked by safety filters or truncated)')
+  return text
+}
+
 export async function chatWithAI(messages: Message[], userQuery: string): Promise<string> {
   const cappedMessages = messages.slice(-20)
 
@@ -320,28 +357,33 @@ export async function chatWithAI(messages: Message[], userQuery: string): Promis
     : systemPrompt
 
   try {
-    const response = await getAnthropic().messages.create({
-      model: aiSettings.model,
-      max_tokens: aiSettings.maxTokens,
-      system: systemWithContext,
-      messages: cappedMessages.map(m => ({ role: m.role, content: m.content })),
-    })
-    const content = response.content[0]
-    return content.type === 'text' ? content.text : FALLBACK_MESSAGE
-  } catch (error) {
-    logger.error('ai', 'Claude API error — falling back to OpenAI', error)
+    return await callGemini(systemWithContext, cappedMessages, aiSettings.maxTokens)
+  } catch (geminiError) {
+    logger.error('ai', 'Gemini API error — falling back to Anthropic', geminiError)
     try {
-      const completion = await getOpenAI().chat.completions.create({
-        model: 'gpt-4o-mini',
+      const response = await getAnthropic().messages.create({
+        model: aiSettings.model,
         max_tokens: aiSettings.maxTokens,
-        messages: [
-          { role: 'system', content: systemWithContext },
-          ...cappedMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-        ],
+        system: systemWithContext,
+        messages: cappedMessages.map(m => ({ role: m.role, content: m.content })),
       })
-      return completion.choices[0]?.message?.content || FALLBACK_MESSAGE
-    } catch {
-      return FALLBACK_MESSAGE
+      const content = response.content[0]
+      return content.type === 'text' ? content.text : FALLBACK_MESSAGE
+    } catch (error) {
+      logger.error('ai', 'Claude API error — falling back to OpenAI', error)
+      try {
+        const completion = await getOpenAI().chat.completions.create({
+          model: 'gpt-4o-mini',
+          max_tokens: aiSettings.maxTokens,
+          messages: [
+            { role: 'system', content: systemWithContext },
+            ...cappedMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+          ],
+        })
+        return completion.choices[0]?.message?.content || FALLBACK_MESSAGE
+      } catch {
+        return FALLBACK_MESSAGE
+      }
     }
   }
 }
