@@ -304,8 +304,10 @@ const FALLBACK_MESSAGE =
 
 // Gemini is now primary (Anthropic/OpenAI remain fallbacks below) — plain
 // REST call, no new SDK dependency, matching this file's existing
-// lazy-init-on-call style. Free-tier-eligible model, per request.
-const GEMINI_MODEL = 'gemini-2.5-flash-lite'
+// lazy-init-on-call style. gemini-2.5-flash-lite was retired for new API
+// keys (live-verified via production logs, 2026-08-23: 404 "no longer
+// available to new users"); Google's own error pointed at this model.
+const GEMINI_MODEL = 'gemini-3.5-flash-lite'
 
 async function callGemini(systemPrompt: string, messages: Message[], maxTokens: number): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY
