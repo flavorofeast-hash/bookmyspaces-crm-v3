@@ -316,6 +316,17 @@ export default function ContentStudioPage() {
               <Link2 className="w-3.5 h-3.5" /> {p.label}
             </a>
           ))}
+          {/* Native Instagram Login connect -- separate from the
+              Instagram button above (that one is the classic Page-linked
+              flow). This is the one that actually applies to
+              skyline.monurama and establishes the account-level `messages`
+              webhook subscription during the callback. */}
+          <a
+            href="/api/social/oauth/instagram-native/start"
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50"
+          >
+            <Link2 className="w-3.5 h-3.5" /> Instagram DMs (native login)
+          </a>
         </div>
 
         {/* Create form */}

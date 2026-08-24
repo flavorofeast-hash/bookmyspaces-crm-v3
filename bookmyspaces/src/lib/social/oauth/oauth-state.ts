@@ -15,8 +15,15 @@
 import crypto from 'crypto'
 import type { OAuthCapablePlatform } from './oauth-config'
 
+// 'instagram_native' added for the native Instagram Login flow
+// (instagram-native-config.ts/-service.ts) -- a distinct flow from
+// OAuthCapablePlatform's 'instagram' (the classic Facebook-Login/Page-linked
+// flow). Additive only; existing facebook/instagram state payloads are
+// unaffected.
+export type OAuthStatePlatform = OAuthCapablePlatform | 'instagram_native'
+
 export interface OAuthStatePayload {
-  platform: OAuthCapablePlatform
+  platform: OAuthStatePlatform
   userId: string
   /** Random nonce — the actual CSRF-defeating value; verified byte-for-byte, never reused. */
   nonce: string
