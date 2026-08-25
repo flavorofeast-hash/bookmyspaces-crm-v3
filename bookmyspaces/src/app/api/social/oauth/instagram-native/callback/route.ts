@@ -125,15 +125,61 @@ export async function GET(req: NextRequest) {
   // specific IG account's `messages` field to the app's webhooks, then
   // read back the subscription to confirm it actually stuck.
   const subscribeResult = await subscribeInstagramMessages(igUserId, tokenResult.value.accessToken)
+
+  // Diagnostic pass -- the outcome of the two calls above used to exist
+  // only as an ephemeral console log line (rolled off within minutes on
+  // Vercel) plus a transient UI toast. Neither survived long enough to
+  // answer "did the account-level subscription actually take?" after the
+  // fact. This persists a sanitized (no token, no raw Graph body) summary
+  // into the same social_accounts row so it's a durable, queryable fact.
+  // Best-effort: a failure here never changes the redirect/banner the
+  // browser sees -- this is instrumentation, not part of the OAuth result.
+  async function persistSubscriptionDiagnostic(diagnostic: Record<string, unknown>) {
+    try {
+      const db = getSupabaseAdmin()
+      const { error } = await db
+        .from('social_accounts')
+        .update({
+          config: {
+            authFlow: 'instagram_native_login',
+            tokenHost: 'graph.instagram.com',
+            subscription: diagnostic,
+          },
+        })
+        .eq('platform', 'instagram')
+        .eq('external_account_id', igUserId)
+      if (error) throw error
+    } catch (err) {
+      logger.error('social-oauth-ig-native', 'failed to persist subscription diagnostic (non-fatal)', err, { igUserId })
+    }
+  }
+
   if (!subscribeResult.ok) {
     logger.error('social-oauth-ig-native', 'messages subscription failed', undefined, { igUserId, error: subscribeResult.error })
+    await persistSubscriptionDiagnostic({
+      attemptedAt: new Date().toISOString(),
+      subscribeOk: false,
+      subscribeHttpStatus: subscribeResult.httpStatus,
+      verifyOk: false,
+      subscribedFields: [],
+    })
     return redirectWithBanner(appBaseUrl, 'error', `connected_but_subscribe_failed: ${subscribeResult.error}`)
   }
 
   const verifyResult = await verifyInstagramMessagesSubscription(igUserId, tokenResult.value.accessToken)
-  if (!verifyResult.ok || !verifyResult.value) {
+
+  await persistSubscriptionDiagnostic({
+    attemptedAt: new Date().toISOString(),
+    subscribeOk: subscribeResult.ok,
+    subscribeHttpStatus: subscribeResult.httpStatus,
+    verifyOk: verifyResult.ok,
+    verifyHttpStatus: verifyResult.httpStatus,
+    subscribedFields: verifyResult.subscribedFields,
+  })
+
+  if (!verifyResult.ok || !verifyResult.subscribed) {
     logger.error('social-oauth-ig-native', 'messages subscription verification failed', undefined, {
-      igUserId, verifyOk: verifyResult.ok, subscribed: verifyResult.ok ? verifyResult.value : null,
+      igUserId, verifyOk: verifyResult.ok, subscribed: verifyResult.subscribed,
     })
     return redirectWithBanner(appBaseUrl, 'error', 'connected_but_subscription_not_confirmed')
   }

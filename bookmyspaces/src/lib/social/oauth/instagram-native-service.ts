@@ -128,25 +128,47 @@ export async function fetchInstagramNativeIdentity(accessToken: string): Promise
   return { ok: true, value: { igUserId: result.data.user_id, username: result.data.username ?? result.data.user_id } }
 }
 
+// Diagnostic pass — these two return the HTTP status + sanitized error
+// alongside ok/value (widened from a plain Result<T>) so the callback can
+// persist a non-sensitive record of what Meta actually returned, instead of
+// that outcome only ever existing in an ephemeral console log line. Never
+// includes the access token or any raw Graph response body -- only status
+// codes, booleans, and the field-name list.
+
+export interface SubscribeCallOutcome {
+  ok: boolean
+  httpStatus: number
+  error: string | null
+}
+
 /** Subscribes this IG account's `messages` field to the app's webhooks -- the exact step the classic flow's callback never performed. */
-export async function subscribeInstagramMessages(igUserId: string, accessToken: string): Promise<Result<true>> {
+export async function subscribeInstagramMessages(igUserId: string, accessToken: string): Promise<SubscribeCallOutcome> {
   const result = await callGraphAPI<{ success?: boolean }>(
     `${INSTAGRAM_GRAPH_HOST}/${igUserId}/subscribed_apps?subscribed_fields=messages&access_token=${encodeURIComponent(accessToken)}`,
     { method: 'POST' },
     'instagram-native-subscribe'
   )
-  if (!result.ok) return { ok: false, error: result.error ?? 'subscribe_failed' }
-  return { ok: true, value: true }
+  return { ok: result.ok, httpStatus: result.status, error: result.ok ? null : (result.error ?? 'subscribe_failed') }
+}
+
+export interface VerifyCallOutcome {
+  ok: boolean
+  httpStatus: number
+  subscribed: boolean
+  subscribedFields: string[]
+  error: string | null
 }
 
 /** Read-back confirmation that the subscription actually stuck. */
-export async function verifyInstagramMessagesSubscription(igUserId: string, accessToken: string): Promise<Result<boolean>> {
+export async function verifyInstagramMessagesSubscription(igUserId: string, accessToken: string): Promise<VerifyCallOutcome> {
   const result = await callGraphAPI<{ data?: Array<{ subscribed_fields?: string[] }> }>(
     `${INSTAGRAM_GRAPH_HOST}/${igUserId}/subscribed_apps?access_token=${encodeURIComponent(accessToken)}`,
     { method: 'GET' },
     'instagram-native-verify-subscription'
   )
-  if (!result.ok) return { ok: false, error: result.error ?? 'verify_subscription_failed' }
-  const subscribed = (result.data?.data ?? []).some((entry) => (entry.subscribed_fields ?? []).includes('messages'))
-  return { ok: true, value: subscribed }
+  if (!result.ok) {
+    return { ok: false, httpStatus: result.status, subscribed: false, subscribedFields: [], error: result.error ?? 'verify_subscription_failed' }
+  }
+  const subscribedFields = (result.data?.data ?? []).flatMap((entry) => entry.subscribed_fields ?? [])
+  return { ok: true, httpStatus: result.status, subscribed: subscribedFields.includes('messages'), subscribedFields, error: null }
 }
