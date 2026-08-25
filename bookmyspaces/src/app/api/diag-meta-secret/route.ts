@@ -12,20 +12,18 @@ export const runtime = 'nodejs'
 import { NextRequest, NextResponse } from 'next/server'
 import crypto from 'crypto'
 
-// Bearer-token gated via CRON_SECRET (same pattern as src/app/api/cron/*) --
-// deliberately not requireRole()'d, since this needs to be callable from a
-// script without an interactive browser session, for exactly one debugging
-// pass. Fails closed if CRON_SECRET is unset.
+// Gated with a value hardcoded directly in source (deliberately NOT read
+// from a Vercel env var) -- discovered that `vercel env pull`/CLI-reported
+// env values do not match what the deployed Lambda actually receives
+// (CRON_SECRET: 11 chars via CLI, 4 chars at runtime), so comparing against
+// another env var here would just repeat the same unreliable comparison.
+// This constant never touches any env var read/write path.
+const DIAG_TOKEN = 'bms-diag-9f3a7c21-temporary'
+
 export async function GET(request: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET
-  if (!cronSecret) return NextResponse.json({ error: 'not configured' }, { status: 500 })
   const token = request.headers.get('authorization')?.replace('Bearer ', '').trim()
-  if (token !== cronSecret) {
-    return NextResponse.json({
-      error: 'unauthorized',
-      receivedTokenLength: token?.length ?? 0,
-      expectedSecretLength: cronSecret.length,
-    }, { status: 401 })
+  if (token !== DIAG_TOKEN) {
+    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   }
 
   const val = process.env.META_APP_SECRET ?? ''
