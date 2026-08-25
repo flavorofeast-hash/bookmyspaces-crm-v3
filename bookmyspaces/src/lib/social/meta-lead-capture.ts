@@ -36,6 +36,15 @@ export interface MessagingEvent {
   timestamp: number | null
   externalMessageId: string | null
   platform: 'facebook' | 'instagram'
+  /**
+   * The Page/Instagram-scoped id this message was addressed to --
+   * `event.recipient.id` in Meta's Messenger-Platform-style payload. Used
+   * to resolve which connected social_accounts row (which client/hotel)
+   * this event belongs to (social-account-routing.ts). Multi-account
+   * hardening pass -- previously discarded entirely, so every account's
+   * DMs collapsed into one shared, undifferentiated channel.
+   */
+  recipientId: string | null
 }
 
 // ─── Leadgen idempotency (migration 029, social_leadgen_events) ───────────
@@ -135,12 +144,14 @@ export function parseMessagingEvents(payload: Record<string, unknown>, platform:
       if (!message || message.is_echo) continue // skip our own outbound + non-message events (delivery/read/postback)
       const senderId = ((event.sender ?? {}) as Record<string, unknown>).id
       if (!senderId) continue
+      const recipientId = ((event.recipient ?? {}) as Record<string, unknown>).id
       out.push({
         senderPsid: String(senderId),
         text: message.text ? String(message.text) : null,
         timestamp: typeof event.timestamp === 'number' ? event.timestamp : null,
         externalMessageId: message.mid ? String(message.mid) : null,
         platform,
+        recipientId: recipientId ? String(recipientId) : null,
       })
     }
   }

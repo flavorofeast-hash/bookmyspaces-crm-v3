@@ -72,8 +72,22 @@ describe('parseMessagingEvents', () => {
     const out = parseMessagingEvents(payload, 'facebook')
     expect(out).toEqual([{
       senderPsid: 'psid_1', text: 'Hi, do you have availability?',
-      timestamp: 1700000000, externalMessageId: 'mid_1', platform: 'facebook',
+      timestamp: 1700000000, externalMessageId: 'mid_1', platform: 'facebook', recipientId: null,
     }])
+  })
+
+  it('extracts recipient.id (which connected account this message was sent to) when present', () => {
+    const payload = {
+      entry: [{
+        messaging: [{
+          sender: { id: 'psid_1' },
+          recipient: { id: '17841478674706194' },
+          message: { mid: 'mid_1', text: 'hi' },
+        }],
+      }],
+    }
+    const out = parseMessagingEvents(payload, 'instagram')
+    expect(out[0].recipientId).toBe('17841478674706194')
   })
 
   it('ignores echoes (our own outbound sends)', () => {
@@ -100,7 +114,7 @@ describe('parseMessagingEvents', () => {
       entry: [{ messaging: [{ sender: { id: 'psid_2' }, message: { mid: 'mid_2', attachments: [{ type: 'image' }] } }] }],
     }
     const out = parseMessagingEvents(payload, 'instagram')
-    expect(out).toEqual([{ senderPsid: 'psid_2', text: null, timestamp: null, externalMessageId: 'mid_2', platform: 'instagram' }])
+    expect(out).toEqual([{ senderPsid: 'psid_2', text: null, timestamp: null, externalMessageId: 'mid_2', platform: 'instagram', recipientId: null }])
   })
 })
 

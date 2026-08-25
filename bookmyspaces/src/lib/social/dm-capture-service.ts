@@ -28,6 +28,7 @@ import { qualifyLeadFromMessage } from '@/lib/whatsapp/auto-qualify'
 import { runAutoPackageRecommendation } from '@/lib/leads/auto-package-recommendation'
 import { logger } from '@/lib/logger'
 import type { MessagingEvent } from '@/lib/social/meta-lead-capture'
+import { findConnectedSocialAccount, ensureSocialAccountChannel } from '@/lib/social/social-account-routing'
 
 export interface CaptureDMResult {
   leadId: string | null
@@ -73,10 +74,30 @@ export async function captureSocialDirectMessage(event: MessagingEvent): Promise
       }
     }
 
-    const { conversationId, channelId, isNewConversation } = await getOrCreateConversation({
+    // Multi-account hardening pass -- reject events for an account the CRM
+    // hasn't connected (or has since deactivated) rather than silently
+    // filing them into one shared, undifferentiated channel. See
+    // social-account-routing.ts's header for the full "why".
+    if (!event.recipientId) {
+      logger.warn('social', 'captureSocialDirectMessage: event has no recipientId, cannot route to a connected account — skipping', {
+        platform: event.platform,
+      })
+      return null
+    }
+    const account = await findConnectedSocialAccount(event.platform, event.recipientId)
+    if (!account) {
+      logger.warn('social', 'captureSocialDirectMessage: no connected/active social_accounts row for this recipient — skipping', {
+        platform: event.platform, recipientId: event.recipientId,
+      })
+      return null
+    }
+    const channelId = await ensureSocialAccountChannel(event.platform, account)
+
+    const { conversationId, isNewConversation } = await getOrCreateConversation({
       channelType,
       channelIdentity: event.senderPsid,
       customerId: null,
+      channelId,
     })
 
     let leadId: string | null = null

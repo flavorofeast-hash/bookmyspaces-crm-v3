@@ -108,7 +108,7 @@ export async function getOrCreateConversation(
   input: GetOrCreateConversationInput
 ): Promise<GetOrCreateConversationResult> {
   const supabase = getSupabaseAdmin()
-  const channelId = await ensureChannel(input.channelType)
+  const channelId = input.channelId ?? await ensureChannel(input.channelType)
 
   const existingConversationId = await findConversationIdByChannelIdentity(channelId, input.channelIdentity)
 

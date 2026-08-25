@@ -61,6 +61,13 @@ export interface GetOrCreateConversationInput {
   channelIdentity: string
   /** Known customer (leads.id) to attach on first creation, if already resolved. */
   customerId?: string | null
+  /**
+   * Pre-resolved channel row id, when the caller already knows which
+   * specific channels row this belongs to (e.g. one connected Instagram
+   * account among several) rather than the single shared row per
+   * channelType that ensureChannel() would otherwise look up/create.
+   */
+  channelId?: string
 }
 
 export interface GetOrCreateConversationResult {

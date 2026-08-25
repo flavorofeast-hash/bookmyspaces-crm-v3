@@ -9,7 +9,15 @@ const state = {
   // null = no existing message with this external_message_id (default,
   // matches every pre-existing test's assumption that nothing is a replay).
   existingMessageForDedup: null as { id: string; conversation_id: string } | null,
+  // Multi-account hardening pass — the connected social_accounts row this
+  // recipientId resolves to. Default is a "found" account so every
+  // pre-existing test keeps exercising the rest of the flow unchanged;
+  // set to null to exercise the "unknown/unconnected account" reject path.
+  connectedAccount: { id: 'acct-1', displayName: 'test.account', externalAccountId: 'recipient-1' } as
+    { id: string; displayName: string; externalAccountId: string } | null,
 }
+
+const DEFAULT_RECIPIENT_ID = 'recipient-1'
 const recorded: unknown[] = []
 const captureCalls: unknown[] = []
 const qualifyCalls: unknown[] = []
@@ -81,6 +89,11 @@ vi.mock('@/lib/leads/auto-package-recommendation', () => ({
   },
 }))
 
+vi.mock('@/lib/social/social-account-routing', () => ({
+  findConnectedSocialAccount: () => Promise.resolve(state.connectedAccount),
+  ensureSocialAccountChannel: () => Promise.resolve('chan-1'),
+}))
+
 import { captureSocialDirectMessage } from './dm-capture-service'
 
 beforeEach(() => {
@@ -88,6 +101,7 @@ beforeEach(() => {
   state.existingCustomerId = null
   state.updateCalls.length = 0
   state.existingMessageForDedup = null
+  state.connectedAccount = { id: 'acct-1', displayName: 'test.account', externalAccountId: 'recipient-1' }
   recorded.length = 0
   captureCalls.length = 0
   qualifyCalls.length = 0
@@ -98,7 +112,7 @@ describe('captureSocialDirectMessage', () => {
   it('creates a new lead on first contact and links it to the conversation', async () => {
     const result = await captureSocialDirectMessage({
       senderPsid: 'psid_1', text: 'Do you have availability this weekend?',
-      timestamp: 1700000000, externalMessageId: 'mid_1', platform: 'facebook',
+      timestamp: 1700000000, externalMessageId: 'mid_1', platform: 'facebook', recipientId: DEFAULT_RECIPIENT_ID,
     })
 
     expect(result).toEqual({ leadId: 'lead-new-1', conversationId: 'conv-1', isNewLead: true })
@@ -119,7 +133,7 @@ describe('captureSocialDirectMessage', () => {
 
   it('uses instagram_dm as the source for Instagram DMs', async () => {
     await captureSocialDirectMessage({
-      senderPsid: 'psid_2', text: 'hi', timestamp: null, externalMessageId: null, platform: 'instagram',
+      senderPsid: 'psid_2', text: 'hi', timestamp: null, externalMessageId: null, platform: 'instagram', recipientId: DEFAULT_RECIPIENT_ID,
     })
     expect(captureCalls[0]).toMatchObject({ source: 'instagram_dm', notes: 'Instagram DM PSID: psid_2' })
   })
@@ -129,7 +143,7 @@ describe('captureSocialDirectMessage', () => {
     state.existingCustomerId = 'lead-existing-1'
 
     const result = await captureSocialDirectMessage({
-      senderPsid: 'psid_1', text: 'following up on my booking', timestamp: null, externalMessageId: null, platform: 'facebook',
+      senderPsid: 'psid_1', text: 'following up on my booking', timestamp: null, externalMessageId: null, platform: 'facebook', recipientId: DEFAULT_RECIPIENT_ID,
     })
 
     expect(result).toEqual({ leadId: 'lead-existing-1', conversationId: 'conv-1', isNewLead: false })
@@ -142,7 +156,7 @@ describe('captureSocialDirectMessage', () => {
   it('never throws — returns null when a dependency fails', async () => {
     state.throwOnGetOrCreateConversation = true
     const result = await captureSocialDirectMessage({
-      senderPsid: 'psid_3', text: null, timestamp: null, externalMessageId: null, platform: 'facebook',
+      senderPsid: 'psid_3', text: null, timestamp: null, externalMessageId: null, platform: 'facebook', recipientId: DEFAULT_RECIPIENT_ID,
     })
     expect(result).toBeNull()
     state.throwOnGetOrCreateConversation = false
@@ -157,7 +171,7 @@ describe('captureSocialDirectMessage', () => {
 
     const result = await captureSocialDirectMessage({
       senderPsid: 'psid_1', text: 'Do you have availability this weekend?',
-      timestamp: 1700000000, externalMessageId: 'mid_1', platform: 'facebook',
+      timestamp: 1700000000, externalMessageId: 'mid_1', platform: 'facebook', recipientId: DEFAULT_RECIPIENT_ID,
     })
 
     expect(result).toEqual({ leadId: null, conversationId: 'conv-existing-1', isNewLead: false, duplicate: true })
@@ -173,8 +187,30 @@ describe('captureSocialDirectMessage', () => {
     // being present, or every DM with no message id (already possible per
     // the existing "instagram_dm" test above) would incorrectly short-circuit.
     await captureSocialDirectMessage({
-      senderPsid: 'psid_4', text: 'hello', timestamp: null, externalMessageId: null, platform: 'facebook',
+      senderPsid: 'psid_4', text: 'hello', timestamp: null, externalMessageId: null, platform: 'facebook', recipientId: DEFAULT_RECIPIENT_ID,
     })
     expect(captureCalls).toHaveLength(1)
+  })
+
+  // Multi-account hardening pass — the core new behavior: an event for an
+  // account the CRM hasn't connected (or has deactivated) must be rejected,
+  // never silently captured into some default/shared channel.
+  it('rejects the event when recipientId does not match any connected/active social_accounts row', async () => {
+    state.connectedAccount = null
+    const result = await captureSocialDirectMessage({
+      senderPsid: 'psid_5', text: 'hi', timestamp: null, externalMessageId: null, platform: 'instagram', recipientId: 'unknown-account-id',
+    })
+    expect(result).toBeNull()
+    expect(captureCalls).toHaveLength(0)
+    expect(recorded).toHaveLength(0)
+  })
+
+  it('rejects the event when recipientId is missing entirely (nothing to route by)', async () => {
+    const result = await captureSocialDirectMessage({
+      senderPsid: 'psid_6', text: 'hi', timestamp: null, externalMessageId: null, platform: 'instagram', recipientId: null,
+    })
+    expect(result).toBeNull()
+    expect(captureCalls).toHaveLength(0)
+    expect(recorded).toHaveLength(0)
   })
 })
