@@ -20,7 +20,13 @@ export async function GET(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET
   if (!cronSecret) return NextResponse.json({ error: 'not configured' }, { status: 500 })
   const token = request.headers.get('authorization')?.replace('Bearer ', '').trim()
-  if (token !== cronSecret) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+  if (token !== cronSecret) {
+    return NextResponse.json({
+      error: 'unauthorized',
+      receivedTokenLength: token?.length ?? 0,
+      expectedSecretLength: cronSecret.length,
+    }, { status: 401 })
+  }
 
   const val = process.env.META_APP_SECRET ?? ''
   const isHex32 = /^[0-9a-f]{32}$/.test(val)
