@@ -25,11 +25,12 @@ export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
 import { NextRequest, NextResponse } from 'next/server'
-import crypto from 'crypto'
 import { requireRole } from '@/lib/auth-guard'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { logger } from '@/lib/logger'
 import { decodeGbpOAuthState } from '@/lib/google/gbp-oauth-state'
+import { discoverAccountsAndLocations } from '@/lib/google/gbp-client'
+import { encryptGbpToken as encryptToken } from '@/lib/google/gbp-crypto'
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const SETTINGS_CATEGORY = 'integration'
@@ -41,107 +42,6 @@ interface GoogleTokenResponse {
   expires_in: number
   scope: string
   token_type: string
-}
-
-interface DiscoveredLocation {
-  /** e.g. "accounts/123/locations/456" -- the id future GBP API calls (Posts, Reviews, ...) will need. */
-  externalId: string
-  displayName: string
-}
-
-// Completes the "GBP account -> location" step of the connect flow. Business
-// Information API shapes match what src/lib/social/oauth/oauth-service.ts's
-// (now-removed) google_business branch already used for the same purpose
-// before the Facebook/Instagram connector recovery pass trimmed that file
-// down to Facebook/Instagram only -- same endpoints, reused here rather than
-// re-derived from scratch. Never throws: a discovery failure must not lose
-// an otherwise-successful token exchange, since the token is still useful
-// (e.g. to retry discovery later) even if this step fails today.
-async function discoverAccountsAndLocations(accessToken: string): Promise<DiscoveredLocation[]> {
-  try {
-    const accountsRes = await fetch('https://mybusinessaccountmanagement.googleapis.com/v1/accounts', {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    })
-    const accountsJson = (await accountsRes.json().catch(() => ({}))) as {
-      accounts?: Array<{ name: string; accountName?: string }>
-      error?: { code?: number; status?: string; message?: string }
-    }
-    const accounts = accountsJson.accounts ?? []
-
-    // Previously silent on both branches below -- "0 locations" and "API call
-    // failed" were indistinguishable in production logs (confirmed live: a
-    // successful connect with hasRefreshToken:true, correct scope, and
-    // locationCount:0 gave no way to tell whether Google rejected the
-    // accounts.list call or the account genuinely has none). Logged, not
-    // fixed silently, because the actual cause (API not enabled vs. no
-    // Business Profile on this Google account vs. something else) changes
-    // what the real fix is -- see accounts.google.com/business vs Google
-    // Cloud Console API enablement.
-    if (!accountsRes.ok) {
-      logger.error('gbp-oauth', 'callback: accounts.list call failed', undefined, {
-        status: accountsRes.status,
-        googleErrorStatus: accountsJson.error?.status,
-        googleErrorMessage: accountsJson.error?.message,
-      })
-      return []
-    }
-    if (accounts.length === 0) {
-      logger.warn('gbp-oauth', 'callback: accounts.list succeeded but returned zero Business Profile accounts for this Google account', {
-        status: accountsRes.status,
-      })
-      return []
-    }
-
-    const results: DiscoveredLocation[] = []
-    for (const account of accounts) {
-      const locationsRes = await fetch(
-        `https://mybusinessbusinessinformation.googleapis.com/v1/${account.name}/locations?readMask=name,title`,
-        { headers: { Authorization: `Bearer ${accessToken}` } }
-      )
-      const locationsJson = (await locationsRes.json().catch(() => ({}))) as {
-        locations?: Array<{ name: string; title?: string }>
-        error?: { code?: number; status?: string; message?: string }
-      }
-      if (!locationsRes.ok) {
-        logger.error('gbp-oauth', 'callback: locations.list call failed for an account', undefined, {
-          account: account.name,
-          status: locationsRes.status,
-          googleErrorStatus: locationsJson.error?.status,
-          googleErrorMessage: locationsJson.error?.message,
-        })
-        continue
-      }
-      for (const loc of locationsJson.locations ?? []) {
-        results.push({
-          externalId: `${account.name}/${loc.name}`,
-          displayName: loc.title ?? account.accountName ?? 'Google Business Profile',
-        })
-      }
-    }
-    logger.info('gbp-oauth', 'callback: discovery complete', {
-      accountCount: accounts.length,
-      locationCount: results.length,
-    })
-    return results
-  } catch (err) {
-    logger.error('gbp-oauth', 'callback: account/location discovery failed (non-fatal, token already exchanged)', err)
-    return []
-  }
-}
-
-// AES-256-GCM, keyed off SOCIAL_TOKEN_ENCRYPTION_KEY. sha256 of the raw
-// env value derives a fixed 32-byte key regardless of the secret's own
-// length/format -- standard practice, not an assumption about that var's
-// original shape. Output: "iv.authTag.ciphertext", all base64.
-function encryptToken(plaintext: string): string {
-  const secret = process.env.SOCIAL_TOKEN_ENCRYPTION_KEY
-  if (!secret) throw new Error('SOCIAL_TOKEN_ENCRYPTION_KEY is not set')
-  const key = crypto.createHash('sha256').update(secret).digest()
-  const iv = crypto.randomBytes(12)
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv)
-  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
-  const authTag = cipher.getAuthTag()
-  return [iv.toString('base64'), authTag.toString('base64'), ciphertext.toString('base64')].join('.')
 }
 
 export async function GET(req: NextRequest) {
