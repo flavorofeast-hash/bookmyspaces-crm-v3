@@ -48,7 +48,9 @@ vi.mock('@/lib/supabase', () => ({
   }),
 }))
 
-import { findConnectedSocialAccount, ensureSocialAccountChannel } from './social-account-routing'
+import { findConnectedSocialAccount, ensureSocialAccountChannel, resolveConnectedAccount } from './social-account-routing'
+
+const ORIGINAL_ENV = { ...process.env }
 
 beforeEach(() => {
   state.socialAccountRow = null
@@ -57,6 +59,7 @@ beforeEach(() => {
   state.insertedChannel = { id: 'new-chan-1' }
   state.insertError = null
   state.lastChannelInsert = null
+  process.env = { ...ORIGINAL_ENV }
 })
 
 describe('findConnectedSocialAccount', () => {
@@ -106,5 +109,34 @@ describe('ensureSocialAccountChannel', () => {
     state.insertedChannel = null
     state.insertError = { message: 'unique_violation' }
     await expect(ensureSocialAccountChannel('instagram', account)).rejects.toThrow('unique_violation')
+  })
+})
+
+// Facebook Messenger pass — this pass deliberately uses the single-Page,
+// global-env-var credential model (no Facebook Page OAuth), so the
+// "do we recognize this account" gate is env-based instead of DB-based.
+describe('resolveConnectedAccount', () => {
+  it('instagram: delegates to findConnectedSocialAccount (DB-backed)', async () => {
+    state.socialAccountRow = { id: 'acct-1', display_name: 'skyline.monurama', external_account_id: '17841478674706194' }
+    const result = await resolveConnectedAccount('instagram', '17841478674706194')
+    expect(result).toEqual({ id: 'acct-1', displayName: 'skyline.monurama', externalAccountId: '17841478674706194' })
+  })
+
+  it('facebook: returns a synthetic account when the recipient id matches META_PAGE_ID', async () => {
+    process.env.META_PAGE_ID = 'page-123'
+    const result = await resolveConnectedAccount('facebook', 'page-123')
+    expect(result).toEqual({ id: 'env:facebook-page', displayName: 'Facebook Page', externalAccountId: 'page-123' })
+  })
+
+  it('facebook: returns null when the recipient id does not match META_PAGE_ID', async () => {
+    process.env.META_PAGE_ID = 'page-123'
+    const result = await resolveConnectedAccount('facebook', 'some-other-page-id')
+    expect(result).toBeNull()
+  })
+
+  it('facebook: returns null when META_PAGE_ID is not configured', async () => {
+    delete process.env.META_PAGE_ID
+    const result = await resolveConnectedAccount('facebook', 'page-123')
+    expect(result).toBeNull()
   })
 })

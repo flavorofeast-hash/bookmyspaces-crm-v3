@@ -1,22 +1,25 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// FILE: src/lib/social/instagram-ai-reply.ts
-// Connects the already-working Instagram inbound pipeline to the EXISTING
-// AI layer -- no new AI system, no new prompt, no new conversation engine.
-// This is a thin composition of already-channel-agnostic pieces, the same
-// category as WhatsApp's runLegacyReplyPath() (src/app/api/whatsapp/webhook/
-// route.ts) and website chat's /api/chat/route.ts, both of which independently
-// compose chatWithAI/cleanAIResponse the same way.
+// FILE: src/lib/social/social-ai-reply.ts
+// Connects any social DM channel's already-working inbound pipeline to the
+// EXISTING AI layer -- no new AI system, no new prompt, no new conversation
+// engine. Originally built (and proven end-to-end in production) as
+// Instagram-only; renamed here to reflect that it has zero Instagram-
+// specific logic and is now also used by Facebook Messenger. This is a
+// thin composition of already-channel-agnostic pieces, the same category
+// as WhatsApp's runLegacyReplyPath() (src/app/api/whatsapp/webhook/
+// route.ts) and website chat's /api/chat/route.ts, both of which
+// independently compose chatWithAI/cleanAIResponse the same way.
 //
 // One real difference from WhatsApp's composition, deliberate: history is
 // read from unified_messages (the Unified Conversation Platform), not a
-// legacy phone-keyed `conversations` table -- Instagram has never used
-// that legacy table, and unified_messages is the correct, already-existing
-// source of truth for this channel.
+// legacy phone-keyed `conversations` table -- neither Instagram nor
+// Facebook Messenger has ever used that legacy table, and unified_messages
+// is the correct, already-existing source of truth for both.
 //
 // Idempotency: this is only ever called by dm-capture-service.ts for a
 // message it has already determined is NOT a duplicate delivery (its own
-// external_message_id dedup check runs first) -- no separate dedup logic
-// needed here.
+// external_message_id dedup check runs first, channel-agnostic) -- no
+// separate dedup logic needed here.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { getSupabaseAdmin } from '@/lib/supabase'
@@ -28,12 +31,12 @@ import { getSettingsSection } from '@/lib/settings/settings-service'
 import { dispatchOutbound } from '@/lib/conversations/outbound-dispatcher'
 
 /**
- * Generates and sends the AI reply for one already-recorded inbound
- * Instagram DM. Never throws -- a failure here must not affect the
- * inbound capture that already succeeded (same non-fatal philosophy as
- * WhatsApp's own AI-call failure handling).
+ * Generates and sends the AI reply for one already-recorded inbound social
+ * DM (Instagram or Facebook Messenger). Never throws -- a failure here
+ * must not affect the inbound capture that already succeeded (same
+ * non-fatal philosophy as WhatsApp's own AI-call failure handling).
  */
-export async function triggerInstagramAIReply(input: {
+export async function triggerSocialAIReply(input: {
   conversationId: string
   customerText: string | null
 }): Promise<void> {
@@ -71,12 +74,12 @@ export async function triggerInstagramAIReply(input: {
 
     const result = await dispatchOutbound({ conversationId: input.conversationId, content: reply, senderType: 'ai' })
     if (!result.delivered) {
-      logger.warn('instagram-ai-reply', 'AI reply recorded but not delivered to Instagram', {
-        conversationId: input.conversationId, detail: result.detail,
+      logger.warn('social-ai-reply', 'AI reply recorded but not delivered', {
+        conversationId: input.conversationId, channelType: result.channelType, detail: result.detail,
       })
     }
   } catch (err) {
-    logger.error('instagram-ai-reply', 'AI reply pipeline failed (non-fatal, inbound capture unaffected)', err, {
+    logger.error('social-ai-reply', 'AI reply pipeline failed (non-fatal, inbound capture unaffected)', err, {
       conversationId: input.conversationId,
     })
   }

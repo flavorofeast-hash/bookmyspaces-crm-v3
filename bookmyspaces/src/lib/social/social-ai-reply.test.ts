@@ -66,7 +66,7 @@ vi.mock('@/lib/conversations/outbound-dispatcher', () => ({
   },
 }))
 
-import { triggerInstagramAIReply } from './instagram-ai-reply'
+import { triggerSocialAIReply } from './social-ai-reply'
 
 beforeEach(() => {
   state.history = [
@@ -84,9 +84,9 @@ beforeEach(() => {
   dispatchCalls.length = 0
 })
 
-describe('triggerInstagramAIReply', () => {
+describe('triggerSocialAIReply', () => {
   it('builds AI context from unified_messages history and dispatches the reply, respecting handoff evaluation', async () => {
-    await triggerInstagramAIReply({ conversationId: 'conv-1', customerText: 'do you have rooms available?' })
+    await triggerSocialAIReply({ conversationId: 'conv-1', customerText: 'do you have rooms available?' })
 
     expect(chatWithAICalls).toEqual([{
       messages: [
@@ -109,12 +109,12 @@ describe('triggerInstagramAIReply', () => {
 
   it('includes the handover block when evaluateHandoff escalates', async () => {
     state.handoffDecision = { escalate: true }
-    await triggerInstagramAIReply({ conversationId: 'conv-1', customerText: 'I want a refund' })
+    await triggerSocialAIReply({ conversationId: 'conv-1', customerText: 'I want a refund' })
     expect(formatMessageCalls[0]).toMatchObject({ includeHandover: true })
   })
 
   it('does nothing when there is no customer text (attachment-only message)', async () => {
-    await triggerInstagramAIReply({ conversationId: 'conv-1', customerText: null })
+    await triggerSocialAIReply({ conversationId: 'conv-1', customerText: null })
     expect(chatWithAICalls).toHaveLength(0)
     expect(dispatchCalls).toHaveLength(0)
   })
@@ -122,7 +122,7 @@ describe('triggerInstagramAIReply', () => {
   it('never throws when the AI call fails, and sends no reply', async () => {
     state.chatWithAIShouldThrow = true
     await expect(
-      triggerInstagramAIReply({ conversationId: 'conv-1', customerText: 'hi' })
+      triggerSocialAIReply({ conversationId: 'conv-1', customerText: 'hi' })
     ).resolves.toBeUndefined()
     expect(dispatchCalls).toHaveLength(0)
   })
@@ -130,7 +130,7 @@ describe('triggerInstagramAIReply', () => {
   it('never throws when dispatchOutbound fails to deliver', async () => {
     dispatchResult = { ok: true, messageId: 'msg-1', delivered: false, channelType: 'instagram', detail: 'graph_error' }
     await expect(
-      triggerInstagramAIReply({ conversationId: 'conv-1', customerText: 'hi' })
+      triggerSocialAIReply({ conversationId: 'conv-1', customerText: 'hi' })
     ).resolves.toBeUndefined()
     expect(dispatchCalls).toHaveLength(1)
   })

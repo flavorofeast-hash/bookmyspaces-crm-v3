@@ -96,3 +96,33 @@ export async function ensureSocialAccountChannel(
   }
   return created.id
 }
+
+/**
+ * The single connected-account resolution point for dm-capture-service.ts,
+ * covering both credential models this codebase currently uses:
+ *
+ * - instagram: OAuth-connected, per-account, DB-backed (social_accounts) --
+ *   delegates to findConnectedSocialAccount() unchanged.
+ * - facebook: this pass deliberately uses the same single-Page,
+ *   global-env-var pattern WhatsApp already uses (META_PAGE_ID/
+ *   META_PAGE_ACCESS_TOKEN) rather than building Facebook Page OAuth --
+ *   an explicit, approved decision (not a shortcut). The equivalent "do we
+ *   recognize this account" gate is checking the event's recipient id
+ *   against META_PAGE_ID directly. No social_accounts row is required or
+ *   created for Facebook under this model.
+ *
+ * Either branch returns null (never a default/fallback account) when the
+ * recipient isn't recognized -- same contract as findConnectedSocialAccount.
+ */
+export async function resolveConnectedAccount(
+  platform: 'facebook' | 'instagram',
+  externalAccountId: string
+): Promise<ConnectedSocialAccount | null> {
+  if (platform === 'instagram') {
+    return findConnectedSocialAccount(platform, externalAccountId)
+  }
+
+  const pageId = process.env.META_PAGE_ID
+  if (!pageId || externalAccountId !== pageId) return null
+  return { id: 'env:facebook-page', displayName: 'Facebook Page', externalAccountId: pageId }
+}

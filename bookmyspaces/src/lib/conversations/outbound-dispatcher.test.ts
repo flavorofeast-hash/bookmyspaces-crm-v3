@@ -8,8 +8,10 @@ const mockDb = {
 const recorded: unknown[] = []
 const waSends: unknown[] = []
 const igSends: unknown[] = []
+const fbSends: unknown[] = []
 let waResult: { success: boolean; error?: string } = { success: true }
 let igResult: { success: boolean; externalMessageId?: string; error?: string } = { success: true, externalMessageId: 'ig-mid-1' }
+let fbResult: { success: boolean; externalMessageId?: string; error?: string } = { success: true, externalMessageId: 'fb-mid-1' }
 
 vi.mock('@/lib/supabase', () => ({
   getSupabaseAdmin: () => ({
@@ -59,6 +61,13 @@ vi.mock('@/lib/social/instagram-send', () => ({
   },
 }))
 
+vi.mock('@/lib/social/facebook-send', () => ({
+  sendFacebookMessage: (recipientId: string, text: string) => {
+    fbSends.push({ recipientId, text })
+    return Promise.resolve(fbResult)
+  },
+}))
+
 import { dispatchOutbound } from './outbound-dispatcher'
 
 beforeEach(() => {
@@ -68,8 +77,10 @@ beforeEach(() => {
   recorded.length = 0
   waSends.length = 0
   igSends.length = 0
+  fbSends.length = 0
   waResult = { success: true }
   igResult = { success: true, externalMessageId: 'ig-mid-1' }
+  fbResult = { success: true, externalMessageId: 'fb-mid-1' }
 })
 
 describe('dispatchOutbound', () => {
@@ -157,5 +168,38 @@ describe('dispatchOutbound', () => {
     expect(res.ok).toBe(true)
     expect(res.delivered).toBe(false)
     expect(igSends).toHaveLength(0)
+  })
+
+  // Facebook Messenger pass — single-Page global-credential model, no
+  // per-account lookup needed (unlike Instagram's config.external_account_id).
+  it('sends via Facebook Messenger using the PSID from channel_identity', async () => {
+    mockDb.links = [
+      { channel_id: 'ch4', channel_identity: 'psid-customer-1', channels: { channel_type: 'facebook' } },
+    ]
+    const res = await dispatchOutbound({ conversationId: 'c4', content: 'AI reply text', senderType: 'ai' })
+    expect(res.ok).toBe(true)
+    expect(res.delivered).toBe(true)
+    expect(res.channelType).toBe('facebook')
+    expect(fbSends).toEqual([{ recipientId: 'psid-customer-1', text: 'AI reply text' }])
+  })
+
+  it('backfills external_message_id onto the recorded row after a successful Facebook send', async () => {
+    mockDb.links = [
+      { channel_id: 'ch4', channel_identity: 'psid-customer-1', channels: { channel_type: 'facebook' } },
+    ]
+    await dispatchOutbound({ conversationId: 'c4', content: 'AI reply text', senderType: 'ai' })
+    expect(mockDb.messageUpdates).toEqual([{ v: { external_message_id: 'fb-mid-1' }, col: 'id', id: 'msg-1' }])
+  })
+
+  it('reports a failed Facebook send without falsely marking it delivered, and does not backfill an id', async () => {
+    fbResult = { success: false, error: 'graph_error' }
+    mockDb.links = [
+      { channel_id: 'ch4', channel_identity: 'psid-customer-1', channels: { channel_type: 'facebook' } },
+    ]
+    const res = await dispatchOutbound({ conversationId: 'c4', content: 'AI reply text', senderType: 'ai' })
+    expect(res.ok).toBe(true)
+    expect(res.delivered).toBe(false)
+    expect(res.detail).toBe('graph_error')
+    expect(mockDb.messageUpdates).toHaveLength(0)
   })
 })

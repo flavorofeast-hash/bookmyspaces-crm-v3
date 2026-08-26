@@ -90,13 +90,13 @@ vi.mock('@/lib/leads/auto-package-recommendation', () => ({
 }))
 
 vi.mock('@/lib/social/social-account-routing', () => ({
-  findConnectedSocialAccount: () => Promise.resolve(state.connectedAccount),
+  resolveConnectedAccount: () => Promise.resolve(state.connectedAccount),
   ensureSocialAccountChannel: () => Promise.resolve('chan-1'),
 }))
 
 const aiReplyCalls: unknown[] = []
-vi.mock('@/lib/social/instagram-ai-reply', () => ({
-  triggerInstagramAIReply: (input: unknown) => {
+vi.mock('@/lib/social/social-ai-reply', () => ({
+  triggerSocialAIReply: (input: unknown) => {
     aiReplyCalls.push(input)
     return Promise.resolve()
   },
@@ -223,9 +223,10 @@ describe('captureSocialDirectMessage', () => {
     expect(recorded).toHaveLength(0)
   })
 
-  // AI auto-reply connection — Instagram-only, reuses the existing AI layer
-  // via instagram-ai-reply.ts (mocked here; its own internals are tested in
-  // instagram-ai-reply.test.ts).
+  // AI auto-reply connection — reuses the existing AI layer via
+  // social-ai-reply.ts (mocked here; its own internals are tested in
+  // social-ai-reply.test.ts). Channel-agnostic: fires for both Instagram
+  // and Facebook Messenger, same function, same call shape.
   it('triggers the AI reply pipeline for a genuinely new Instagram message', async () => {
     await captureSocialDirectMessage({
       senderPsid: 'psid_7', text: 'do you have rooms available?', timestamp: null,
@@ -234,11 +235,11 @@ describe('captureSocialDirectMessage', () => {
     expect(aiReplyCalls).toEqual([{ conversationId: 'conv-1', customerText: 'do you have rooms available?' }])
   })
 
-  it('does NOT trigger the Instagram AI reply pipeline for Facebook Messenger (out of scope for this pass)', async () => {
+  it('also triggers the AI reply pipeline for a genuinely new Facebook Messenger message', async () => {
     await captureSocialDirectMessage({
-      senderPsid: 'psid_8', text: 'hi', timestamp: null, externalMessageId: 'mid_8', platform: 'facebook', recipientId: DEFAULT_RECIPIENT_ID,
+      senderPsid: 'psid_8', text: 'hi, room available?', timestamp: null, externalMessageId: 'mid_8', platform: 'facebook', recipientId: DEFAULT_RECIPIENT_ID,
     })
-    expect(aiReplyCalls).toHaveLength(0)
+    expect(aiReplyCalls).toEqual([{ conversationId: 'conv-1', customerText: 'hi, room available?' }])
   })
 
   it('does NOT trigger the AI reply pipeline for a duplicate Instagram delivery (idempotency)', async () => {

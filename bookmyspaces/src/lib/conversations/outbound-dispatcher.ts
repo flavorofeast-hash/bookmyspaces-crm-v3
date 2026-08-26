@@ -11,6 +11,10 @@
 //   instagram    → sendInstagramMessage (Graph API, connected account's own
 //                  token; external_message_id backfilled onto the
 //                  already-recorded row on success — see the instagram case)
+//   facebook     → sendFacebookMessage (Graph API, single-Page global
+//                  META_PAGE_ID/META_PAGE_ACCESS_TOKEN -- same
+//                  credential model as WhatsApp; external_message_id
+//                  backfilled the same way as the instagram case)
 //   email        → sendEmail (existing provider-agnostic email system)
 //   website_chat → recorded only; the chat widget pulls history on next
 //                  poll — there is no push transport (no websocket) yet
@@ -23,6 +27,7 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { recordMessage } from '@/lib/conversations/unified-conversation-service'
 import { sendWhatsAppText } from '@/lib/whatsapp/send-message'
 import { sendInstagramMessage } from '@/lib/social/instagram-send'
+import { sendFacebookMessage } from '@/lib/social/facebook-send'
 import { logger } from '@/lib/logger'
 
 export interface DispatchResult {
@@ -110,6 +115,24 @@ export async function dispatchOutbound(input: {
         // Backfill the external id onto the row already recorded above —
         // scoped to this case only, does not touch the WhatsApp path or
         // the shared pre-record call.
+        await supabase
+          .from('unified_messages')
+          .update({ external_message_id: result.externalMessageId })
+          .eq('id', messageId)
+      }
+      return {
+        ok: true,
+        messageId,
+        delivered: !!result.success,
+        channelType,
+        detail: result.success ? undefined : result.error,
+      }
+    }
+    case 'facebook': {
+      const result = await sendFacebookMessage(link.channel_identity, input.content)
+      if (!result.success) {
+        logger.warn('outbound-dispatcher', 'Facebook Messenger send failed', { detail: result.error })
+      } else if (result.externalMessageId) {
         await supabase
           .from('unified_messages')
           .update({ external_message_id: result.externalMessageId })
