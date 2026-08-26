@@ -3,22 +3,37 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const mockDb = {
   links: [] as unknown[],
   linksError: null as { message: string } | null,
+  messageUpdates: [] as unknown[],
 }
 const recorded: unknown[] = []
 const waSends: unknown[] = []
+const igSends: unknown[] = []
 let waResult: { success: boolean; error?: string } = { success: true }
+let igResult: { success: boolean; externalMessageId?: string; error?: string } = { success: true, externalMessageId: 'ig-mid-1' }
 
 vi.mock('@/lib/supabase', () => ({
   getSupabaseAdmin: () => ({
     from: (table: string) => {
-      if (table !== 'unified_conversation_channels') throw new Error(`unexpected table: ${table}`)
-      return {
-        select: () => ({
-          eq: () => ({
-            order: () => Promise.resolve({ data: mockDb.linksError ? null : mockDb.links, error: mockDb.linksError }),
+      if (table === 'unified_conversation_channels') {
+        return {
+          select: () => ({
+            eq: () => ({
+              order: () => Promise.resolve({ data: mockDb.linksError ? null : mockDb.links, error: mockDb.linksError }),
+            }),
           }),
-        }),
+        }
       }
+      if (table === 'unified_messages') {
+        return {
+          update: (v: unknown) => ({
+            eq: (col: string, id: string) => {
+              mockDb.messageUpdates.push({ v, col, id })
+              return Promise.resolve({ error: null })
+            },
+          }),
+        }
+      }
+      throw new Error(`unexpected table: ${table}`)
     },
   }),
 }))
@@ -37,14 +52,24 @@ vi.mock('@/lib/whatsapp/send-message', () => ({
   },
 }))
 
+vi.mock('@/lib/social/instagram-send', () => ({
+  sendInstagramMessage: (igUserId: string, recipientId: string, text: string) => {
+    igSends.push({ igUserId, recipientId, text })
+    return Promise.resolve(igResult)
+  },
+}))
+
 import { dispatchOutbound } from './outbound-dispatcher'
 
 beforeEach(() => {
   mockDb.links = []
   mockDb.linksError = null
+  mockDb.messageUpdates.length = 0
   recorded.length = 0
   waSends.length = 0
+  igSends.length = 0
   waResult = { success: true }
+  igResult = { success: true, externalMessageId: 'ig-mid-1' }
 })
 
 describe('dispatchOutbound', () => {
@@ -88,5 +113,49 @@ describe('dispatchOutbound', () => {
     expect(res.ok).toBe(true)
     expect(res.delivered).toBe(false)
     expect(res.messageId).toBe('msg-1')
+  })
+
+  // Instagram AI-reply connection — reuses the same recordMessage() call as
+  // every other channel; only the transport (sendInstagramMessage) and the
+  // external-id backfill are new.
+  it('sends via Instagram using the IGSID from channel_identity and the IG account id from channel config', async () => {
+    mockDb.links = [
+      { channel_id: 'ch3', channel_identity: 'igsid-customer-1', channels: { channel_type: 'instagram', config: { external_account_id: '17841478674706194' } } },
+    ]
+    const res = await dispatchOutbound({ conversationId: 'c3', content: 'AI reply text', senderType: 'ai' })
+    expect(res.ok).toBe(true)
+    expect(res.delivered).toBe(true)
+    expect(res.channelType).toBe('instagram')
+    expect(igSends).toEqual([{ igUserId: '17841478674706194', recipientId: 'igsid-customer-1', text: 'AI reply text' }])
+  })
+
+  it('backfills external_message_id onto the recorded row after a successful Instagram send', async () => {
+    mockDb.links = [
+      { channel_id: 'ch3', channel_identity: 'igsid-customer-1', channels: { channel_type: 'instagram', config: { external_account_id: '17841478674706194' } } },
+    ]
+    await dispatchOutbound({ conversationId: 'c3', content: 'AI reply text', senderType: 'ai' })
+    expect(mockDb.messageUpdates).toEqual([{ v: { external_message_id: 'ig-mid-1' }, col: 'id', id: 'msg-1' }])
+  })
+
+  it('reports a failed Instagram send without falsely marking it delivered, and does not backfill an id', async () => {
+    igResult = { success: false, error: 'graph_error' }
+    mockDb.links = [
+      { channel_id: 'ch3', channel_identity: 'igsid-customer-1', channels: { channel_type: 'instagram', config: { external_account_id: '17841478674706194' } } },
+    ]
+    const res = await dispatchOutbound({ conversationId: 'c3', content: 'AI reply text', senderType: 'ai' })
+    expect(res.ok).toBe(true)
+    expect(res.delivered).toBe(false)
+    expect(res.detail).toBe('graph_error')
+    expect(mockDb.messageUpdates).toHaveLength(0)
+  })
+
+  it('reports delivered=false when the Instagram channel row has no external_account_id in config', async () => {
+    mockDb.links = [
+      { channel_id: 'ch3', channel_identity: 'igsid-customer-1', channels: { channel_type: 'instagram', config: {} } },
+    ]
+    const res = await dispatchOutbound({ conversationId: 'c3', content: 'AI reply text', senderType: 'ai' })
+    expect(res.ok).toBe(true)
+    expect(res.delivered).toBe(false)
+    expect(igSends).toHaveLength(0)
   })
 })

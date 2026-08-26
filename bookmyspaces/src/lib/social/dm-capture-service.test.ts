@@ -94,6 +94,14 @@ vi.mock('@/lib/social/social-account-routing', () => ({
   ensureSocialAccountChannel: () => Promise.resolve('chan-1'),
 }))
 
+const aiReplyCalls: unknown[] = []
+vi.mock('@/lib/social/instagram-ai-reply', () => ({
+  triggerInstagramAIReply: (input: unknown) => {
+    aiReplyCalls.push(input)
+    return Promise.resolve()
+  },
+}))
+
 import { captureSocialDirectMessage } from './dm-capture-service'
 
 beforeEach(() => {
@@ -106,6 +114,7 @@ beforeEach(() => {
   captureCalls.length = 0
   qualifyCalls.length = 0
   packageRecCalls.length = 0
+  aiReplyCalls.length = 0
 })
 
 describe('captureSocialDirectMessage', () => {
@@ -212,5 +221,40 @@ describe('captureSocialDirectMessage', () => {
     expect(result).toBeNull()
     expect(captureCalls).toHaveLength(0)
     expect(recorded).toHaveLength(0)
+  })
+
+  // AI auto-reply connection — Instagram-only, reuses the existing AI layer
+  // via instagram-ai-reply.ts (mocked here; its own internals are tested in
+  // instagram-ai-reply.test.ts).
+  it('triggers the AI reply pipeline for a genuinely new Instagram message', async () => {
+    await captureSocialDirectMessage({
+      senderPsid: 'psid_7', text: 'do you have rooms available?', timestamp: null,
+      externalMessageId: 'mid_7', platform: 'instagram', recipientId: DEFAULT_RECIPIENT_ID,
+    })
+    expect(aiReplyCalls).toEqual([{ conversationId: 'conv-1', customerText: 'do you have rooms available?' }])
+  })
+
+  it('does NOT trigger the Instagram AI reply pipeline for Facebook Messenger (out of scope for this pass)', async () => {
+    await captureSocialDirectMessage({
+      senderPsid: 'psid_8', text: 'hi', timestamp: null, externalMessageId: 'mid_8', platform: 'facebook', recipientId: DEFAULT_RECIPIENT_ID,
+    })
+    expect(aiReplyCalls).toHaveLength(0)
+  })
+
+  it('does NOT trigger the AI reply pipeline for a duplicate Instagram delivery (idempotency)', async () => {
+    state.existingMessageForDedup = { id: 'msg-existing-2', conversation_id: 'conv-existing-2' }
+    await captureSocialDirectMessage({
+      senderPsid: 'psid_7', text: 'do you have rooms available?', timestamp: null,
+      externalMessageId: 'mid_7', platform: 'instagram', recipientId: DEFAULT_RECIPIENT_ID,
+    })
+    expect(aiReplyCalls).toHaveLength(0)
+  })
+
+  it('does NOT trigger the AI reply pipeline when the account is unrecognized', async () => {
+    state.connectedAccount = null
+    await captureSocialDirectMessage({
+      senderPsid: 'psid_9', text: 'hi', timestamp: null, externalMessageId: 'mid_9', platform: 'instagram', recipientId: 'unknown-account-id',
+    })
+    expect(aiReplyCalls).toHaveLength(0)
   })
 })

@@ -29,6 +29,7 @@ import { runAutoPackageRecommendation } from '@/lib/leads/auto-package-recommend
 import { logger } from '@/lib/logger'
 import type { MessagingEvent } from '@/lib/social/meta-lead-capture'
 import { findConnectedSocialAccount, ensureSocialAccountChannel } from '@/lib/social/social-account-routing'
+import { triggerInstagramAIReply } from '@/lib/social/instagram-ai-reply'
 
 export interface CaptureDMResult {
   leadId: string | null
@@ -148,6 +149,20 @@ export async function captureSocialDirectMessage(event: MessagingEvent): Promise
       externalMessageId: event.externalMessageId,
       rawPayload: { psid: event.senderPsid, platform: event.platform },
     })
+
+    // Connects the working Instagram inbound pipeline to the existing AI
+    // layer (instagram-ai-reply.ts -- no new AI system). Instagram-only:
+    // Facebook Messenger has no outbound send implementation yet, out of
+    // scope for this pass. Reached only for a genuinely new message --
+    // the externalMessageId dedup check above already returned early for
+    // any duplicate/retried delivery, so this can't double-reply.
+    // Awaited (not fire-and-forget): an un-awaited promise on Vercel's
+    // serverless runtime is not guaranteed to complete after the response
+    // is returned -- the exact bug class already documented and fixed for
+    // WhatsApp's own unified-sync call in the webhook route.
+    if (event.platform === 'instagram') {
+      await triggerInstagramAIReply({ conversationId, customerText: event.text })
+    }
 
     return { leadId, conversationId, isNewLead }
   } catch (err) {

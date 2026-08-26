@@ -8,6 +8,9 @@
 // dispatches to the channel's real transport where one exists:
 //
 //   whatsapp     → sendWhatsAppText (existing, retry+log built in)
+//   instagram    → sendInstagramMessage (Graph API, connected account's own
+//                  token; external_message_id backfilled onto the
+//                  already-recorded row on success — see the instagram case)
 //   email        → sendEmail (existing provider-agnostic email system)
 //   website_chat → recorded only; the chat widget pulls history on next
 //                  poll — there is no push transport (no websocket) yet
@@ -19,6 +22,7 @@
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { recordMessage } from '@/lib/conversations/unified-conversation-service'
 import { sendWhatsAppText } from '@/lib/whatsapp/send-message'
+import { sendInstagramMessage } from '@/lib/social/instagram-send'
 import { logger } from '@/lib/logger'
 
 export interface DispatchResult {
@@ -32,12 +36,12 @@ export interface DispatchResult {
 interface ChannelLink {
   channel_id: string
   channel_identity: string
-  channels: { channel_type: string } | { channel_type: string }[] | null
+  channels: { channel_type: string; config?: Record<string, unknown> | null } | { channel_type: string; config?: Record<string, unknown> | null }[] | null
 }
 
-function channelTypeOf(link: ChannelLink): string {
+function channelOf(link: ChannelLink): { channel_type: string; config: Record<string, unknown> | null } {
   const c = Array.isArray(link.channels) ? link.channels[0] : link.channels
-  return c?.channel_type ?? 'unknown'
+  return { channel_type: c?.channel_type ?? 'unknown', config: c?.config ?? null }
 }
 
 export async function dispatchOutbound(input: {
@@ -49,7 +53,7 @@ export async function dispatchOutbound(input: {
 
   const { data: links, error } = await supabase
     .from('unified_conversation_channels')
-    .select('channel_id, channel_identity, channels(channel_type)')
+    .select('channel_id, channel_identity, channels(channel_type, config)')
     .eq('conversation_id', input.conversationId)
     .order('last_seen_at', { ascending: false })
 
@@ -66,7 +70,7 @@ export async function dispatchOutbound(input: {
   // Reply on the most recently active channel — matches the customer's
   // latest context when a conversation spans channels.
   const link = links[0] as ChannelLink
-  const channelType = channelTypeOf(link)
+  const { channel_type: channelType, config } = channelOf(link)
 
   const messageId = await recordMessage({
     conversationId: input.conversationId,
@@ -83,6 +87,33 @@ export async function dispatchOutbound(input: {
       })
       if (!result.success) {
         logger.warn('outbound-dispatcher', 'WhatsApp send failed', { detail: result.error })
+      }
+      return {
+        ok: true,
+        messageId,
+        delivered: !!result.success,
+        channelType,
+        detail: result.success ? undefined : result.error,
+      }
+    }
+    case 'instagram': {
+      const igUserId = typeof config?.external_account_id === 'string' ? config.external_account_id : null
+      if (!igUserId) {
+        logger.error('outbound-dispatcher', 'Instagram channel row has no external_account_id in config', undefined, { channelId: link.channel_id })
+        return { ok: true, messageId, delivered: false, channelType, detail: 'instagram_channel_missing_account_id' }
+      }
+
+      const result = await sendInstagramMessage(igUserId, link.channel_identity, input.content)
+      if (!result.success) {
+        logger.warn('outbound-dispatcher', 'Instagram send failed', { detail: result.error })
+      } else if (result.externalMessageId) {
+        // Backfill the external id onto the row already recorded above —
+        // scoped to this case only, does not touch the WhatsApp path or
+        // the shared pre-record call.
+        await supabase
+          .from('unified_messages')
+          .update({ external_message_id: result.externalMessageId })
+          .eq('id', messageId)
       }
       return {
         ok: true,
