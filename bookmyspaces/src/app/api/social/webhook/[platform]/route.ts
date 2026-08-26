@@ -68,6 +68,41 @@ export async function POST(req: Request, { params }: { params: { platform: strin
 
   try {
     const payload = JSON.parse(rawBody) as Record<string, unknown>
+
+    // TEMPORARY diagnostic — structure/booleans only, never message text,
+    // ids, tokens, or secrets. Determining why a signature-passing
+    // Instagram delivery produces zero captured events. Remove once the
+    // real payload shape is confirmed and the parser (if needed) is fixed.
+    if (params.platform === 'instagram') {
+      const entries = Array.isArray(payload.entry) ? payload.entry as Record<string, unknown>[] : []
+      logger.warn('social-webhook-diag', 'instagram payload shape', {
+        topLevelKeys: Object.keys(payload),
+        entryCount: entries.length,
+        entries: entries.map((e) => {
+          const messaging = Array.isArray(e.messaging) ? e.messaging as Record<string, unknown>[] : []
+          const changes = Array.isArray(e.changes) ? e.changes as Record<string, unknown>[] : []
+          return {
+            entryKeys: Object.keys(e),
+            messagingCount: messaging.length,
+            messagingItemShapes: messaging.map((m) => ({
+              keys: Object.keys(m),
+              hasSenderId: Boolean((m.sender as Record<string, unknown> | undefined)?.id),
+              hasRecipientId: Boolean((m.recipient as Record<string, unknown> | undefined)?.id),
+              hasMessage: 'message' in m,
+              messageKeys: m.message && typeof m.message === 'object' ? Object.keys(m.message as object) : null,
+              isEcho: Boolean((m.message as Record<string, unknown> | undefined)?.is_echo),
+              hasDelivery: 'delivery' in m,
+              hasRead: 'read' in m,
+              hasPostback: 'postback' in m,
+              hasReaction: 'reaction' in m,
+            })),
+            changesCount: changes.length,
+            changeFields: changes.map((c) => c.field),
+          }
+        }),
+      })
+    }
+
     const interactions = adapter.parseWebhook(payload)
     let ingested = 0
     for (const interaction of interactions) {
