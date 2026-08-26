@@ -40,9 +40,18 @@ export class MetaAdapter implements SocialAdapter {
   }
 
   async verifyWebhook(req: Request, rawBody: string): Promise<boolean> {
-    const appSecret = process.env.META_APP_SECRET
+    // Confirmed via live diagnostic (4/4 real Meta deliveries): a native-
+    // Instagram-Login-connected account's webhooks are signed with the
+    // Instagram Login product's own app secret (META_IG_LOGIN_APP_SECRET),
+    // not the classic top-level App Secret (META_APP_SECRET) -- these are
+    // two separate credential pairs under the same Meta app (see
+    // instagram-native-config.ts's header). Facebook has no native-login
+    // equivalent in this codebase, so it keeps using META_APP_SECRET.
+    const appSecret = this.platform === 'instagram'
+      ? (process.env.META_IG_LOGIN_APP_SECRET ?? process.env.META_APP_SECRET)
+      : process.env.META_APP_SECRET
     if (!appSecret) {
-      logger.warn('meta-adapter', `${this.platform} webhook signature not verified — META_APP_SECRET unset`)
+      logger.warn('meta-adapter', `${this.platform} webhook signature not verified — no app secret configured`)
       return false
     }
     const signature = req.headers.get('x-hub-signature-256')
@@ -57,26 +66,6 @@ export class MetaAdapter implements SocialAdapter {
     // string-vs-binary comparison edge case definitively.
     const expected = crypto.createHmac('sha256', appSecret).update(rawBody, 'utf8').digest('hex')
     const provided = signature.slice('sha256='.length)
-
-    // TEMPORARY diagnostic pass — never logs a secret itself, only
-    // lengths/fingerprints/hex digests, all safe to log. Testing whether
-    // Meta signs native-Instagram-Login webhooks with the Instagram Login
-    // app secret (META_IG_LOGIN_APP_SECRET) instead of the classic
-    // top-level App Secret (META_APP_SECRET) -- both already exist in
-    // Vercel, no new secret needed. Remove once root cause is found.
-    const igLoginSecret = process.env.META_IG_LOGIN_APP_SECRET
-    const expectedWithIgLoginSecret = igLoginSecret
-      ? crypto.createHmac('sha256', igLoginSecret).update(rawBody, 'utf8').digest('hex')
-      : null
-    logger.warn('meta-adapter-diag', `${this.platform} webhook signature diagnostic`, {
-      bodyByteLength: Buffer.byteLength(rawBody, 'utf8'),
-      bodySha256: crypto.createHash('sha256').update(rawBody, 'utf8').digest('hex'),
-      receivedSignatureHeader: signature,
-      computedExpectedSignature_metaAppSecret: `sha256=${expected}`,
-      computedExpectedSignature_igLoginAppSecret: expectedWithIgLoginSecret ? `sha256=${expectedWithIgLoginSecret}` : 'META_IG_LOGIN_APP_SECRET not set',
-      matchesMetaAppSecret: `sha256=${expected}` === signature,
-      matchesIgLoginAppSecret: expectedWithIgLoginSecret ? `sha256=${expectedWithIgLoginSecret}` === signature : false,
-    })
 
     try {
       const expectedBuf = Buffer.from(expected, 'hex')

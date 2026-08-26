@@ -167,12 +167,50 @@ describe('MetaAdapter.verifyWebhook', () => {
     expect(await adapter.verifyWebhook(req, rawBody)).toBe(false)
   })
 
-  it('rejects when META_APP_SECRET is unset', async () => {
+  it('rejects when no app secret is configured', async () => {
     delete process.env.META_APP_SECRET
+    delete process.env.META_IG_LOGIN_APP_SECRET
     const adapter = new MetaAdapter('instagram')
     const rawBody = '{}'
     const req = makeRequestWithSignature(rawBody, SECRET)
     expect(await adapter.verifyWebhook(req, rawBody)).toBe(false)
+  })
+
+  // Root-cause fix: confirmed via a live diagnostic pass (4/4 real Meta
+  // deliveries) that a native-Instagram-Login-connected account's webhooks
+  // are signed with META_IG_LOGIN_APP_SECRET, not the classic top-level
+  // META_APP_SECRET -- two separate credential pairs under the same app.
+  it('uses META_IG_LOGIN_APP_SECRET for Instagram when it is set, not META_APP_SECRET', async () => {
+    process.env.META_IG_LOGIN_APP_SECRET = 'the-real-ig-login-secret'
+    const adapter = new MetaAdapter('instagram')
+    const rawBody = JSON.stringify({ entry: [{ id: '123', messaging: [] }] })
+    const req = makeRequestWithSignature(rawBody, 'the-real-ig-login-secret')
+    expect(await adapter.verifyWebhook(req, rawBody)).toBe(true)
+
+    // Signed with the classic secret instead -- must NOT validate, proving
+    // Instagram is not falling back to META_APP_SECRET when the IG Login
+    // secret is present.
+    const wrongReq = makeRequestWithSignature(rawBody, SECRET)
+    expect(await adapter.verifyWebhook(wrongReq, rawBody)).toBe(false)
+  })
+
+  it('falls back to META_APP_SECRET for Instagram when META_IG_LOGIN_APP_SECRET is not set', async () => {
+    delete process.env.META_IG_LOGIN_APP_SECRET
+    const adapter = new MetaAdapter('instagram')
+    const rawBody = JSON.stringify({ entry: [{ id: '123', messaging: [] }] })
+    const req = makeRequestWithSignature(rawBody, SECRET)
+    expect(await adapter.verifyWebhook(req, rawBody)).toBe(true)
+  })
+
+  it('Facebook always uses META_APP_SECRET, even when META_IG_LOGIN_APP_SECRET is set', async () => {
+    process.env.META_IG_LOGIN_APP_SECRET = 'the-real-ig-login-secret'
+    const adapter = new MetaAdapter('facebook')
+    const rawBody = JSON.stringify({ entry: [{ id: '123', messaging: [] }] })
+    const req = makeRequestWithSignature(rawBody, SECRET)
+    expect(await adapter.verifyWebhook(req, rawBody)).toBe(true)
+
+    const wrongReq = makeRequestWithSignature(rawBody, 'the-real-ig-login-secret')
+    expect(await adapter.verifyWebhook(wrongReq, rawBody)).toBe(false)
   })
 })
 
