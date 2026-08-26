@@ -58,16 +58,24 @@ export class MetaAdapter implements SocialAdapter {
     const expected = crypto.createHmac('sha256', appSecret).update(rawBody, 'utf8').digest('hex')
     const provided = signature.slice('sha256='.length)
 
-    // TEMPORARY diagnostic pass — never logs the secret itself, only
-    // lengths/fingerprints/hex digests, all safe to log. Remove once the
-    // root cause of the persistent signature mismatch is found.
+    // TEMPORARY diagnostic pass — never logs a secret itself, only
+    // lengths/fingerprints/hex digests, all safe to log. Testing whether
+    // Meta signs native-Instagram-Login webhooks with the Instagram Login
+    // app secret (META_IG_LOGIN_APP_SECRET) instead of the classic
+    // top-level App Secret (META_APP_SECRET) -- both already exist in
+    // Vercel, no new secret needed. Remove once root cause is found.
+    const igLoginSecret = process.env.META_IG_LOGIN_APP_SECRET
+    const expectedWithIgLoginSecret = igLoginSecret
+      ? crypto.createHmac('sha256', igLoginSecret).update(rawBody, 'utf8').digest('hex')
+      : null
     logger.warn('meta-adapter-diag', `${this.platform} webhook signature diagnostic`, {
       bodyByteLength: Buffer.byteLength(rawBody, 'utf8'),
       bodySha256: crypto.createHash('sha256').update(rawBody, 'utf8').digest('hex'),
       receivedSignatureHeader: signature,
-      computedExpectedSignature: `sha256=${expected}`,
-      secretLength: appSecret.length,
-      secretIsHex32: /^[0-9a-f]{32}$/.test(appSecret),
+      computedExpectedSignature_metaAppSecret: `sha256=${expected}`,
+      computedExpectedSignature_igLoginAppSecret: expectedWithIgLoginSecret ? `sha256=${expectedWithIgLoginSecret}` : 'META_IG_LOGIN_APP_SECRET not set',
+      matchesMetaAppSecret: `sha256=${expected}` === signature,
+      matchesIgLoginAppSecret: expectedWithIgLoginSecret ? `sha256=${expectedWithIgLoginSecret}` === signature : false,
     })
 
     try {
