@@ -75,7 +75,7 @@ export async function POST(req: Request, { params }: { params: { platform: strin
     // real payload shape is confirmed and the parser (if needed) is fixed.
     if (params.platform === 'instagram') {
       const entries = Array.isArray(payload.entry) ? payload.entry as Record<string, unknown>[] : []
-      logger.warn('social-webhook-diag', 'instagram payload shape', {
+      const shape = {
         topLevelKeys: Object.keys(payload),
         entryCount: entries.length,
         entries: entries.map((e) => {
@@ -100,7 +100,11 @@ export async function POST(req: Request, { params }: { params: { platform: strin
             changeFields: changes.map((c) => c.field),
           }
         }),
-      })
+      }
+      // Embedded as a JSON string in the message itself -- console's default
+      // object-inspection depth (2) was truncating the nested arrays as
+      // "[Array]" when passed as a structured data object instead.
+      logger.warn('social-webhook-diag', `instagram payload shape: ${JSON.stringify(shape)}`)
     }
 
     const interactions = adapter.parseWebhook(payload)
