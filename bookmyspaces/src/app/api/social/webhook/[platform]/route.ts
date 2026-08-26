@@ -68,23 +68,6 @@ export async function POST(req: Request, { params }: { params: { platform: strin
 
   try {
     const payload = JSON.parse(rawBody) as Record<string, unknown>
-
-    // TEMPORARY diagnostic — structure only (keys/counts/booleans), never
-    // message content or ids beyond what's needed to see the payload
-    // shape. Verifying why a signature-passing Instagram delivery produced
-    // zero captured events. Remove once resolved.
-    if (params.platform === 'instagram') {
-      const entries = Array.isArray(payload.entry) ? payload.entry as Record<string, unknown>[] : []
-      logger.warn('social-webhook-diag', 'instagram payload shape', {
-        entryCount: entries.length,
-        entryShapes: entries.map((e) => ({
-          keys: Object.keys(e),
-          messagingLength: Array.isArray(e.messaging) ? (e.messaging as unknown[]).length : null,
-          changesLength: Array.isArray(e.changes) ? (e.changes as unknown[]).length : null,
-        })),
-      })
-    }
-
     const interactions = adapter.parseWebhook(payload)
     let ingested = 0
     for (const interaction of interactions) {
