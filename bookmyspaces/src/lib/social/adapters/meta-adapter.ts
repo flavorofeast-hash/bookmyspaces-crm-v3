@@ -57,6 +57,19 @@ export class MetaAdapter implements SocialAdapter {
     // string-vs-binary comparison edge case definitively.
     const expected = crypto.createHmac('sha256', appSecret).update(rawBody, 'utf8').digest('hex')
     const provided = signature.slice('sha256='.length)
+
+    // TEMPORARY diagnostic pass — never logs the secret itself, only
+    // lengths/fingerprints/hex digests, all safe to log. Remove once the
+    // root cause of the persistent signature mismatch is found.
+    logger.warn('meta-adapter-diag', `${this.platform} webhook signature diagnostic`, {
+      bodyByteLength: Buffer.byteLength(rawBody, 'utf8'),
+      bodySha256: crypto.createHash('sha256').update(rawBody, 'utf8').digest('hex'),
+      receivedSignatureHeader: signature,
+      computedExpectedSignature: `sha256=${expected}`,
+      secretLength: appSecret.length,
+      secretIsHex32: /^[0-9a-f]{32}$/.test(appSecret),
+    })
+
     try {
       const expectedBuf = Buffer.from(expected, 'hex')
       const providedBuf = Buffer.from(provided, 'hex')
