@@ -50,10 +50,16 @@ export class MetaAdapter implements SocialAdapter {
       logger.warn('meta-adapter', `${this.platform} webhook rejected — missing/malformed x-hub-signature-256 header`)
       return false
     }
-    const expected = 'sha256=' + crypto.createHmac('sha256', appSecret).update(rawBody).digest('hex')
+    // Compare raw digest bytes (hex-decoded), same as verify-signature.ts's
+    // proven WhatsApp implementation -- not the "sha256="-prefixed strings
+    // as UTF-8 text. Mathematically equivalent for a genuinely matching
+    // signature, but this is the canonical form and rules out any
+    // string-vs-binary comparison edge case definitively.
+    const expected = crypto.createHmac('sha256', appSecret).update(rawBody, 'utf8').digest('hex')
+    const provided = signature.slice('sha256='.length)
     try {
-      const expectedBuf = Buffer.from(expected)
-      const providedBuf = Buffer.from(signature)
+      const expectedBuf = Buffer.from(expected, 'hex')
+      const providedBuf = Buffer.from(provided, 'hex')
       if (expectedBuf.length !== providedBuf.length) {
         logger.warn('meta-adapter', `${this.platform} webhook rejected — signature length mismatch`)
         return false

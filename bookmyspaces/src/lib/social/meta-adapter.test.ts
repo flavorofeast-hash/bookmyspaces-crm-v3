@@ -1,6 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import crypto from 'crypto'
 import { MetaAdapter } from './adapters/meta-adapter'
 import { classifySentiment } from './interaction-service'
+
+function makeRequestWithSignature(rawBody: string, secret: string) {
+  const sig = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex')
+  return new Request('https://crm.bookmyspaces.in/api/social/webhook/instagram', {
+    method: 'POST',
+    headers: { 'x-hub-signature-256': sig },
+  })
+}
 
 describe('MetaAdapter.parseWebhook', () => {
   const adapter = new MetaAdapter('facebook')
@@ -110,6 +119,60 @@ describe('MetaAdapter.publishPost (configured)', () => {
     const result = await adapter.publishPost({ postType: 'text', content: 'No image', media: [] })
     expect(result.ok).toBe(false)
     expect(result.error).toContain('instagram_requires_media')
+  })
+})
+
+describe('MetaAdapter.verifyWebhook', () => {
+  const ORIGINAL_ENV = { ...process.env }
+  const SECRET = 'test-app-secret-not-real'
+
+  beforeEach(() => {
+    process.env.META_APP_SECRET = SECRET
+  })
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV }
+  })
+
+  // Regression guard for the raw-body/comparison-encoding harmonization
+  // pass -- a genuinely correct secret + matching signature must validate,
+  // via the same hex-decoded-buffer comparison verify-signature.ts (the
+  // WhatsApp webhook) already uses.
+  it('accepts a correctly signed payload', async () => {
+    const adapter = new MetaAdapter('instagram')
+    const rawBody = JSON.stringify({ entry: [{ id: '123', messaging: [] }] })
+    const req = makeRequestWithSignature(rawBody, SECRET)
+    expect(await adapter.verifyWebhook(req, rawBody)).toBe(true)
+  })
+
+  it('rejects a payload signed with the wrong secret', async () => {
+    const adapter = new MetaAdapter('instagram')
+    const rawBody = JSON.stringify({ entry: [{ id: '123', messaging: [] }] })
+    const req = makeRequestWithSignature(rawBody, 'a-different-secret')
+    expect(await adapter.verifyWebhook(req, rawBody)).toBe(false)
+  })
+
+  it('rejects when the raw body does not match what was signed (tampered/re-serialized)', async () => {
+    const adapter = new MetaAdapter('instagram')
+    const signedBody = JSON.stringify({ entry: [{ id: '123', messaging: [] }] })
+    const req = makeRequestWithSignature(signedBody, SECRET)
+    const tamperedBody = JSON.stringify({ entry: [{ id: '999', messaging: [] }] })
+    expect(await adapter.verifyWebhook(req, tamperedBody)).toBe(false)
+  })
+
+  it('rejects a missing signature header', async () => {
+    const adapter = new MetaAdapter('instagram')
+    const rawBody = '{}'
+    const req = new Request('https://crm.bookmyspaces.in/api/social/webhook/instagram', { method: 'POST' })
+    expect(await adapter.verifyWebhook(req, rawBody)).toBe(false)
+  })
+
+  it('rejects when META_APP_SECRET is unset', async () => {
+    delete process.env.META_APP_SECRET
+    const adapter = new MetaAdapter('instagram')
+    const rawBody = '{}'
+    const req = makeRequestWithSignature(rawBody, SECRET)
+    expect(await adapter.verifyWebhook(req, rawBody)).toBe(false)
   })
 })
 
