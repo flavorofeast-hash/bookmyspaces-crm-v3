@@ -1,17 +1,35 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // FILE: src/lib/messaging/format-message.ts
 // The single reusable formatter every outgoing customer-facing message
-// (WhatsApp AI, WhatsApp templates, website chat) is routed through.
-// Presentation only -- does not decide whether/when to send, or what a
-// reply says; callers still own that. WhatsApp Markdown subset only
-// (*bold*, _italic_) -- no #headers, no []() links, no tables, since
-// WhatsApp doesn't render those and the website widget renders this same
-// text verbatim as its canonical source.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const BRAND_HEADER = '🏨 *BookMySpaces*'
-const DIVIDER = '━━━━━━━━━━━━━━'
+// (WhatsApp AI, Instagram/Facebook AI, WhatsApp templates, website chat) is
+// routed through. Presentation only -- does not decide whether/when to
+// send, or what a reply says; callers still own that. WhatsApp Markdown
+// subset only (*bold*, _italic_) -- no #headers, no []() links, no tables,
+// since WhatsApp doesn't render those and the website widget renders this
+// same text verbatim as its canonical source.
+//
+// No brand header or top/bottom divider box (removed -- was the source of
+// every message being wrapped in a decorative "━━━━" line at top and
+// bottom). A repeated brand banner + box on every single message read as
+// robotic boilerplate, not a warm concierge reply. The actual tone/emoji
+// warmth comes from the AI's own system prompt (src/lib/ai.ts); this
+// function only assembles heading/body/handover/closing structure.
 const WORD_LIMIT = 180
+
+// Matches a line made up almost entirely of repeated dash/underscore/box-
+// drawing/rule characters (────, ----, ____, ═══, ***, ...) -- the
+// decorative separator style this formatter must never produce, and a
+// safety net in case a caller's raw text (AI-generated or otherwise) still
+// contains one despite the system prompt instructing against it. No `g`
+// flag -- tested once per line, not searched globally within a string.
+const SEPARATOR_LINE = /^[ \t]*[-_─━=*~]{3,}[ \t]*$/
+
+function stripSeparatorLines(text: string): string {
+  return text
+    .split('\n')
+    .filter((line) => !SEPARATOR_LINE.test(line))
+    .join('\n')
+}
 
 // Exact copy from spec -- shown only when the caller explicitly asks for it
 // (see includeHandover), never invented or triggered by this file itself.
@@ -29,7 +47,7 @@ export const HUMAN_HANDOVER_BLOCK =
 🌐 www.bookmyspaces.in`
 
 export interface FormattedMessage {
-  /** Bold section heading, e.g. "Welcome" -- optional, brand header already covers the top. */
+  /** Bold section heading, e.g. "👋 Welcome" -- optional. */
   heading?: string
   /** One or more paragraphs. Rendered with a blank line between each. */
   body: string | string[]
@@ -75,7 +93,7 @@ function stripBackendTags(text: string): string {
 
 export function formatMessage(input: FormattedMessage): string {
   const bodyParagraphs = (Array.isArray(input.body) ? input.body : [input.body])
-    .map((p) => stripBackendTags(p).trim())
+    .map((p) => stripSeparatorLines(stripBackendTags(p)).trim())
     .filter(Boolean)
   const bodyText = bodyParagraphs.join('\n\n')
 
@@ -110,5 +128,5 @@ export function formatMessage(input: FormattedMessage): string {
       .join('\n\n')
   }
 
-  return `${BRAND_HEADER}\n\n${DIVIDER}\n\n${content}\n\n${DIVIDER}`
+  return content
 }
