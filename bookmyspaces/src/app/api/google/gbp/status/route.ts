@@ -23,6 +23,7 @@ interface StoredGbpSettings {
   expires_at?: string
   connected_at?: string
   locations?: Array<{ externalId: string; displayName: string }>
+  discovery_diagnostic?: unknown
 }
 
 export async function GET() {
@@ -55,6 +56,10 @@ export async function GET() {
       scope: value.scope ?? null,
       expiresAt: value.expires_at ?? null,
       locations: value.locations ?? [],
+      // Distinguishes "OAuth connected" from "location discovery
+      // succeeded" -- the two are different states (see settings page).
+      // Never contains a token; only HTTP status/Google error text.
+      discoveryDiagnostic: value.discovery_diagnostic ?? null,
     })
   } catch (err) {
     logger.error('gbp-oauth', 'status: unhandled exception', err)

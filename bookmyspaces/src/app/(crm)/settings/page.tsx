@@ -15,6 +15,7 @@ import {
   Globe,
   Key,
   Link2,
+  RefreshCw,
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -68,11 +69,25 @@ interface GbpLocation {
   displayName: string
 }
 
+interface GbpDiscoveryError {
+  httpStatus: number
+  googleErrorStatus: string | null
+  googleErrorMessage: string | null
+}
+
+interface GbpDiscoveryDiagnostic {
+  accountsHttpStatus: number | null
+  accountsError: GbpDiscoveryError | null
+  accountCount: number
+  totalLocationCount: number
+}
+
 interface GbpStatus {
   connected: boolean
   connectedAt?: string
   scope?: string
   locations: GbpLocation[]
+  discoveryDiagnostic?: GbpDiscoveryDiagnostic | null
 }
 
 // ─── Defaults ─────────────────────────────────────────────────────────────────
@@ -247,6 +262,7 @@ export default function SettingsPage() {
   // Google Business connection status ("GBP account -> location -> CRM").
   const [gbpStatus, setGbpStatus] = useState<GbpStatus | null>(null)
   const [gbpStatusLoading, setGbpStatusLoading] = useState(true)
+  const [gbpSyncing, setGbpSyncing] = useState(false)
   const [gbpBanner, setGbpBanner] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
 
   // Load persisted settings from the backend (V3 Phase 2a — replaces the old
@@ -272,27 +288,80 @@ export default function SettingsPage() {
 
   // Google Business connection status — fetched on mount, and after the
   // OAuth callback redirects back here with ?gbp_connected=1 / ?gbp_error=.
+  //
+  // "OAuth connected" and "locations discovered" are deliberately treated as
+  // two separate states here: a successful redirect only proves the token
+  // exchange worked, not that Google returned any Business Profile
+  // locations. The success/error banner is decided AFTER the status fetch
+  // resolves, using the real discovery result — never assumed from the
+  // redirect alone.
   useEffect(() => {
-    function loadGbpStatus() {
-      setGbpStatusLoading(true)
-      fetch('/api/google/gbp/status')
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-        .then((json) => setGbpStatus(json))
-        .catch(() => setGbpStatus(null))
-        .finally(() => setGbpStatusLoading(false))
-    }
-    loadGbpStatus()
-
     const params = new URLSearchParams(window.location.search)
-    if (params.get('gbp_connected')) {
-      setGbpBanner({ kind: 'success', message: 'Google Business connected.' })
-      loadGbpStatus()
+    const cameFromOAuth = params.get('gbp_connected')
+    const oauthError = params.get('gbp_error')
+    if (cameFromOAuth || oauthError) {
       window.history.replaceState({}, '', window.location.pathname)
-    } else if (params.get('gbp_error')) {
-      setGbpBanner({ kind: 'error', message: `Failed to connect Google Business: ${params.get('gbp_error')}` })
-      window.history.replaceState({}, '', window.location.pathname)
+    }
+
+    setGbpStatusLoading(true)
+    fetch('/api/google/gbp/status')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((json: GbpStatus) => {
+        setGbpStatus(json)
+        if (cameFromOAuth && json.connected) {
+          if (json.locations.length > 0) {
+            setGbpBanner({
+              kind: 'success',
+              message: `Google Business connected — ${json.locations.length} location${json.locations.length === 1 ? '' : 's'} discovered.`,
+            })
+          } else {
+            const errMsg = json.discoveryDiagnostic?.accountsError?.googleErrorMessage
+            setGbpBanner({
+              kind: 'error',
+              message: errMsg
+                ? `Google account connected, but location discovery failed: ${errMsg}`
+                : 'Google account connected, but no locations were discovered yet. See details below, or try "Sync now".',
+            })
+          }
+        }
+      })
+      .catch(() => setGbpStatus(null))
+      .finally(() => setGbpStatusLoading(false))
+
+    if (oauthError) {
+      setGbpBanner({ kind: 'error', message: `Failed to connect Google Business: ${oauthError}` })
     }
   }, [])
+
+  async function handleGbpSyncNow() {
+    setGbpSyncing(true)
+    setGbpBanner(null)
+    try {
+      const res = await fetch('/api/google/gbp/sync-locations')
+      const json = await res.json()
+      if (!res.ok) {
+        setGbpBanner({ kind: 'error', message: `Sync failed: ${json?.error ?? res.status}` })
+        return
+      }
+      setGbpStatus((prev) => (prev ? { ...prev, locations: json.locations, discoveryDiagnostic: json.diagnostic } : prev))
+      if (json.locations.length > 0) {
+        setGbpBanner({
+          kind: 'success',
+          message: `${json.locations.length} location${json.locations.length === 1 ? '' : 's'} synced.`,
+        })
+      } else {
+        const errMsg = json.diagnostic?.accountsError?.googleErrorMessage
+        setGbpBanner({
+          kind: 'error',
+          message: errMsg ? `Sync ran, but Google reported an error: ${errMsg}` : 'Sync ran, but found zero locations for this Google account.',
+        })
+      }
+    } catch {
+      setGbpBanner({ kind: 'error', message: 'Sync failed: network error' })
+    } finally {
+      setGbpSyncing(false)
+    }
+  }
 
   function updateVenue(key: keyof VenueSettings, value: string | number) {
     setSettings((prev) => ({
@@ -743,12 +812,24 @@ export default function SettingsPage() {
 
               {!gbpStatusLoading && gbpStatus?.connected && (
                 <div className="mt-4 pt-4 border-t border-gray-100">
-                  <p className="text-xs font-medium text-gray-500 mb-2">
-                    {gbpStatus.locations.length > 0
-                      ? `${gbpStatus.locations.length} location${gbpStatus.locations.length === 1 ? '' : 's'} discovered`
-                      : 'No locations discovered yet'}
-                  </p>
-                  {gbpStatus.locations.length > 0 && (
+                  <div className="flex items-center justify-between gap-4 mb-2">
+                    <p className="text-xs font-medium text-gray-500">
+                      {gbpStatus.locations.length > 0
+                        ? `${gbpStatus.locations.length} location${gbpStatus.locations.length === 1 ? '' : 's'} discovered`
+                        : 'Location discovery: no locations found'}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleGbpSyncNow}
+                      disabled={gbpSyncing}
+                      className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${gbpSyncing ? 'animate-spin' : ''}`} />
+                      {gbpSyncing ? 'Syncing…' : 'Sync now'}
+                    </button>
+                  </div>
+
+                  {gbpStatus.locations.length > 0 ? (
                     <ul className="space-y-1">
                       {gbpStatus.locations.map((loc) => (
                         <li key={loc.externalId} className="text-sm text-gray-700 flex items-center gap-2">
@@ -756,6 +837,30 @@ export default function SettingsPage() {
                         </li>
                       ))}
                     </ul>
+                  ) : (
+                    <div className="text-xs rounded-lg px-3 py-2 bg-amber-50 border border-amber-200 text-amber-800">
+                      {gbpStatus.discoveryDiagnostic?.accountsError ? (
+                        <>
+                          <p className="font-medium">Google reported an error while discovering locations:</p>
+                          <p className="mt-1 font-mono text-[11px] break-words">
+                            {gbpStatus.discoveryDiagnostic.accountsError.googleErrorStatus ?? 'ERROR'}
+                            {gbpStatus.discoveryDiagnostic.accountsError.googleErrorMessage
+                              ? `: ${gbpStatus.discoveryDiagnostic.accountsError.googleErrorMessage}`
+                              : ''}
+                          </p>
+                        </>
+                      ) : gbpStatus.discoveryDiagnostic ? (
+                        <p>
+                          The Google account is connected, but Google returned {gbpStatus.discoveryDiagnostic.accountCount} Business
+                          Profile account{gbpStatus.discoveryDiagnostic.accountCount === 1 ? '' : 's'} and{' '}
+                          {gbpStatus.discoveryDiagnostic.totalLocationCount} location
+                          {gbpStatus.discoveryDiagnostic.totalLocationCount === 1 ? '' : 's'}. Click &quot;Sync now&quot; to retry, or
+                          verify this Google account has access to a Business Profile.
+                        </p>
+                      ) : (
+                        <p>No locations discovered yet. Click &quot;Sync now&quot; to check again.</p>
+                      )}
+                    </div>
                   )}
                 </div>
               )}

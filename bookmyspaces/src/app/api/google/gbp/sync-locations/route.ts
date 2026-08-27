@@ -45,7 +45,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: tokenResult.error }, { status: tokenResult.error === 'not_connected' ? 404 : 502 })
   }
 
-  const locations = await discoverAccountsAndLocations(tokenResult.accessToken)
+  const { locations, diagnostic } = await discoverAccountsAndLocations(tokenResult.accessToken)
 
   const db = getSupabaseAdmin()
   const { data: existing } = await db
@@ -61,7 +61,7 @@ export async function GET(req: NextRequest) {
 
   const { error: saveError } = await db
     .from('settings')
-    .update({ value: { ...(existing.value as Record<string, unknown>), locations } })
+    .update({ value: { ...(existing.value as Record<string, unknown>), locations, discovery_diagnostic: diagnostic } })
     .eq('category', SETTINGS_CATEGORY)
     .eq('key', SETTINGS_KEY)
 
@@ -70,6 +70,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'save_failed' }, { status: 500 })
   }
 
-  logger.info('gbp-oauth', 'sync-locations: locations resynced', { locationCount: locations.length })
-  return NextResponse.json({ locationCount: locations.length, locations })
+  logger.info('gbp-oauth', 'sync-locations: locations resynced', {
+    locationCount: locations.length,
+    accountCount: diagnostic.accountCount,
+    accountsHttpStatus: diagnostic.accountsHttpStatus,
+    accountsErrorStatus: diagnostic.accountsError?.googleErrorStatus ?? null,
+    accountsErrorMessage: diagnostic.accountsError?.googleErrorMessage ?? null,
+  })
+  return NextResponse.json({ locationCount: locations.length, locations, diagnostic })
 }

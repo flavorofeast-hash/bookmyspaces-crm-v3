@@ -1,10 +1,23 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // FILE: src/lib/google/gbp-client.ts
-// Google Business Profile API calls -- account/location discovery,
-// extracted verbatim (no behavior change) from callback/route.ts so
-// gbp-sync-locations (a new re-sync endpoint, no fresh OAuth consent
-// required) can reuse it instead of duplicating account/location discovery
-// a second time.
+// Google Business Profile API calls -- account/location discovery.
+//
+// Endpoints verified live against Google's current API reference during
+// this pass (not assumed):
+//   accounts.list   -> GET https://mybusinessaccountmanagement.googleapis.com/v1/accounts
+//   locations.list  -> GET https://mybusinessbusinessinformation.googleapis.com/v1/{account}/locations?readMask=...
+// These are two SEPARATE Google Cloud APIs ("My Business Account
+// Management API" and "My Business Business Information API") that must
+// each be individually enabled in the Cloud project -- a valid OAuth scope
+// (business.manage) does not imply either API is enabled. A documented,
+// common real-world failure: Account Management API not enabled/quota=0
+// blocks accounts.list even when Business Information API works fine.
+//
+// Returns full diagnostics alongside the discovered locations so a zero-
+// location result is never silently indistinguishable from "no Business
+// Profile" vs "API not enabled" vs "wrong scope" vs a transient error --
+// exactly the ambiguity that made the original "No locations discovered
+// yet" UI unable to say anything more specific.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { logger } from '@/lib/logger'
@@ -15,18 +28,52 @@ export interface DiscoveredLocation {
   displayName: string
 }
 
+export interface AccountDiscoveryError {
+  httpStatus: number
+  googleErrorStatus: string | null
+  googleErrorMessage: string | null
+}
+
+export interface PerAccountResult {
+  accountName: string
+  locationsHttpStatus: number
+  locationCount: number
+  error: AccountDiscoveryError | null
+}
+
+export interface DiscoveryDiagnostic {
+  accountsHttpStatus: number | null
+  accountsError: AccountDiscoveryError | null
+  accountCount: number
+  perAccount: PerAccountResult[]
+  totalLocationCount: number
+  /** ISO timestamp of this discovery attempt -- lets the UI show "last checked" even when it found nothing. */
+  attemptedAt: string
+}
+
+export interface DiscoveryOutcome {
+  locations: DiscoveredLocation[]
+  diagnostic: DiscoveryDiagnostic
+}
+
+function extractGoogleError(json: { error?: { code?: number; status?: string; message?: string } }): AccountDiscoveryError | null {
+  if (!json.error) return null
+  return {
+    httpStatus: json.error.code ?? 0,
+    googleErrorStatus: json.error.status ?? null,
+    googleErrorMessage: json.error.message ?? null,
+  }
+}
+
 /**
  * Completes the "GBP account -> location" step of the connect flow.
- * Business Information API shapes match what
- * src/lib/social/oauth/oauth-service.ts's (now-removed) google_business
- * branch already used for the same purpose before the Facebook/Instagram
- * connector recovery pass trimmed that file down to Facebook/Instagram
- * only -- same endpoints, reused here rather than re-derived from scratch.
  * Never throws: a discovery failure must not lose an otherwise-successful
  * token exchange/refresh, since the token is still useful (e.g. to retry
  * discovery later) even if this step fails today.
  */
-export async function discoverAccountsAndLocations(accessToken: string): Promise<DiscoveredLocation[]> {
+export async function discoverAccountsAndLocations(accessToken: string): Promise<DiscoveryOutcome> {
+  const attemptedAt = new Date().toISOString()
+
   try {
     const accountsRes = await fetch('https://mybusinessaccountmanagement.googleapis.com/v1/accounts', {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -36,6 +83,7 @@ export async function discoverAccountsAndLocations(accessToken: string): Promise
       error?: { code?: number; status?: string; message?: string }
     }
     const accounts = accountsJson.accounts ?? []
+    const accountsError = extractGoogleError(accountsJson)
 
     // Logged, not fixed silently, because the actual cause (API not enabled
     // vs. no Business Profile on this Google account vs. something else)
@@ -44,19 +92,32 @@ export async function discoverAccountsAndLocations(accessToken: string): Promise
     if (!accountsRes.ok) {
       logger.error('gbp-oauth', 'discoverAccountsAndLocations: accounts.list call failed', undefined, {
         status: accountsRes.status,
-        googleErrorStatus: accountsJson.error?.status,
-        googleErrorMessage: accountsJson.error?.message,
+        googleErrorStatus: accountsError?.googleErrorStatus ?? null,
+        googleErrorMessage: accountsError?.googleErrorMessage ?? null,
       })
-      return []
+      return {
+        locations: [],
+        diagnostic: {
+          accountsHttpStatus: accountsRes.status, accountsError, accountCount: 0,
+          perAccount: [], totalLocationCount: 0, attemptedAt,
+        },
+      }
     }
     if (accounts.length === 0) {
       logger.warn('gbp-oauth', 'discoverAccountsAndLocations: accounts.list succeeded but returned zero Business Profile accounts for this Google account', {
         status: accountsRes.status,
       })
-      return []
+      return {
+        locations: [],
+        diagnostic: {
+          accountsHttpStatus: accountsRes.status, accountsError: null, accountCount: 0,
+          perAccount: [], totalLocationCount: 0, attemptedAt,
+        },
+      }
     }
 
     const results: DiscoveredLocation[] = []
+    const perAccount: PerAccountResult[] = []
     for (const account of accounts) {
       const locationsRes = await fetch(
         `https://mybusinessbusinessinformation.googleapis.com/v1/${account.name}/locations?readMask=name,title`,
@@ -66,29 +127,46 @@ export async function discoverAccountsAndLocations(accessToken: string): Promise
         locations?: Array<{ name: string; title?: string }>
         error?: { code?: number; status?: string; message?: string }
       }
+      const locationsError = extractGoogleError(locationsJson)
       if (!locationsRes.ok) {
         logger.error('gbp-oauth', 'discoverAccountsAndLocations: locations.list call failed for an account', undefined, {
           account: account.name,
           status: locationsRes.status,
-          googleErrorStatus: locationsJson.error?.status,
-          googleErrorMessage: locationsJson.error?.message,
+          googleErrorStatus: locationsError?.googleErrorStatus ?? null,
+          googleErrorMessage: locationsError?.googleErrorMessage ?? null,
         })
+        perAccount.push({ accountName: account.name, locationsHttpStatus: locationsRes.status, locationCount: 0, error: locationsError })
         continue
       }
-      for (const loc of locationsJson.locations ?? []) {
+      const foundHere = locationsJson.locations ?? []
+      for (const loc of foundHere) {
         results.push({
           externalId: `${account.name}/${loc.name}`,
           displayName: loc.title ?? account.accountName ?? 'Google Business Profile',
         })
       }
+      perAccount.push({ accountName: account.name, locationsHttpStatus: locationsRes.status, locationCount: foundHere.length, error: null })
     }
     logger.info('gbp-oauth', 'discoverAccountsAndLocations: discovery complete', {
       accountCount: accounts.length,
       locationCount: results.length,
     })
-    return results
+    return {
+      locations: results,
+      diagnostic: {
+        accountsHttpStatus: accountsRes.status, accountsError: null, accountCount: accounts.length,
+        perAccount, totalLocationCount: results.length, attemptedAt,
+      },
+    }
   } catch (err) {
     logger.error('gbp-oauth', 'discoverAccountsAndLocations: account/location discovery failed (non-fatal, token already exchanged)', err)
-    return []
+    return {
+      locations: [],
+      diagnostic: {
+        accountsHttpStatus: null,
+        accountsError: { httpStatus: 0, googleErrorStatus: 'EXCEPTION', googleErrorMessage: err instanceof Error ? err.message : String(err) },
+        accountCount: 0, perAccount: [], totalLocationCount: 0, attemptedAt,
+      },
+    }
   }
 }

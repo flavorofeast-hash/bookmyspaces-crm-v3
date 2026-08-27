@@ -112,12 +112,29 @@ export async function GET(req: NextRequest) {
 
     const tokens = (await tokenRes.json()) as GoogleTokenResponse
 
+    logger.info('gbp-oauth', 'callback: token exchange succeeded', {
+      hasRefreshToken: Boolean(tokens.refresh_token),
+      scope: tokens.scope,
+      tokenType: tokens.token_type,
+    })
+
+    // Verify the GRANTED scope, not just that OAuth succeeded -- Google can
+    // return a token whose actual scope differs from what was requested.
+    // Non-fatal (discovery below will surface the real failure mode if this
+    // is actually the cause), but logged distinctly so it's not confused
+    // with an API-not-enabled or no-Business-Profile failure.
+    if (!tokens.scope?.includes('business.manage')) {
+      logger.error('gbp-oauth', 'callback: granted scope does not include business.manage — discovery will likely fail', undefined, {
+        grantedScope: tokens.scope,
+      })
+    }
+
     // Completes the flow's last leg -- "GBP account -> location" -- before
     // persisting, so the CRM (via /api/google/gbp/status) has something
     // real to show immediately after connecting, not just "connected: true"
-    // with no location. Best-effort: an empty array here still means the
+    // with no location. Best-effort: an empty result here still means the
     // token itself saves fine; discoverAccountsAndLocations() never throws.
-    const locations = await discoverAccountsAndLocations(tokens.access_token)
+    const { locations, diagnostic } = await discoverAccountsAndLocations(tokens.access_token)
 
     const db = getSupabaseAdmin()
     const { error: saveError } = await db
@@ -134,6 +151,7 @@ export async function GET(req: NextRequest) {
             expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
             connected_at: new Date().toISOString(),
             locations,
+            discovery_diagnostic: diagnostic,
           },
           updated_by: auth.user.email ?? auth.user.id,
         },
@@ -149,7 +167,11 @@ export async function GET(req: NextRequest) {
       by: auth.user.email ?? auth.user.id,
       hasRefreshToken: Boolean(tokens.refresh_token),
       scope: tokens.scope,
+      accountCount: diagnostic.accountCount,
       locationCount: locations.length,
+      accountsHttpStatus: diagnostic.accountsHttpStatus,
+      accountsErrorStatus: diagnostic.accountsError?.googleErrorStatus ?? null,
+      accountsErrorMessage: diagnostic.accountsError?.googleErrorMessage ?? null,
     })
 
     return redirectResult('gbp_connected=1')
