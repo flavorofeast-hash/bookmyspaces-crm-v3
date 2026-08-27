@@ -20,6 +20,18 @@
 // "foundation" pass; which Google account/location this token belongs to,
 // refresh-token rotation, and multi-location support are explicitly out
 // of scope here (see connect/route.ts header).
+//
+// IMPORTANT -- this route does NOT call the Google Business Profile
+// discovery APIs (accounts.list / locations.list). It only exchanges the
+// code for tokens and stores them. Discovery is strictly user-initiated
+// from Settings -> Integrations -> "Sync now" (see ../sync-locations/route.ts).
+// This was a deliberate fix: this route used to call discovery
+// automatically on every connect/reconnect, which is an extra,
+// non-user-visible call to a Google API (mybusinessaccountmanagement.googleapis.com)
+// that has an easily-exhausted per-minute quota -- burning it on a page a
+// user didn't explicitly ask to sync was unnecessary and made the quota
+// error harder to reason about. Any locations/diagnostic from a prior sync
+// are preserved across a reconnect rather than wiped.
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -29,7 +41,6 @@ import { requireRole } from '@/lib/auth-guard'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { logger } from '@/lib/logger'
 import { decodeGbpOAuthState } from '@/lib/google/gbp-oauth-state'
-import { discoverAccountsAndLocations } from '@/lib/google/gbp-client'
 import { encryptGbpToken as encryptToken } from '@/lib/google/gbp-crypto'
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
@@ -120,23 +131,28 @@ export async function GET(req: NextRequest) {
 
     // Verify the GRANTED scope, not just that OAuth succeeded -- Google can
     // return a token whose actual scope differs from what was requested.
-    // Non-fatal (discovery below will surface the real failure mode if this
-    // is actually the cause), but logged distinctly so it's not confused
-    // with an API-not-enabled or no-Business-Profile failure.
+    // Non-fatal (the user's later "Sync now" will surface the real failure
+    // mode if this is actually the cause), but logged distinctly so it's
+    // not confused with an API-not-enabled or no-Business-Profile failure.
     if (!tokens.scope?.includes('business.manage')) {
       logger.error('gbp-oauth', 'callback: granted scope does not include business.manage — discovery will likely fail', undefined, {
         grantedScope: tokens.scope,
       })
     }
 
-    // Completes the flow's last leg -- "GBP account -> location" -- before
-    // persisting, so the CRM (via /api/google/gbp/status) has something
-    // real to show immediately after connecting, not just "connected: true"
-    // with no location. Best-effort: an empty result here still means the
-    // token itself saves fine; discoverAccountsAndLocations() never throws.
-    const { locations, diagnostic } = await discoverAccountsAndLocations(tokens.access_token)
-
     const db = getSupabaseAdmin()
+
+    // Preserve any locations/diagnostic from a PRIOR sync across a
+    // reconnect -- reconnecting only refreshes the token, it is not itself
+    // a discovery attempt (see file header).
+    const { data: existingRow } = await db
+      .from('settings')
+      .select('value')
+      .eq('category', SETTINGS_CATEGORY)
+      .eq('key', SETTINGS_KEY)
+      .maybeSingle()
+    const existingValue = (existingRow?.value as Record<string, unknown>) ?? {}
+
     const { error: saveError } = await db
       .from('settings')
       .upsert(
@@ -144,14 +160,13 @@ export async function GET(req: NextRequest) {
           category: SETTINGS_CATEGORY,
           key: SETTINGS_KEY,
           value: {
+            ...existingValue,
             access_token_enc: encryptToken(tokens.access_token),
-            refresh_token_enc: tokens.refresh_token ? encryptToken(tokens.refresh_token) : null,
+            refresh_token_enc: tokens.refresh_token ? encryptToken(tokens.refresh_token) : (existingValue.refresh_token_enc ?? null),
             scope: tokens.scope,
             token_type: tokens.token_type,
             expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
             connected_at: new Date().toISOString(),
-            locations,
-            discovery_diagnostic: diagnostic,
           },
           updated_by: auth.user.email ?? auth.user.id,
         },
@@ -163,15 +178,10 @@ export async function GET(req: NextRequest) {
       return redirectResult('gbp_error=save_failed')
     }
 
-    logger.info('gbp-oauth', 'callback: connected and tokens stored', {
+    logger.info('gbp-oauth', 'callback: connected and tokens stored (discovery NOT run automatically -- user must click "Sync now")', {
       by: auth.user.email ?? auth.user.id,
       hasRefreshToken: Boolean(tokens.refresh_token),
       scope: tokens.scope,
-      accountCount: diagnostic.accountCount,
-      locationCount: locations.length,
-      accountsHttpStatus: diagnostic.accountsHttpStatus,
-      accountsErrorStatus: diagnostic.accountsError?.googleErrorStatus ?? null,
-      accountsErrorMessage: diagnostic.accountsError?.googleErrorMessage ?? null,
     })
 
     return redirectResult('gbp_connected=1')

@@ -262,7 +262,12 @@ export default function SettingsPage() {
   // Google Business connection status ("GBP account -> location -> CRM").
   const [gbpStatus, setGbpStatus] = useState<GbpStatus | null>(null)
   const [gbpStatusLoading, setGbpStatusLoading] = useState(true)
+  // Set when a status fetch fails — kept SEPARATE from gbpStatus itself so a
+  // transient network error is never rendered as "not connected": that
+  // would be a false, client-invented state the backend never reported.
+  const [gbpStatusFetchFailed, setGbpStatusFetchFailed] = useState(false)
   const [gbpSyncing, setGbpSyncing] = useState(false)
+  const [gbpThrottleMs, setGbpThrottleMs] = useState<number | null>(null)
   const [gbpBanner, setGbpBanner] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
 
   // Load persisted settings from the backend (V3 Phase 2a — replaces the old
@@ -289,12 +294,12 @@ export default function SettingsPage() {
   // Google Business connection status — fetched on mount, and after the
   // OAuth callback redirects back here with ?gbp_connected=1 / ?gbp_error=.
   //
-  // "OAuth connected" and "locations discovered" are deliberately treated as
-  // two separate states here: a successful redirect only proves the token
-  // exchange worked, not that Google returned any Business Profile
-  // locations. The success/error banner is decided AFTER the status fetch
-  // resolves, using the real discovery result — never assumed from the
-  // redirect alone.
+  // "OAuth connected" and "locations discovered" are two separate states,
+  // enforced end to end: the callback route no longer calls Google's
+  // discovery APIs at all (accounts.list / locations.list are ONLY ever
+  // called from handleGbpSyncNow below, i.e. an explicit user click).
+  // So a successful redirect here means nothing more than "the token was
+  // stored" — it never implies discovery ran or succeeded.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const cameFromOAuth = params.get('gbp_connected')
@@ -303,42 +308,45 @@ export default function SettingsPage() {
       window.history.replaceState({}, '', window.location.pathname)
     }
 
+    if (cameFromOAuth) {
+      setGbpBanner({ kind: 'success', message: 'Google account connected. Click "Sync now" below to discover your Business Profile locations.' })
+    } else if (oauthError) {
+      setGbpBanner({ kind: 'error', message: `Failed to connect Google Business: ${oauthError}` })
+    }
+
     setGbpStatusLoading(true)
     fetch('/api/google/gbp/status')
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((json: GbpStatus) => {
         setGbpStatus(json)
-        if (cameFromOAuth && json.connected) {
-          if (json.locations.length > 0) {
-            setGbpBanner({
-              kind: 'success',
-              message: `Google Business connected — ${json.locations.length} location${json.locations.length === 1 ? '' : 's'} discovered.`,
-            })
-          } else {
-            const errMsg = json.discoveryDiagnostic?.accountsError?.googleErrorMessage
-            setGbpBanner({
-              kind: 'error',
-              message: errMsg
-                ? `Google account connected, but location discovery failed: ${errMsg}`
-                : 'Google account connected, but no locations were discovered yet. See details below, or try "Sync now".',
-            })
-          }
-        }
+        setGbpStatusFetchFailed(false)
       })
-      .catch(() => setGbpStatus(null))
+      .catch(() => {
+        // Deliberately do NOT clear gbpStatus here — a failed fetch is not
+        // evidence of disconnection, and showing "Not connected" for a
+        // transient network error would be a false state the backend never
+        // reported (see gbpStatusFetchFailed comment above).
+        setGbpStatusFetchFailed(true)
+      })
       .finally(() => setGbpStatusLoading(false))
-
-    if (oauthError) {
-      setGbpBanner({ kind: 'error', message: `Failed to connect Google Business: ${oauthError}` })
-    }
   }, [])
 
   async function handleGbpSyncNow() {
     setGbpSyncing(true)
     setGbpBanner(null)
+    setGbpThrottleMs(null)
     try {
       const res = await fetch('/api/google/gbp/sync-locations')
       const json = await res.json()
+      if (res.status === 429 && json?.throttled) {
+        setGbpStatus((prev) => (prev ? { ...prev, locations: json.locations, discoveryDiagnostic: json.diagnostic } : prev))
+        setGbpThrottleMs(json.retryAfterMs ?? null)
+        setGbpBanner({
+          kind: 'error',
+          message: `A sync ran too recently — please wait ${Math.ceil((json.retryAfterMs ?? 0) / 1000)}s before trying again (this protects against exhausting Google's API quota).`,
+        })
+        return
+      }
       if (!res.ok) {
         setGbpBanner({ kind: 'error', message: `Sync failed: ${json?.error ?? res.status}` })
         return
@@ -799,7 +807,9 @@ export default function SettingsPage() {
                       ? 'Checking connection…'
                       : gbpStatus?.connected
                         ? `Connected${gbpStatus.connectedAt ? ` on ${new Date(gbpStatus.connectedAt).toLocaleDateString()}` : ''}.`
-                        : 'Not connected yet.'}
+                        : gbpStatusFetchFailed
+                          ? "Couldn't check connection status — this is a status-check error, not necessarily disconnected."
+                          : 'Not connected yet.'}
                   </p>
                 </div>
                 <a
@@ -837,28 +847,43 @@ export default function SettingsPage() {
                         </li>
                       ))}
                     </ul>
+                  ) : gbpStatus.discoveryDiagnostic === undefined || gbpStatus.discoveryDiagnostic === null ? (
+                    // Deterministic state 3: connected, but a sync has
+                    // never run — distinct from state 2 (a sync ran and
+                    // failed). Not an error, so no amber warning styling.
+                    <div className="text-xs rounded-lg px-3 py-2 bg-gray-50 border border-gray-200 text-gray-600">
+                      Not yet synced. Click &quot;Sync now&quot; to discover this account&apos;s Business Profile locations.
+                    </div>
                   ) : (
+                    // Deterministic state 2: a sync ran and found zero
+                    // locations — show the actual Google error when there
+                    // is one, never a bare "no locations" dead end.
                     <div className="text-xs rounded-lg px-3 py-2 bg-amber-50 border border-amber-200 text-amber-800">
-                      {gbpStatus.discoveryDiagnostic?.accountsError ? (
+                      {gbpStatus.discoveryDiagnostic.accountsError ? (
                         <>
-                          <p className="font-medium">Google reported an error while discovering locations:</p>
+                          <p className="font-medium">
+                            {gbpStatus.discoveryDiagnostic.accountsError.googleErrorStatus === 'RESOURCE_EXHAUSTED'
+                              ? "Google's API quota was exceeded during the last sync:"
+                              : 'Google reported an error while discovering locations:'}
+                          </p>
                           <p className="mt-1 font-mono text-[11px] break-words">
                             {gbpStatus.discoveryDiagnostic.accountsError.googleErrorStatus ?? 'ERROR'}
                             {gbpStatus.discoveryDiagnostic.accountsError.googleErrorMessage
                               ? `: ${gbpStatus.discoveryDiagnostic.accountsError.googleErrorMessage}`
                               : ''}
                           </p>
+                          {gbpStatus.discoveryDiagnostic.accountsError.googleErrorStatus === 'RESOURCE_EXHAUSTED' && (
+                            <p className="mt-1">Wait a few minutes, then click &quot;Sync now&quot; again.</p>
+                          )}
                         </>
-                      ) : gbpStatus.discoveryDiagnostic ? (
+                      ) : (
                         <p>
-                          The Google account is connected, but Google returned {gbpStatus.discoveryDiagnostic.accountCount} Business
+                          The Google account is connected, but the last sync found {gbpStatus.discoveryDiagnostic.accountCount} Business
                           Profile account{gbpStatus.discoveryDiagnostic.accountCount === 1 ? '' : 's'} and{' '}
                           {gbpStatus.discoveryDiagnostic.totalLocationCount} location
                           {gbpStatus.discoveryDiagnostic.totalLocationCount === 1 ? '' : 's'}. Click &quot;Sync now&quot; to retry, or
                           verify this Google account has access to a Business Profile.
                         </p>
-                      ) : (
-                        <p>No locations discovered yet. Click &quot;Sync now&quot; to check again.</p>
                       )}
                     </div>
                   )}
