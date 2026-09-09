@@ -8,7 +8,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { requireAuth } from '@/lib/auth-guard'
-import { splitInclusiveTax } from '@/lib/tax'
+import { calculateGst } from '@/lib/tax'
+import { getSettingsSection } from '@/lib/settings/settings-service'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -81,25 +82,34 @@ function buildInvoiceHTML(proposal: any, invoice: any, payments: any[]): string 
   const roomItems   = Array.isArray(proposal.room_items) ? proposal.room_items : []
   const addons      = Array.isArray(proposal.addons)     ? proposal.addons     : []
   const discountAmt = Number(proposal.discount_amount    || 0)
-  const totalPrice  = Number(proposal.total_price        || 0)
+  const serviceValue = Number(proposal.total_price       || 0) // pre-GST value — GST is added on top, never split out of this
   // Always sum from the payments array — never read the stale proposal.advance_paid snapshot.
   // This matches FinanceModal's logic exactly.
   const advancePaid = payments.reduce((s: number, p: any) => s + Number(p.amount || 0), 0)
-  const balanceDue  = Math.max(0, totalPrice - advancePaid)
   const roomsTotal  = roomItems.reduce((s: number, r: any) =>
     s + (Number(r.quantity||0) * Number(r.rate||0) * Number(r.nights||0)), 0)
   const addonsTotal = addons.reduce((s: number, a: any) => s + Number(a.price||0), 0)
   const hasEvent    = basePrice > 0
   const hasRooms    = roomItems.length > 0
-  const totalWords  = amountInWords(totalPrice)
   const paidTotal   = advancePaid  // same value — reuse, no second reduce
-  // Priority 3 (Taxes) — tax_amount is read from the already-computed,
-  // already-persisted invoice row (see splitInclusiveTax() in the POST/GET
-  // handler below), not recomputed here, so a later rate change never
-  // alters an already-issued invoice's displayed split. 0 (today's default)
-  // means this line simply doesn't render — zero visual change for anyone
-  // who hasn't configured DEFAULT_TAX_RATE_PERCENT.
-  const taxAmount   = Number(invoice.tax_amount || 0)
+
+  // GST fields are read verbatim from the persisted invoice row (the
+  // snapshot taken once at creation, see the GET handler below) — never
+  // recomputed here, so a later rate/GSTIN config change never alters an
+  // already-issued invoice's displayed breakdown. tax_mode/total_amount/
+  // balance_due are likewise the invoice's own persisted values, not
+  // recomputed from proposal.total_price, so they stay correct for a GST
+  // invoice (whose gross total is higher than the pre-tax service value).
+  const isGst       = invoice.tax_mode === 'GST'
+  const isInterState = Boolean(invoice.is_interstate)
+  const gstRate     = Number(invoice.gst_rate_percent || 0)
+  const cgstAmount  = Number(invoice.cgst_amount || 0)
+  const sgstAmount  = Number(invoice.sgst_amount || 0)
+  const igstAmount  = Number(invoice.igst_amount || 0)
+  const totalPrice  = Number(invoice.total_amount || 0) // gross (service value + GST, or === serviceValue for NON_GST)
+  const balanceDue  = Math.max(0, Number(invoice.balance_due ?? (totalPrice - advancePaid)))
+  const totalWords  = amountInWords(totalPrice)
+  const gstinLine   = isGst ? String(invoice.gstin || '') : ''
 
   const clientName  = escapeHtml(proposal.client_name)
   const clientPhone = escapeHtml(proposal.client_phone)
@@ -246,10 +256,11 @@ table{width:100%;border-collapse:collapse}
 <div class="header">
   <div>
     <div class="brand-name">BookMySpaces</div>
-    <div class="brand-tag">Premium Hospitality · Kolkata</div>
+    <div class="brand-tag">An Unit of Flavors of East</div>
+    ${gstinLine ? `<div class="brand-tag" style="margin-top:1px">GSTIN: ${escapeHtml(gstinLine)}</div>` : ''}
   </div>
   <div class="inv-meta">
-    <div class="inv-type">Tax Invoice</div>
+    <div class="inv-type">${isGst ? 'Tax Invoice' : 'Invoice'}</div>
     <div class="inv-number">${invoiceNumber}</div>
     <div class="inv-date">${today}</div>
   </div>
@@ -270,7 +281,7 @@ table{width:100%;border-collapse:collapse}
   <div>
     <div class="party-label">Billed By</div>
     <div class="party-name">BookMySpaces</div>
-    <div class="party-detail">Mukundapur, Near Ruby Hospital<br>EM Bypass, Kolkata<br>8017035546 · bookmyspaces.in</div>
+    <div class="party-detail">An Unit of Flavors of East<br>Mukundapur, Near Ruby Hospital<br>EM Bypass, Kolkata<br>8017035546 · bookmyspaces.in${gstinLine ? `<br>GSTIN: ${escapeHtml(gstinLine)}` : ''}</div>
   </div>
   <div>
     <div class="party-label">Billed To</div>
@@ -352,14 +363,19 @@ ${hasRooms ? `
     <div class="fin-row"><span class="fin-lbl">Add-ons</span><span class="fin-val">${inr(addonsTotal)}</span></div>` : ''}
     ${hasRooms ? `
     <div class="fin-row"><span class="fin-lbl">Accommodation</span><span class="fin-val">${inr(roomsTotal)}</span></div>` : ''}
-    ${taxAmount>0 ? `
-    <div class="fin-row"><span class="fin-lbl" style="color:#8a8a9a">GST (included in total)</span><span class="fin-val" style="color:#8a8a9a">${inr(taxAmount)}</span></div>` : ''}
     ${discountAmt>0 ? `
     <div class="fin-sep-soft"></div>
     <div class="fin-row"><span class="fin-lbl fin-discount">Discount</span><span class="fin-val fin-discount">− ${inr(discountAmt)}</span></div>` : ''}
+    ${isGst ? `
+    <div class="fin-sep-soft"></div>
+    <div class="fin-row"><span class="fin-lbl">Service Value</span><span class="fin-val">${inr(serviceValue)}</span></div>
+    ${isInterState ? `
+    <div class="fin-row"><span class="fin-lbl" style="color:#8a8a9a">IGST @ ${gstRate}%</span><span class="fin-val" style="color:#8a8a9a">${inr(igstAmount)}</span></div>` : `
+    <div class="fin-row"><span class="fin-lbl" style="color:#8a8a9a">CGST @ ${(gstRate/2)}%</span><span class="fin-val" style="color:#8a8a9a">${inr(cgstAmount)}</span></div>
+    <div class="fin-row"><span class="fin-lbl" style="color:#8a8a9a">SGST @ ${(gstRate/2)}%</span><span class="fin-val" style="color:#8a8a9a">${inr(sgstAmount)}</span></div>`}` : ''}
     <div class="fin-sep"></div>
     <div class="fin-total-row">
-      <span class="fin-total-lbl">Grand Total</span>
+      <span class="fin-total-lbl">${isGst ? 'Gross Invoice' : 'Grand Total'}</span>
       <span class="fin-total-val">${inr(totalPrice)}</span>
     </div>
     ${advancePaid>0 ? `
@@ -464,13 +480,16 @@ ${payments.length>0 ? `
 // ─── GET — unchanged route URL and DB logic ───────────────────────────────────
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: { id: string } }
 ) {
   const auth = await requireAuth()
   if (!auth.ok) return auth.response
   const supabase = getSupabaseAdmin()
   try {
+    const { searchParams } = new URL(req.url)
+    const checkOnly = searchParams.get('checkOnly') === '1'
+
     const { data: proposal, error: propErr } = await supabase
       .from('proposals')
       .select('*')
@@ -481,6 +500,30 @@ export async function GET(
       return new NextResponse('Proposal not found', { status: 404 })
     }
 
+    // Idempotent upsert — an invoice's tax snapshot is set ONCE, at
+    // creation, and never recomputed. Checked before anything tax-related
+    // below so a regeneration/update never re-reads tax_mode/interstate
+    // from the query string for an invoice that already exists.
+    const { data: existingInv } = await supabase
+      .from('invoices')
+      .select('*')
+      .eq('proposal_id', params.id)
+      .limit(1)
+      .maybeSingle()
+
+    // Read-only status check for the "Select Tax Type" UI (FinanceModal):
+    // lets the frontend know whether this is a first-time generation (show
+    // the GST/Non-GST picker) or a regeneration of an already-finalized
+    // invoice (no picker — its tax mode is locked). Never creates/mutates
+    // anything.
+    if (checkOnly) {
+      return NextResponse.json({
+        exists: Boolean(existingInv),
+        taxMode: existingInv?.tax_mode ?? null,
+        isInterState: existingInv?.is_interstate ?? false,
+      })
+    }
+
     const { data: payments } = await supabase
       .from('payments')
       .select('*')
@@ -489,37 +532,38 @@ export async function GET(
 
     const allPayments = payments ?? []
     const totalPaid   = allPayments.reduce((s: number, p: any) => s + Number(p.amount || 0), 0)
-    const balanceDue  = Math.max(0, Number(proposal.total_price || 0) - totalPaid)
-
-    // Idempotent upsert — unchanged from previous version
-    const { data: existingInv } = await supabase
-      .from('invoices')
-      .select('*')
-      .eq('proposal_id', params.id)
-      .limit(1)
-      .maybeSingle()
 
     let invoice = existingInv
 
     if (!invoice) {
-      // Priority 3 (Taxes) — see src/lib/tax.ts for the full reasoning.
-      // Computed once, at invoice creation, same as invoice_number — a
-      // rate change afterward should not retroactively alter an already-
-      // issued invoice's tax split, matching how invoice_number is stable
-      // once assigned (trg_invoice_number, migration 009).
-      const tax = splitInclusiveTax(Number(proposal.total_price || 0))
+      // First generation only — this is the ONE moment tax_mode is decided
+      // and snapshotted. The FinanceModal picker passes these; a direct hit
+      // with neither defaults safely to NON_GST (never silently add GST).
+      const taxMode      = searchParams.get('tax_mode') === 'GST' ? 'GST' : 'NON_GST'
+      const isInterState = searchParams.get('interstate') === 'true'
+      const billing       = await getSettingsSection('billing')
+      const serviceValue  = Number(proposal.total_price || 0)
+      const gst = calculateGst(serviceValue, taxMode === 'GST' ? billing.gstRatePercent : 0, isInterState)
+      const balanceDue    = Math.max(0, gst.grossAmount - totalPaid)
 
       const { data: newInv, error: invErr } = await supabase
         .from('invoices')
         .insert({
           proposal_id     : params.id,
-          subtotal        : Number(proposal.total_price || 0) + Number(proposal.discount_amount || 0),
+          subtotal        : serviceValue + Number(proposal.discount_amount || 0),
           discount_amount : Number(proposal.discount_amount || 0),
-          tax_amount      : tax.taxAmount,
-          total_amount    : Number(proposal.total_price || 0),
+          tax_amount      : gst.taxAmount,
+          total_amount    : gst.grossAmount,
           advance_received: totalPaid,
           balance_due     : balanceDue,
           status          : balanceDue <= 0 ? 'paid' : 'sent',
+          tax_mode        : taxMode,
+          is_interstate   : isInterState,
+          gst_rate_percent: gst.ratePercent,
+          gstin           : taxMode === 'GST' ? billing.gstin : null,
+          cgst_amount     : gst.cgstAmount,
+          sgst_amount     : gst.sgstAmount,
+          igst_amount     : gst.igstAmount,
         })
         .select('*')
         .single()
@@ -527,11 +571,21 @@ export async function GET(
       if (invErr) throw invErr
       invoice = newInv
     } else {
-      await supabase.from('invoices').update({
-        advance_received: totalPaid,
-        balance_due     : balanceDue,
-        status          : balanceDue <= 0 ? 'paid' : 'sent',
-      }).eq('id', invoice.id)
+      // Regeneration — only payment-derived fields ever change. tax_mode,
+      // gst_rate_percent, gstin, cgst/sgst/igst_amount, and total_amount
+      // are the historical snapshot and are NEVER touched again here.
+      const balanceDue = Math.max(0, Number(invoice.total_amount || 0) - totalPaid)
+      const { data: updatedInv } = await supabase
+        .from('invoices')
+        .update({
+          advance_received: totalPaid,
+          balance_due     : balanceDue,
+          status          : balanceDue <= 0 ? 'paid' : 'sent',
+        })
+        .eq('id', invoice.id)
+        .select('*')
+        .single()
+      invoice = updatedInv ?? invoice
     }
 
     // Reservation Platform activation, Phase 5 — Invoice generation.

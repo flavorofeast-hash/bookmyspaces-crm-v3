@@ -80,6 +80,26 @@ export interface OrchestrationSettings {
   enabled: boolean
 }
 
+/**
+ * Billing/GST configuration for final invoices. Advance payments/receipts
+ * never read this section at all -- they have no GST concept by design
+ * (see src/lib/tax.ts and the invoice route). `gstRatePercent` is the ONLY
+ * place the GST rate is configured; nothing hardcodes 5% anywhere else.
+ * Changing this section only affects invoices generated AFTER the change --
+ * each finalized invoice snapshots the rate/GSTIN it used at creation time
+ * (invoices.gst_rate_percent/gstin, migration 033) and never re-reads this
+ * section again.
+ */
+export interface BillingSettings {
+  /** GST rate applied to NEW final invoices in GST mode, as a percentage (e.g. 5 for 5%). */
+  gstRatePercent: number
+  /** Displayed on a final invoice only when its tax_mode is 'GST'. Never shown on an advance receipt. */
+  gstin: string
+  businessName: string
+  /** e.g. "An Unit of Flavors of East" -- shown under businessName on every billing document. */
+  businessUnitLine: string
+}
+
 export interface AppSettings {
   venue: VenueSettings
   ai: AISettings
@@ -87,6 +107,7 @@ export interface AppSettings {
   whatsapp: WhatsAppSettings
   /** Phase 1B rollout kill-switch -- see OrchestrationSettings' own doc comment. */
   orchestration: OrchestrationSettings
+  billing: BillingSettings
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -128,10 +149,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // wires a real caller. See OrchestrationSettings' doc comment above.
     enabled: false,
   },
+  billing: {
+    gstRatePercent: 5,
+    gstin: '19AOIPB1154J1Z2',
+    businessName: 'BookMySpaces',
+    businessUnitLine: 'An Unit of Flavors of East',
+  },
 }
 
 const APP_CATEGORY = 'app'
-const SECTION_KEYS = ['venue', 'ai', 'notifications', 'whatsapp', 'orchestration'] as const
+const SECTION_KEYS = ['venue', 'ai', 'notifications', 'whatsapp', 'orchestration', 'billing'] as const
 export type SettingsSectionKey = (typeof SECTION_KEYS)[number]
 
 export function isSettingsSectionKey(key: string): key is SettingsSectionKey {

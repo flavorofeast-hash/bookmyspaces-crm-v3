@@ -198,7 +198,7 @@ body{font-family:'DM Sans',system-ui,sans-serif;color:#1a1a1a;background:#fff;fo
 <div class="header">
   <div>
     <div class="brand-name">BookMySpaces</div>
-    <div class="brand-tag">Premium Hospitality · Kolkata</div>
+    <div class="brand-tag">An Unit of Flavors of East</div>
   </div>
   <div class="receipt-badge">
     <div class="receipt-type">Money Receipt</div>

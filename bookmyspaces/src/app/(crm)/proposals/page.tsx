@@ -414,6 +414,43 @@ function FinanceModal({proposal, onClose}:{proposal:ProposalWithLead; onClose:()
   // One at a time; all three buttons disable while any send runs.
   const [emailAction,  setEmailAction]  = useState<string|null>(null)
 
+  // GST/Billing — final invoice tax-type selection. The invoice route
+  // snapshots tax_mode PERMANENTLY on first generation (never changes
+  // again after), so this picker only ever appears once per proposal —
+  // checked via ?checkOnly=1 before deciding whether to show it.
+  const [checkingInvoice, setCheckingInvoice] = useState(false)
+  const [taxPicker,       setTaxPicker]       = useState<{print:boolean}|null>(null)
+  const [taxMode,         setTaxMode]         = useState<'GST'|'NON_GST'>('NON_GST')
+  const [isInterState,    setIsInterState]    = useState(false)
+
+  async function openInvoice(print: boolean) {
+    setCheckingInvoice(true)
+    try {
+      const res  = await fetch(`/api/proposals/${proposal.id}/invoice?checkOnly=1`)
+      const data = await res.json().catch(()=>({}))
+      if (res.ok && data.exists) {
+        window.open(`/api/proposals/${proposal.id}/invoice${print ? '?print=1' : ''}`, '_blank')
+      } else {
+        setTaxPicker({print})
+      }
+    } catch {
+      // Status check failed — fall back to the old direct-open behavior
+      // rather than blocking document generation entirely.
+      window.open(`/api/proposals/${proposal.id}/invoice${print ? '?print=1' : ''}`, '_blank')
+    } finally {
+      setCheckingInvoice(false)
+    }
+  }
+
+  function confirmGenerateInvoice() {
+    if (!taxPicker) return
+    const params = new URLSearchParams({ tax_mode: taxMode })
+    if (taxMode === 'GST') params.set('interstate', String(isInterState))
+    if (taxPicker.print) params.set('print', '1')
+    window.open(`/api/proposals/${proposal.id}/invoice?${params.toString()}`, '_blank')
+    setTaxPicker(null)
+  }
+
   async function sendEmailAction(kind:'invoice/email'|'booking-confirmation'|'payment-reminder', label:string) {
     setEmailAction(kind)
     try {
@@ -517,10 +554,52 @@ function FinanceModal({proposal, onClose}:{proposal:ProposalWithLead; onClose:()
         <div className="space-y-2">
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest">Generate Documents</p>
 
+          {/* Tax type picker — only shown on first-ever invoice generation
+              for this proposal (checkOnly says no invoice exists yet).
+              Once chosen, it is a permanent snapshot; regenerating later
+              never shows this again. */}
+          {taxPicker && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 space-y-3">
+              <p className="text-sm font-bold text-amber-900">Select Tax Type for Final Invoice</p>
+              <p className="text-xs text-amber-700">This cannot be changed after the invoice is generated.</p>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-1.5 text-sm text-gray-800">
+                  <input type="radio" name="taxMode" checked={taxMode==='NON_GST'} onChange={()=>setTaxMode('NON_GST')}/>
+                  Non-GST
+                </label>
+                <label className="flex items-center gap-1.5 text-sm text-gray-800">
+                  <input type="radio" name="taxMode" checked={taxMode==='GST'} onChange={()=>setTaxMode('GST')}/>
+                  GST (5%)
+                </label>
+              </div>
+              {taxMode==='GST' && (
+                <div className="flex gap-4 pl-1">
+                  <label className="flex items-center gap-1.5 text-xs text-gray-700">
+                    <input type="radio" name="interstate" checked={!isInterState} onChange={()=>setIsInterState(false)}/>
+                    Intra-state (CGST + SGST)
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs text-gray-700">
+                    <input type="radio" name="interstate" checked={isInterState} onChange={()=>setIsInterState(true)}/>
+                    Inter-state (IGST)
+                  </label>
+                </div>
+              )}
+              <div className="flex gap-2 pt-1">
+                <button onClick={confirmGenerateInvoice} className="px-3 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-semibold hover:bg-amber-700">
+                  Generate Invoice
+                </button>
+                <button onClick={()=>setTaxPicker(null)} className="px-3 py-1.5 bg-white border border-gray-200 text-gray-600 rounded-lg text-xs font-semibold hover:bg-gray-50">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Latest Invoice */}
           <button
-            onClick={()=>window.open(`/api/proposals/${proposal.id}/invoice`,'_blank')}
-            className="w-full flex items-center justify-between px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl hover:bg-amber-100 transition-colors group">
+            onClick={()=>openInvoice(false)}
+            disabled={checkingInvoice}
+            className="w-full flex items-center justify-between px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl hover:bg-amber-100 transition-colors group disabled:opacity-60">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-amber-100 rounded-lg group-hover:bg-amber-200 transition-colors">
                 <FileText className="w-4 h-4 text-amber-700"/>
@@ -537,8 +616,9 @@ function FinanceModal({proposal, onClose}:{proposal:ProposalWithLead; onClose:()
 
           {/* Consolidated Statement = invoice with print=1 */}
           <button
-            onClick={()=>window.open(`/api/proposals/${proposal.id}/invoice?print=1`,'_blank')}
-            className="w-full flex items-center justify-between px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 transition-colors group">
+            onClick={()=>openInvoice(true)}
+            disabled={checkingInvoice}
+            className="w-full flex items-center justify-between px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 transition-colors group disabled:opacity-60">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-blue-100 rounded-lg group-hover:bg-blue-200 transition-colors">
                 <BookOpen className="w-4 h-4 text-blue-700"/>

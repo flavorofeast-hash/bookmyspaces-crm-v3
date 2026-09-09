@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { getTaxRatePercent, splitInclusiveTax } from './tax'
+import { describe, it, expect, afterEach } from 'vitest'
+import { getTaxRatePercent, calculateGst } from './tax'
 
 describe('getTaxRatePercent', () => {
   const original = process.env.DEFAULT_TAX_RATE_PERCENT
@@ -32,45 +32,61 @@ describe('getTaxRatePercent', () => {
   })
 })
 
-describe('splitInclusiveTax', () => {
-  it('returns zero tax and an unchanged total when rate is 0 (default, backward-compatible behavior)', () => {
-    const split = splitInclusiveTax(20000, 0)
-    expect(split).toEqual({ totalAmount: 20000, baseAmount: 20000, taxAmount: 0, ratePercent: 0 })
+describe('calculateGst', () => {
+  it('NON_GST (rate 0): returns all-zero tax and gross === base, unchanged', () => {
+    const gst = calculateGst(50000, 0, false)
+    expect(gst).toEqual({
+      baseAmount: 50000, ratePercent: 0, isInterState: false,
+      cgstAmount: 0, sgstAmount: 0, igstAmount: 0,
+      taxAmount: 0, grossAmount: 50000,
+    })
   })
 
-  it('never changes totalAmount regardless of rate — the core backward-compatibility invariant', () => {
-    expect(splitInclusiveTax(20000, 12).totalAmount).toBe(20000)
-    expect(splitInclusiveTax(20000, 18).totalAmount).toBe(20000)
+  it('GST is added ON TOP of the base amount — the core exclusive-tax invariant (spec §4 example)', () => {
+    const gst = calculateGst(50000, 5, false)
+    expect(gst.baseAmount).toBe(50000)
+    expect(gst.taxAmount).toBe(2500)
+    expect(gst.grossAmount).toBe(52500) // 50,000 + 2,500 — NOT a split of 52,500
   })
 
-  it('splits an inclusive total into base + tax at a 12% rate', () => {
-    const split = splitInclusiveTax(11200, 12)
-    expect(split.baseAmount).toBe(10000)
-    expect(split.taxAmount).toBe(1200)
-    expect(split.ratePercent).toBe(12)
+  it('intra-state (5%): splits evenly into CGST 2.5% + SGST 2.5%', () => {
+    const gst = calculateGst(50000, 5, false)
+    expect(gst.cgstAmount).toBe(1250)
+    expect(gst.sgstAmount).toBe(1250)
+    expect(gst.igstAmount).toBe(0)
+    expect(gst.cgstAmount + gst.sgstAmount).toBe(gst.taxAmount)
   })
 
-  it('base + tax always sum back to the original total (no rounding leak)', () => {
-    const split = splitInclusiveTax(20000, 18)
-    expect(Math.round((split.baseAmount + split.taxAmount) * 100) / 100).toBe(20000)
+  it('inter-state (5%): charges the full rate as IGST, no CGST/SGST', () => {
+    const gst = calculateGst(50000, 5, true)
+    expect(gst.igstAmount).toBe(2500)
+    expect(gst.cgstAmount).toBe(0)
+    expect(gst.sgstAmount).toBe(0)
   })
 
-  it('treats a non-numeric/undefined totalAmount as 0 rather than producing NaN', () => {
-    const split = splitInclusiveTax(Number('not-a-number'), 12)
-    expect(split.totalAmount).toBe(0)
-    expect(split.taxAmount).toBe(0)
+  it('matches the exact worked example from the spec (₹50,000 + 5% GST = ₹52,500)', () => {
+    const gst = calculateGst(50000, 5, false)
+    expect(gst.cgstAmount).toBe(1250)
+    expect(gst.sgstAmount).toBe(1250)
+    expect(gst.grossAmount).toBe(52500)
   })
 
-  it('uses getTaxRatePercent() as the default when no rate argument is passed', () => {
-    const original = process.env.DEFAULT_TAX_RATE_PERCENT
-    process.env.DEFAULT_TAX_RATE_PERCENT = '18'
-    try {
-      const split = splitInclusiveTax(11800)
-      expect(split.ratePercent).toBe(18)
-      expect(split.taxAmount).toBe(1800)
-    } finally {
-      if (original === undefined) delete process.env.DEFAULT_TAX_RATE_PERCENT
-      else process.env.DEFAULT_TAX_RATE_PERCENT = original
-    }
+  it('treats a non-numeric/undefined baseAmount as 0 rather than producing NaN', () => {
+    const gst = calculateGst(Number('not-a-number'), 5, false)
+    expect(gst.baseAmount).toBe(0)
+    expect(gst.taxAmount).toBe(0)
+    expect(gst.grossAmount).toBe(0)
+  })
+
+  it('CGST + SGST always sum exactly to taxAmount even with odd amounts (no rounding leak)', () => {
+    const gst = calculateGst(333.33, 5, false)
+    expect(Math.round((gst.cgstAmount + gst.sgstAmount) * 100) / 100).toBe(gst.taxAmount)
+  })
+
+  it('a different configured rate (12%) is honored, not hardcoded to 5', () => {
+    const gst = calculateGst(10000, 12, false)
+    expect(gst.taxAmount).toBe(1200)
+    expect(gst.cgstAmount).toBe(600)
+    expect(gst.sgstAmount).toBe(600)
   })
 })

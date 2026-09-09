@@ -233,11 +233,19 @@ const whatsappSettingsSchema = z.object({
   webhookUrl    : z.string().trim().max(500),
 }).strict()
 
+const billingSettingsSchema = z.object({
+  gstRatePercent  : z.number().min(0).max(100),
+  gstin           : z.string().trim().max(20),
+  businessName    : z.string().trim().min(1).max(200),
+  businessUnitLine: z.string().trim().max(200),
+}).strict()
+
 export const updateSettingsSchema = z.object({
   venue        : venueSettingsSchema.optional(),
   ai           : aiSettingsSchema.optional(),
   notifications: notificationSettingsSchema.optional(),
   whatsapp     : whatsappSettingsSchema.optional(),
+  billing      : billingSettingsSchema.optional(),
 }).strict()
 
 // ─── Admin catalog (V3 Phase 2b — Admin CRUD) ──────────────────────────────
