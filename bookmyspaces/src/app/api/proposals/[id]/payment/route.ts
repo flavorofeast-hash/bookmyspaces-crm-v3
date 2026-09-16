@@ -53,6 +53,28 @@ export async function POST(
       return NextResponse.json({ error: 'Proposal not found' }, { status: 404 })
     }
 
+    // Reject non-refund payments that would exceed the outstanding balance.
+    // Refunds are negative-amount rows that reduce what's owed, so they're
+    // exempt from this cap.
+    if (!isRefund) {
+      const { data: existingPayments, error: sumErr } = await supabase
+        .from('payments')
+        .select('amount')
+        .eq('proposal_id', params.id)
+
+      if (sumErr) throw sumErr
+
+      const alreadyPaid = (existingPayments ?? []).reduce((s, p) => s + Number(p.amount), 0)
+      const outstanding = Number(proposal.total_price ?? 0) - alreadyPaid
+
+      if (Number(amount) > outstanding + 0.01) {
+        return NextResponse.json(
+          { error: `Amount exceeds outstanding balance of ₹${outstanding.toLocaleString('en-IN')}` },
+          { status: 400 }
+        )
+      }
+    }
+
     // Insert payment — receipt_number assigned by DB trigger
     const { data: payment, error: payErr } = await supabase
       .from('payments')

@@ -17,6 +17,7 @@ import {
   LeadSnapshot,
   ProposalNextAction,
 } from '@/lib/proposal-intelligence'
+import { PaymentModal } from './PaymentModal'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -182,121 +183,6 @@ function ModalShell({title,sub,onClose,children}:{
           </button>
         </div>
         <div className="overflow-y-auto flex-1">{children}</div>
-      </div>
-    </div>
-  )
-}
-
-// ─── Record Payment Modal (UNCHANGED) ────────────────────────────────────────
-
-function PaymentModal({
-  proposal, onClose, onSuccess,
-}: {
-  proposal:ProposalWithLead; onClose:()=>void; onSuccess:()=>void
-}) {
-  const [amount, setAmount] = useState('')
-  const [date,   setDate]   = useState(new Date().toISOString().slice(0,10))
-  const [mode,   setMode]   = useState('upi')
-  const [ref,    setRef]    = useState('')
-  const [notes,  setNotes]  = useState('')
-  const [type,   setType]   = useState('advance')
-  const [saving, setSaving] = useState(false)
-  const [error,  setError]  = useState<string|null>(null)
-
-  async function submit(e:React.FormEvent) {
-    e.preventDefault()
-    if (!amount||parseFloat(amount)<=0){setError('Enter a valid amount');return}
-    setSaving(true)
-    try {
-      const res=await fetch(`/api/proposals/${proposal.id}/payment`,{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({amount:parseFloat(amount),payment_date:date,payment_mode:mode,transaction_ref:ref||null,notes:notes||null,payment_type:type}),
-      })
-      if (!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d.error??`Error ${res.status}`)}
-      onSuccess()
-    } catch(err:any){setError(err.message??'Failed to record payment');setSaving(false)}
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 bg-gray-900 text-white">
-          <div>
-            <p className="text-xs text-gray-400 mb-0.5">Record Payment</p>
-            <p className="text-sm font-bold">{proposal.client_name} · {proposal.proposal_number}</p>
-          </div>
-          <button onClick={onClose} aria-label="Close" className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"><X className="w-4 h-4"/></button>
-        </div>
-        <form onSubmit={submit} className="p-5 space-y-4">
-          {error&&<div className="px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">{error}</div>}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5">Amount (₹) *</label>
-              <input type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="25000" required
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5">Date</label>
-              <input type="date" value={date} onChange={e=>setDate(e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5">Payment Mode</label>
-              <select value={mode} onChange={e=>setMode(e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none bg-white">
-                <option value="upi">UPI</option><option value="cash">Cash</option>
-                <option value="card">Card</option><option value="bank_transfer">Bank Transfer</option>
-                <option value="cheque">Cheque</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5">Payment Type</label>
-              <select value={type} onChange={e=>setType(e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none bg-white">
-                <option value="advance">Advance</option><option value="partial">Partial</option>
-                <option value="final">Final Payment</option>
-              </select>
-            </div>
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5">Transaction Reference</label>
-            <input type="text" value={ref} onChange={e=>setRef(e.target.value)} placeholder="UPI ref / cheque no."
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5">Notes</label>
-            <textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={2} placeholder="Optional notes…"
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"/>
-          </div>
-          {proposal.total_price&&(
-            <div className="bg-gray-50 rounded-xl px-4 py-3 text-xs space-y-1">
-              <div className="flex justify-between text-gray-500">
-                <span>Proposal Total</span><span className="font-medium text-gray-700">{formatINR(proposal.total_price)}</span>
-              </div>
-              {(proposal.advance_paid??0)>0&&(
-                <div className="flex justify-between text-blue-600">
-                  <span>Already Paid</span><span className="font-medium">− {formatINR(proposal.advance_paid??0)}</span>
-                </div>
-              )}
-              {amount&&parseFloat(amount)>0&&(
-                <div className="flex justify-between text-green-600 border-t border-gray-200 pt-1 mt-1">
-                  <span>Balance After This</span>
-                  <span className="font-bold">{formatINR(Math.max(0,(proposal.total_price??0)-(proposal.advance_paid??0)-parseFloat(amount)))}</span>
-                </div>
-              )}
-            </div>
-          )}
-          <div className="flex gap-3 pt-1">
-            <button type="button" onClick={onClose}
-              className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
-            <button type="submit" disabled={saving}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-bold hover:bg-gray-800 disabled:opacity-60">
-              {saving?<><Loader2 className="w-4 h-4 animate-spin"/>Saving…</>:<><IndianRupee className="w-4 h-4"/>Record Payment</>}
-            </button>
-          </div>
-        </form>
       </div>
     </div>
   )
@@ -1186,6 +1072,7 @@ export default function ProposalsPage() {
       {/* ── Modals ── */}
       {payModal && (
         <PaymentModal
+          key={payModal.id}
           proposal={payModal}
           onClose={()=>setPayModal(null)}
           onSuccess={()=>{ setPayModal(null); fetchProposals() }}
